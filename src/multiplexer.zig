@@ -15,10 +15,11 @@ pub const Multiplexer = struct {
         down,
     };
 
-    const DaParseState = enum(u2) {
+    const DaParseState = enum(u3) {
         idle,
         esc,
         csi,
+        csi_6,
     };
 
     const DragState = struct {
@@ -39,6 +40,7 @@ pub const Multiplexer = struct {
     drag_state: DragState = .{},
     next_popup_window_id: u32 = 1_000_000,
     redraw_requested: bool = false,
+    last_screen: ?layout.Rect = null,
 
     pub const TickResult = struct {
         reads: usize,
@@ -145,6 +147,7 @@ pub const Multiplexer = struct {
         screen: ?layout.Rect,
         bytes: []const u8,
     ) !void {
+        if (screen) |s| self.last_screen = s;
         for (bytes) |b| {
             const ev = self.input_router.feedByte(b);
             switch (ev) {
@@ -429,11 +432,16 @@ pub const Multiplexer = struct {
                 try sb.append(tmp[0..n]);
             }
             if (self.da_parse_states.getPtr(w_id)) |state| {
-                const da_queries = countPrimaryDaQueries(state, tmp[0..n]);
+                const queries = countTerminalQueries(state, tmp[0..n]);
                 var q: usize = 0;
-                while (q < da_queries) : (q += 1) {
+                while (q < queries.da) : (q += 1) {
                     // Respond to primary DA query for fish compatibility checks.
                     try p.write("\x1b[?62;c");
+                }
+                q = 0;
+                while (q < queries.cpr) : (q += 1) {
+                    // Respond to CPR query (CSI 6n). Keep simple/stable for now.
+                    try p.write("\x1b[1;1R");
                 }
             }
             try self.markWindowDirty(w_id);
@@ -539,6 +547,7 @@ pub const Multiplexer = struct {
         screen: layout.Rect,
         signals: signal_mod.Snapshot,
     ) !TickResult {
+        self.last_screen = screen;
         const detach_requested = self.consumeDetachRequested();
 
         if (signals.sighup or signals.sigterm) {
@@ -938,8 +947,13 @@ pub const Multiplexer = struct {
         }
     }
 
-    fn countPrimaryDaQueries(state: *DaParseState, bytes: []const u8) usize {
-        var count: usize = 0;
+    const TerminalQueryCounts = struct {
+        da: usize = 0,
+        cpr: usize = 0,
+    };
+
+    fn countTerminalQueries(state: *DaParseState, bytes: []const u8) TerminalQueryCounts {
+        var counts: TerminalQueryCounts = .{};
         for (bytes) |b| {
             switch (state.*) {
                 .idle => {
@@ -956,17 +970,32 @@ pub const Multiplexer = struct {
                 },
                 .csi => {
                     if (b == 'c') {
-                        count += 1;
+                        counts.da += 1;
                         state.* = .idle;
+                    } else if (b == '6') {
+                        state.* = .csi_6;
                     } else if (b >= 0x40 and b <= 0x7e) {
                         state.* = .idle;
                     } else {
                         // Parameter/intermediate bytes (0x20-0x3f); keep parsing.
                     }
                 },
+                .csi_6 => {
+                    if (b == 'n') {
+                        counts.cpr += 1;
+                        state.* = .idle;
+                    } else if (b >= 0x40 and b <= 0x7e) {
+                        state.* = .idle;
+                    } else if (b >= 0x20 and b <= 0x3f) {
+                        // Additional params/intermediates => not plain "CSI 6n".
+                        state.* = .csi;
+                    } else {
+                        state.* = .idle;
+                    }
+                },
             }
         }
-        return count;
+        return counts;
     }
 
     fn hasNeighborOnRight(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
@@ -1087,16 +1116,25 @@ pub const Multiplexer = struct {
     fn handleWindowExit(self: *Multiplexer, window_id: u32) !void {
         if (self.popup_mgr.closeByWindowId(window_id)) |removed| {
             self.cleanupClosedPopup(removed);
+            try self.relayoutAfterTopologyChange();
             self.requestRedraw();
             return;
         }
         if (try self.workspace_mgr.closeWindowById(window_id)) {
             self.cleanupWindowResources(window_id);
+            try self.relayoutAfterTopologyChange();
             self.requestRedraw();
         } else {
             self.cleanupWindowResources(window_id);
             self.requestRedraw();
         }
+    }
+
+    fn relayoutAfterTopologyChange(self: *Multiplexer) !void {
+        const screen = self.last_screen orelse return;
+        _ = self.resizeActiveWindowsToLayout(screen) catch 0;
+        _ = self.resizePopupWindows(screen) catch 0;
+        _ = try self.markActiveWindowsDirty();
     }
 
     fn reapExitedWindows(self: *Multiplexer) !usize {

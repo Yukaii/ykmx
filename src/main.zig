@@ -235,14 +235,22 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 const RuntimeTerminal = struct {
     had_termios: bool = false,
     original_termios: c.struct_termios = undefined,
-    original_flags: c_int = 0,
+    original_stdin_flags: c_int = 0,
+    original_stdout_flags: c_int = 0,
 
     fn enter() !RuntimeTerminal {
         var rt: RuntimeTerminal = .{};
 
-        rt.original_flags = c.fcntl(c.STDIN_FILENO, c.F_GETFL, @as(c_int, 0));
-        if (rt.original_flags >= 0) {
-            _ = c.fcntl(c.STDIN_FILENO, c.F_SETFL, rt.original_flags | c.O_NONBLOCK);
+        rt.original_stdin_flags = c.fcntl(c.STDIN_FILENO, c.F_GETFL, @as(c_int, 0));
+        if (rt.original_stdin_flags >= 0) {
+            _ = c.fcntl(c.STDIN_FILENO, c.F_SETFL, rt.original_stdin_flags | c.O_NONBLOCK);
+        }
+
+        // Force compositor output path to blocking writes so VT control sequences
+        // are not fragmented under backpressure (can render as literal "236m", etc).
+        rt.original_stdout_flags = c.fcntl(c.STDOUT_FILENO, c.F_GETFL, @as(c_int, 0));
+        if (rt.original_stdout_flags >= 0) {
+            _ = c.fcntl(c.STDOUT_FILENO, c.F_SETFL, rt.original_stdout_flags & ~@as(c_int, c.O_NONBLOCK));
         }
 
         var termios_state: c.struct_termios = undefined;
@@ -271,8 +279,11 @@ const RuntimeTerminal = struct {
         if (self.had_termios) {
             _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &self.original_termios);
         }
-        if (self.original_flags >= 0) {
-            _ = c.fcntl(c.STDIN_FILENO, c.F_SETFL, self.original_flags);
+        if (self.original_stdin_flags >= 0) {
+            _ = c.fcntl(c.STDIN_FILENO, c.F_SETFL, self.original_stdin_flags);
+        }
+        if (self.original_stdout_flags >= 0) {
+            _ = c.fcntl(c.STDOUT_FILENO, c.F_SETFL, self.original_stdout_flags);
         }
     }
 };
@@ -336,6 +347,8 @@ const RuntimeVtState = struct {
         consumed_bytes: usize = 0,
         cols: u16,
         rows: u16,
+        stream_tail: [256]u8 = [_]u8{0} ** 256,
+        stream_tail_len: u16 = 0,
     };
 
     allocator: std.mem.Allocator,
@@ -385,10 +398,30 @@ const RuntimeVtState = struct {
             wv.rows = safe_rows;
         }
 
-        if (wv.consumed_bytes > output.len) wv.consumed_bytes = 0;
+        if (wv.consumed_bytes > output.len) {
+            wv.consumed_bytes = 0;
+            wv.stream_tail_len = 0;
+        }
         if (output.len > wv.consumed_bytes) {
-            var stream = wv.term.vtStream();
-            try stream.nextSlice(output[wv.consumed_bytes..]);
+            const delta = output[wv.consumed_bytes..];
+            const tail_len: usize = wv.stream_tail_len;
+            var merged = try self.allocator.alloc(u8, tail_len + delta.len);
+            defer self.allocator.free(merged);
+            if (tail_len > 0) @memcpy(merged[0..tail_len], wv.stream_tail[0..tail_len]);
+            @memcpy(merged[tail_len..], delta);
+
+            const ansi_safe = ansiSafePrefixLen(merged);
+            const split = utf8SafePrefixLen(merged[0..ansi_safe]);
+            if (split > 0) {
+                var stream = wv.term.vtStream();
+                try stream.nextSlice(merged[0..split]);
+            }
+
+            const rem = merged[split..];
+            wv.stream_tail_len = @intCast(@min(rem.len, wv.stream_tail.len));
+            if (wv.stream_tail_len > 0) {
+                @memcpy(wv.stream_tail[0..wv.stream_tail_len], rem[0..wv.stream_tail_len]);
+            }
             wv.consumed_bytes = output.len;
         }
 
@@ -420,6 +453,71 @@ const RuntimeVtState = struct {
         }
     }
 };
+
+fn utf8SafePrefixLen(bytes: []const u8) usize {
+    if (bytes.len == 0) return 0;
+    var i = bytes.len;
+    var cont: usize = 0;
+    while (i > 0 and cont < 3 and isUtf8ContinuationByte(bytes[i - 1])) : (cont += 1) {
+        i -= 1;
+    }
+
+    const lead_idx: usize = if (i > 0) i - 1 else return bytes.len - cont;
+    const lead = bytes[lead_idx];
+    const expected = utf8ExpectedLenFromLead(lead) orelse return bytes.len;
+    const have = bytes.len - lead_idx;
+    if (have < expected) return lead_idx;
+    return bytes.len;
+}
+
+fn ansiSafePrefixLen(bytes: []const u8) usize {
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const b = bytes[i];
+        if (b == 0x1b) {
+            if (i + 1 >= bytes.len) return i;
+            const n = bytes[i + 1];
+            if (n == '[') {
+                var j = i + 2;
+                while (j < bytes.len and !isCsiFinalByte(bytes[j])) : (j += 1) {}
+                if (j >= bytes.len) return i;
+                i = j + 1;
+                continue;
+            }
+            // For non-CSI escapes (OSC/DCS/etc), avoid blocking parser progress:
+            // pass through and rely on downstream VT parser state.
+            i += 1;
+            continue;
+        }
+
+        // C1 control forms (single-byte CSI/OSC/DCS/ST)
+        if (b == 0x9b) {
+            var j = i + 1;
+            while (j < bytes.len and !isCsiFinalByte(bytes[j])) : (j += 1) {}
+            if (j >= bytes.len) return i;
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    return bytes.len;
+}
+
+fn isCsiFinalByte(b: u8) bool {
+    return b >= '@' and b <= '~';
+}
+
+fn isUtf8ContinuationByte(b: u8) bool {
+    return (b & 0b1100_0000) == 0b1000_0000;
+}
+
+fn utf8ExpectedLenFromLead(b: u8) ?usize {
+    if ((b & 0b1000_0000) == 0) return 1;
+    if ((b & 0b1110_0000) == 0b1100_0000) return 2;
+    if ((b & 0b1111_0000) == 0b1110_0000) return 3;
+    if ((b & 0b1111_1000) == 0b1111_0000) return 4;
+    return null;
+}
 
 fn getTerminalSize() RuntimeSize {
     var ws: c.struct_winsize = undefined;
@@ -601,7 +699,14 @@ fn renderRuntimeFrame(
             const pane_cell = paneCellAt(panes[0..pane_count], x, row);
             if (pane_cell) |pc| {
                 if (pc.skip_draw) {
-                    curr[row_off + x] = .{};
+                    // Explicitly clear spacer-tail cells to avoid stale glyph artifacts
+                    // when wide/grapheme content changes near borders.
+                    curr[row_off + x] = .{
+                        .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+                        .text_len = 1,
+                        .style = .{},
+                        .styled = false,
+                    };
                 } else {
                     curr[row_off + x] = .{
                         .text = pc.text,
@@ -895,6 +1000,10 @@ fn paneCellAt(
             .style = .{},
         };
         rendered.text_len = @intCast(encodeCodepoint(rendered.text[0..], cp));
+        if (rendered.text_len == 0) {
+            rendered.text[0] = '?';
+            rendered.text_len = 1;
+        }
         if (maybe_cell.cell.content_tag == .codepoint_grapheme) {
             if (maybe_cell.node.data.lookupGrapheme(maybe_cell.cell)) |extra_cps| {
                 for (extra_cps) |extra_cp_raw| {
