@@ -1,5 +1,7 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
+const layout = @import("layout.zig");
+const layout_native = @import("layout_native.zig");
 
 const Terminal = ghostty_vt.Terminal;
 
@@ -51,8 +53,31 @@ pub fn main() !void {
     try out.print("left cursor: x={} y={}\n", .{ left.screens.active.cursor.x, left.screens.active.cursor.y });
     try out.print("right cursor: x={} y={}\n\n", .{ right.screens.active.cursor.x, right.screens.active.cursor.y });
 
+    try printLayoutPOC(out, alloc);
     try renderSideBySide(out, &left, &right);
     try out.flush();
+}
+
+fn printLayoutPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
+    const engine = layout_native.NativeLayoutEngine.init();
+    const rects = try engine.compute(alloc, .{
+        .layout = .vertical_stack,
+        .screen = .{ .x = 0, .y = 0, .width = 72, .height = 12 },
+        .window_count = 2,
+        .master_count = 1,
+        .master_ratio_permille = 600,
+        .gap = 0,
+    });
+    defer alloc.free(rects);
+
+    try writer.writeAll("layout(engine=native, type=vertical_stack):\n");
+    for (rects, 0..) |r, i| {
+        try writer.print(
+            "  pane {}: x={} y={} w={} h={}\n",
+            .{ i, r.x, r.y, r.width, r.height },
+        );
+    }
+    try writer.writeByte('\n');
 }
 
 fn renderSideBySide(writer: *std.Io.Writer, left: *Terminal, right: *Terminal) !void {
@@ -87,4 +112,19 @@ fn writeRowAsText(writer: *std.Io.Writer, screen: *ghostty_vt.Screen, row: usize
         const n = try std.unicode.utf8Encode(cp, &scratch);
         try writer.writeAll(scratch[0..n]);
     }
+}
+
+test "layout engine POC returns panes" {
+    const testing = std.testing;
+    const engine = layout_native.NativeLayoutEngine.init();
+    const rects = try engine.compute(testing.allocator, .{
+        .layout = .vertical_stack,
+        .screen = .{ .x = 0, .y = 0, .width = 72, .height = 12 },
+        .window_count = 2,
+    });
+    defer testing.allocator.free(rects);
+
+    try testing.expectEqual(@as(usize, 2), rects.len);
+    try testing.expectEqual(@as(u16, 43), rects[0].width);
+    try testing.expectEqual(@as(u16, 29), rects[1].width);
 }
