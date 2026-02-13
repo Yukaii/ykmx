@@ -471,11 +471,12 @@ fn renderRuntimeFrame(
         active_ids[i] = tab.windows.items[i].id;
         if (r.width < 2 or r.height < 2) continue;
         const border = computeBorderMask(rects[0..n], i, r, content);
+        const insets = computeContentInsets(rects[0..n], i, r, border);
         drawBorder(canvas, total_cols, content_rows, r, border, if (tab.focused_index == i) '*' else ' ');
-        const inner_x = r.x + (if (border.left) @as(u16, 1) else @as(u16, 0));
-        const inner_y = r.y + (if (border.top) @as(u16, 1) else @as(u16, 0));
-        const inner_w = r.width - (if (border.left) @as(u16, 1) else @as(u16, 0)) - (if (border.right) @as(u16, 1) else @as(u16, 0));
-        const inner_h = r.height - (if (border.top) @as(u16, 1) else @as(u16, 0)) - (if (border.bottom) @as(u16, 1) else @as(u16, 0));
+        const inner_x = r.x + insets.left;
+        const inner_y = r.y + insets.top;
+        const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
+        const inner_h = if (r.height > insets.top + insets.bottom) r.height - insets.top - insets.bottom else 0;
         if (inner_w == 0 or inner_h == 0) continue;
 
         const title = tab.windows.items[i].title;
@@ -594,16 +595,62 @@ const BorderMask = struct {
     bottom: bool,
 };
 
-fn computeBorderMask(rects: []const layout.Rect, idx: usize, r: layout.Rect, content: layout.Rect) BorderMask {
+const ContentInsets = struct {
+    left: u16,
+    right: u16,
+    top: u16,
+    bottom: u16,
+};
+
+fn hasNeighborOnRight(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
+    for (rects, 0..) |other, j| {
+        if (j == idx) continue;
+        if (r.x + r.width != other.x) continue;
+        const overlap_top = @max(r.y, other.y);
+        const overlap_bottom = @min(r.y + r.height, other.y + other.height);
+        if (overlap_bottom > overlap_top) return true;
+    }
+    return false;
+}
+
+fn hasNeighborOnBottom(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
+    for (rects, 0..) |other, j| {
+        if (j == idx) continue;
+        if (r.y + r.height != other.y) continue;
+        const overlap_left = @max(r.x, other.x);
+        const overlap_right = @min(r.x + r.width, other.x + other.width);
+        if (overlap_right > overlap_left) return true;
+    }
+    return false;
+}
+
+fn computeContentInsets(
+    rects: []const layout.Rect,
+    idx: usize,
+    r: layout.Rect,
+    border: BorderMask,
+) ContentInsets {
     _ = rects;
     _ = idx;
+    _ = r;
+    return .{
+        .left = if (border.left) 1 else 0,
+        .top = if (border.top) 1 else 0,
+        .right = if (border.right) 1 else 0,
+        .bottom = if (border.bottom) 1 else 0,
+    };
+}
+
+fn computeBorderMask(rects: []const layout.Rect, idx: usize, r: layout.Rect, content: layout.Rect) BorderMask {
+    _ = content;
     return .{
         // Draw left/top for all panes; right/bottom only on container edge.
         // This keeps exactly one separator at shared boundaries.
         .left = true,
         .top = true,
-        .right = (r.x + r.width == content.x + content.width),
-        .bottom = (r.y + r.height == content.y + content.height),
+        // Close pane borders for ragged layouts when there is no adjacent pane.
+        .right = !hasNeighborOnRight(rects, idx, r),
+        .bottom = !hasNeighborOnBottom(rects, idx, r),
     };
 }
 

@@ -283,7 +283,7 @@ pub const Multiplexer = struct {
                 // but are not resized to an invalid 0x0 geometry.
                 continue;
             }
-            const inner = contentSizeForRect(r, screen);
+            const inner = contentSizeForRect(rects[0..n], i, r, screen);
             try p.resize(inner.rows, inner.cols);
             try self.markWindowDirty(w.id);
             resized += 1;
@@ -713,17 +713,40 @@ pub const Multiplexer = struct {
         return count;
     }
 
-    fn contentSizeForRect(r: layout.Rect, screen: layout.Rect) struct { rows: u16, cols: u16 } {
+    fn hasNeighborOnRight(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
+        for (rects, 0..) |other, j| {
+            if (j == idx) continue;
+            if (r.x + r.width != other.x) continue;
+            const overlap_top = @max(r.y, other.y);
+            const overlap_bottom = @min(r.y + r.height, other.y + other.height);
+            if (overlap_bottom > overlap_top) return true;
+        }
+        return false;
+    }
+
+    fn hasNeighborOnBottom(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
+        for (rects, 0..) |other, j| {
+            if (j == idx) continue;
+            if (r.y + r.height != other.y) continue;
+            const overlap_left = @max(r.x, other.x);
+            const overlap_right = @min(r.x + r.width, other.x + other.width);
+            if (overlap_right > overlap_left) return true;
+        }
+        return false;
+    }
+
+    fn contentSizeForRect(rects: []const layout.Rect, idx: usize, r: layout.Rect, screen: layout.Rect) struct { rows: u16, cols: u16 } {
         // Keep this consistent with renderer border policy:
-        // left/top border always drawn, right/bottom only on outer edge.
+        // left/top border always drawn, right/bottom drawn when no adjacent pane exists.
         if (r.width == 0 or r.height == 0) {
             return .{ .rows = 1, .cols = 1 };
         }
 
         const left_border: u16 = 1;
         const top_border: u16 = 1;
-        const right_border: u16 = if (r.x + r.width == screen.x + screen.width) 1 else 0;
-        const bottom_border: u16 = if (r.y + r.height == screen.y + screen.height) 1 else 0;
+        _ = screen;
+        const right_border: u16 = if (!hasNeighborOnRight(rects, idx, r)) 1 else 0;
+        const bottom_border: u16 = if (!hasNeighborOnBottom(rects, idx, r)) 1 else 0;
         const cols_sub = left_border + right_border;
         const rows_sub = top_border + bottom_border;
         const cols = if (r.width > cols_sub) r.width - cols_sub else 1;
