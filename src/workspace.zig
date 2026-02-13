@@ -91,10 +91,12 @@ pub const WorkspaceManager = struct {
     pub fn computeActiveLayout(self: *WorkspaceManager, screen: layout.Rect) ![]layout.Rect {
         const tab = try self.activeTab();
         const window_count: u16 = @intCast(tab.windows.items.len);
+        const focused_index: u16 = if (tab.focused_index) |i| @intCast(i) else 0;
         return self.layout_engine.compute(self.allocator, .{
             .layout = tab.layout_type,
             .screen = screen,
             .window_count = window_count,
+            .focused_index = focused_index,
             .master_count = tab.master_count,
             .master_ratio_permille = tab.master_ratio_permille,
             .gap = tab.gap,
@@ -187,6 +189,37 @@ pub const WorkspaceManager = struct {
         return tab.layout_type;
     }
 
+    pub fn setActiveLayout(self: *WorkspaceManager, layout_type: layout.LayoutType) !void {
+        const tab = try self.activeTab();
+        tab.layout_type = layout_type;
+    }
+
+    pub fn setActiveLayoutDefaults(
+        self: *WorkspaceManager,
+        layout_type: layout.LayoutType,
+        master_count: u16,
+        master_ratio_permille: u16,
+        gap: u16,
+    ) !void {
+        if (master_ratio_permille > 1000) return error.InvalidMasterRatio;
+        const tab = try self.activeTab();
+        tab.layout_type = layout_type;
+        tab.master_count = master_count;
+        tab.master_ratio_permille = master_ratio_permille;
+        tab.gap = gap;
+    }
+
+    pub fn cycleActiveLayout(self: *WorkspaceManager) !layout.LayoutType {
+        const tab = try self.activeTab();
+        tab.layout_type = switch (tab.layout_type) {
+            .vertical_stack => .horizontal_stack,
+            .horizontal_stack => .grid,
+            .grid => .fullscreen,
+            .fullscreen => .vertical_stack,
+        };
+        return tab.layout_type;
+    }
+
     pub fn activeMasterRatioPermille(self: *WorkspaceManager) !u16 {
         const tab = try self.activeTab();
         return tab.master_ratio_permille;
@@ -196,6 +229,28 @@ pub const WorkspaceManager = struct {
         if (ratio > 1000) return error.InvalidMasterRatio;
         const tab = try self.activeTab();
         tab.master_ratio_permille = ratio;
+    }
+
+    pub fn closeActiveTab(self: *WorkspaceManager, allocator: std.mem.Allocator) ![]u32 {
+        const idx = self.active_tab_index orelse return error.NoActiveTab;
+        if (self.tabs.items.len <= 1) return error.CannotCloseLastTab;
+
+        const tab = &self.tabs.items[idx];
+        var removed_ids = try allocator.alloc(u32, tab.windows.items.len);
+        for (tab.windows.items, 0..) |w, i| {
+            removed_ids[i] = w.id;
+        }
+
+        var removed = self.tabs.orderedRemove(idx);
+        removed.deinit(self.allocator);
+
+        if (idx >= self.tabs.items.len) {
+            self.active_tab_index = self.tabs.items.len - 1;
+        } else {
+            self.active_tab_index = idx;
+        }
+
+        return removed_ids;
     }
 };
 
@@ -254,4 +309,38 @@ test "workspace manager can set active master ratio" {
 
     try wm.setActiveMasterRatioPermille(700);
     try testing.expectEqual(@as(u16, 700), try wm.activeMasterRatioPermille());
+}
+
+test "workspace manager cycles active layout order" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var wm = WorkspaceManager.init(testing.allocator, engine);
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    try testing.expectEqual(layout.LayoutType.vertical_stack, try wm.activeLayoutType());
+    try testing.expectEqual(layout.LayoutType.horizontal_stack, try wm.cycleActiveLayout());
+    try testing.expectEqual(layout.LayoutType.grid, try wm.cycleActiveLayout());
+    try testing.expectEqual(layout.LayoutType.fullscreen, try wm.cycleActiveLayout());
+    try testing.expectEqual(layout.LayoutType.vertical_stack, try wm.cycleActiveLayout());
+}
+
+test "workspace manager closes active tab and keeps another active" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var wm = WorkspaceManager.init(testing.allocator, engine);
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    _ = try wm.createTab("ops");
+    _ = try wm.addWindowToActive("a");
+
+    const removed = try wm.closeActiveTab(testing.allocator);
+    defer testing.allocator.free(removed);
+
+    try testing.expectEqual(@as(usize, 1), removed.len);
+    try testing.expectEqual(@as(usize, 1), wm.tabCount());
+    try testing.expectEqual(@as(usize, 0), wm.activeTabIndex().?);
 }

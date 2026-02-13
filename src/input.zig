@@ -3,10 +3,14 @@ const std = @import("std");
 pub const Command = enum {
     create_window,
     close_window,
+    new_tab,
+    close_tab,
     next_tab,
     prev_tab,
+    move_window_next_tab,
     next_window,
     prev_window,
+    cycle_layout,
     detach,
 };
 
@@ -57,10 +61,14 @@ pub const Router = struct {
             return switch (b) {
                 'c' => .{ .command = .create_window },
                 'x' => .{ .command = .close_window },
+                't' => .{ .command = .new_tab },
+                'w' => .{ .command = .close_tab },
                 ']' => .{ .command = .next_tab },
                 '[' => .{ .command = .prev_tab },
+                'm' => .{ .command = .move_window_next_tab },
                 'j' => .{ .command = .next_window },
                 'k' => .{ .command = .prev_window },
+                ' ' => .{ .command = .cycle_layout },
                 '\\' => .{ .command = .detach },
                 else => .noop,
             };
@@ -169,6 +177,13 @@ test "input router parses prefixed command" {
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .create_window }, r.feedByte('c'));
+}
+
+test "input router parses layout cycle command" {
+    const testing = std.testing;
+    var r = Router{};
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .cycle_layout }, r.feedByte(' '));
 }
 
 test "input router emits csi sequence as one event" {

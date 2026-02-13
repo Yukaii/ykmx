@@ -491,21 +491,23 @@ Study dvtm's (~4000 lines of C):
 Implemented in repository:
 - `src/main.zig`: ghostty-vt POC render + workspace/layout POC output
 - `src/layout.zig`: layout interface/types (`LayoutEngine`, `LayoutParams`, `Rect`)
-- `src/layout_native.zig`: native vertical-stack implementation + unit tests
+- `src/layout_native.zig`: native layout implementations (vertical/horizontal/grid/fullscreen) + unit tests
 - `src/layout_opentui.zig`: OpenTUI adapter placeholder for backend wiring
 - `src/window.zig`: window model
-- `src/workspace.zig`: tab/workspace manager with window move between tabs
+- `src/workspace.zig`: tab/workspace manager with tab close/switch, window move between tabs, per-tab layout cycling
 - `src/pty.zig`: true PTY backend (`forkpty`), nonblocking master I/O, resize via `TIOCSWINSZ`, PTY tests
-- `src/multiplexer.zig`: window->PTY routing, poll loop, output buffer per window, routing + resize propagation tests
-- `src/input.zig`: prefix-key router (`Ctrl+G`) for command-vs-forwarded input decisions
+- `src/multiplexer.zig`: window->PTY routing, poll loop, output buffer per window, layout-cycle + tab/window command handling, routing + resize propagation tests
+- `src/input.zig`: prefix-key router (`Ctrl+G`) for command-vs-forwarded input decisions, layout/tab command parsing
 - `src/input.zig`: prefix router + ESC/CSI sequence parser + SGR mouse metadata extraction
+- `src/config.zig`: startup config loading + parser (`$XDG_CONFIG_HOME/ykwm/config[.zig]`, fallback `$HOME/.config/ykwm/config[.zig]`)
+- `src/status.zig`: tab bar + status line formatters (active-tab marker, layout/window/focus summary)
 - `src/zmx.zig`: ZMX environment/session detection (`$ZMX_SESSION`, `$ZMX_DIR`, `$XDG_RUNTIME_DIR/zmx`)
 - `src/zmx.zig`: ZMX environment/session detection + detach command execution helper (`zmx detach <session>`)
 - `src/zmx.zig`: ZMX attach command argv harness helper for attach flow validation
 - `src/signal.zig`: signal handler scaffold for `SIGWINCH`, `SIGHUP`, `SIGTERM` with drainable atomic flags
 - Multiplexer runtime tick behavior: `SIGWINCH` => resize + redraw hint, `SIGHUP`/`SIGTERM` => graceful PTY shutdown path
 - Dirty-window tracking and focused-window query APIs for renderer integration
-- Input command actions wired: create window, close focused window, next/prev tab, next/prev focused window, detach request flag
+- Input command actions wired: create/close window, create/close/switch tab, move focused window to next tab, layout cycle, next/prev focused window, detach request flag
 - Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
 - Mouse coordinate path wired for click-to-focus (layout rect hit-test -> focused window update)
 - Basic drag-to-resize support for vertical stack (divider hit-test + master ratio update + PTY resize propagation)
@@ -518,6 +520,7 @@ Validated locally:
 
 Next implementation focus:
 - Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
+- Build popup/floating window data model and input routing for modal overlays.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
@@ -529,16 +532,16 @@ Next implementation focus:
 - Better rendering
 
 **Deliverables:**
-- [ ] Horizontal stack layout
-- [ ] Grid layout
-- [ ] Fullscreen zoom
-- [ ] Window creation/closing
-- [ ] Tab/workspace create/close/switch
-- [ ] Move window across tabs
-- [ ] Tab bar in status line (name + active marker)
-- [ ] Configuration file support
-- [ ] Window titles
-- [ ] Status bar
+- [x] Horizontal stack layout
+- [x] Grid layout
+- [x] Fullscreen zoom
+- [x] Window creation/closing
+- [x] Tab/workspace create/close/switch
+- [x] Move window across tabs
+- [x] Tab bar in status line (name + active marker)
+- [x] Configuration file support
+- [x] Window titles
+- [x] Status bar
 
 **Testing:**
 - Create/close windows dynamically

@@ -128,6 +128,18 @@ pub const Multiplexer = struct {
                     .close_window => {
                         _ = try self.closeFocusedWindow();
                     },
+                    .new_tab => {
+                        const n = self.workspace_mgr.tabCount();
+                        var name_buf: [32]u8 = undefined;
+                        const name = try std.fmt.bufPrint(&name_buf, "tab-{d}", .{n + 1});
+                        const idx = try self.createTab(name);
+                        try self.switchTab(idx);
+                    },
+                    .close_tab => {
+                        self.closeActiveTab() catch |err| {
+                            if (err != error.CannotCloseLastTab) return err;
+                        };
+                    },
                     .next_tab => {
                         const n = self.workspace_mgr.tabCount();
                         if (n > 0) {
@@ -143,8 +155,23 @@ pub const Multiplexer = struct {
                             try self.switchTab(prev);
                         }
                     },
+                    .move_window_next_tab => {
+                        const n = self.workspace_mgr.tabCount();
+                        if (n > 1) {
+                            const current = self.workspace_mgr.activeTabIndex() orelse 0;
+                            const dst = (current + 1) % n;
+                            try self.workspace_mgr.moveFocusedWindowToTab(dst);
+                        }
+                    },
                     .next_window => try self.workspace_mgr.focusNextWindowActive(),
                     .prev_window => try self.workspace_mgr.focusPrevWindowActive(),
+                    .cycle_layout => {
+                        _ = try self.workspace_mgr.cycleActiveLayout();
+                        if (screen) |s| {
+                            _ = try self.resizeActiveWindowsToLayout(s);
+                        }
+                        _ = try self.markActiveWindowsDirty();
+                    },
                     .detach => {
                         self.detach_requested = true;
                     },
@@ -334,6 +361,19 @@ pub const Multiplexer = struct {
         _ = self.dirty_windows.fetchRemove(id);
 
         return id;
+    }
+
+    pub fn closeActiveTab(self: *Multiplexer) !void {
+        const removed_ids = try self.workspace_mgr.closeActiveTab(self.allocator);
+        defer self.allocator.free(removed_ids);
+
+        for (removed_ids) |id| {
+            if (self.ptys.getPtr(id)) |p| p.deinit();
+            _ = self.ptys.fetchRemove(id);
+            if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);
+            _ = self.stdout_buffers.fetchRemove(id);
+            _ = self.dirty_windows.fetchRemove(id);
+        }
     }
 
     fn markWindowDirty(self: *Multiplexer, window_id: u32) !void {
@@ -704,4 +744,43 @@ test "multiplexer reattach path marks active windows dirty and requests redraw" 
     const dirty = try mux.dirtyWindowIds(testing.allocator);
     defer testing.allocator.free(dirty);
     try testing.expectEqual(@as(usize, 2), dirty.len);
+}
+
+test "multiplexer layout cycle command updates active layout" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    try testing.expectEqual(layout.LayoutType.vertical_stack, try mux.workspace_mgr.activeLayoutType());
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, ' ' });
+    try testing.expectEqual(layout.LayoutType.horizontal_stack, try mux.workspace_mgr.activeLayoutType());
+}
+
+test "multiplexer close active tab removes tab windows from pty maps" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_a = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    const win_b = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    _ = try mux.createTab("ops");
+    try mux.switchTab(1);
+    const win_c = try mux.createCommandWindow("c", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    try mux.closeActiveTab();
+
+    try testing.expectEqual(@as(usize, 1), mux.workspace_mgr.tabCount());
+    try testing.expect(mux.ptys.contains(win_a));
+    try testing.expect(mux.ptys.contains(win_b));
+    try testing.expect(!mux.ptys.contains(win_c));
+    try testing.expect(!mux.stdout_buffers.contains(win_c));
 }

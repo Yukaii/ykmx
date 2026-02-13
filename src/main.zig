@@ -1,10 +1,14 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
+const layout = @import("layout.zig");
 const layout_native = @import("layout_native.zig");
+const layout_opentui = @import("layout_opentui.zig");
 const multiplexer = @import("multiplexer.zig");
 const signal_mod = @import("signal.zig");
 const workspace = @import("workspace.zig");
 const zmx = @import("zmx.zig");
+const config = @import("config.zig");
+const status = @import("status.zig");
 
 const Terminal = ghostty_vt.Terminal;
 
@@ -15,6 +19,9 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
+
+    var cfg = try config.load(alloc);
+    defer cfg.deinit(alloc);
 
     signal_mod.installHandlers();
     var zmx_env = try zmx.detect(alloc);
@@ -61,10 +68,18 @@ pub fn main() !void {
     try out.print("right cursor: x={} y={}\n\n", .{ right.screens.active.cursor.x, right.screens.active.cursor.y });
 
     try printZmxAndSignalPOC(out, zmx_env);
-    try printWorkspacePOC(out, alloc);
-    try printMultiplexerPOC(out, alloc, &zmx_env);
+    try printConfigPOC(out, cfg);
+    try printWorkspacePOC(out, alloc, cfg);
+    try printMultiplexerPOC(out, alloc, cfg, &zmx_env);
     try renderSideBySide(out, &left, &right);
     try out.flush();
+}
+
+fn pickLayoutEngine(backend: config.LayoutBackend) layout.LayoutEngine {
+    return switch (backend) {
+        .native => layout_native.NativeLayoutEngine.init(),
+        .opentui => layout_opentui.OpenTUILayoutEngine.init(),
+    };
 }
 
 fn printZmxAndSignalPOC(writer: *std.Io.Writer, env: zmx.Env) !void {
@@ -80,12 +95,21 @@ fn printZmxAndSignalPOC(writer: *std.Io.Writer, env: zmx.Env) !void {
     );
 }
 
-fn printWorkspacePOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
-    var wm = workspace.WorkspaceManager.init(alloc, layout_native.NativeLayoutEngine.init());
+fn printConfigPOC(writer: *std.Io.Writer, cfg: config.Config) !void {
+    try writer.writeAll("config(startup):\n");
+    try writer.print("  source={s}\n", .{cfg.source_path orelse "(defaults)"});
+    try writer.print("  backend={s}\n", .{@tagName(cfg.layout_backend)});
+    try writer.print("  default_layout={s}\n", .{@tagName(cfg.default_layout)});
+    try writer.print("  plugins_enabled={}\n\n", .{cfg.plugins_enabled});
+}
+
+fn printWorkspacePOC(writer: *std.Io.Writer, alloc: std.mem.Allocator, cfg: config.Config) !void {
+    var wm = workspace.WorkspaceManager.init(alloc, pickLayoutEngine(cfg.layout_backend));
     defer wm.deinit();
 
     _ = try wm.createTab("dev");
     _ = try wm.createTab("ops");
+    try wm.setActiveLayoutDefaults(cfg.default_layout, cfg.master_count, cfg.master_ratio_permille, cfg.gap);
 
     _ = try wm.addWindowToActive("shell-1");
     _ = try wm.addWindowToActive("shell-2");
@@ -109,14 +133,27 @@ fn printWorkspacePOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
     for (ops_rects, 0..) |r, i| {
         try writer.print("  pane {}: x={} y={} w={} h={}\n", .{ i, r.x, r.y, r.width, r.height });
     }
+    const rendered = try status.render(alloc, &wm);
+    defer {
+        var tmp = rendered;
+        tmp.deinit(alloc);
+    }
+    try writer.print("  tabs: {s}\n", .{rendered.tab_bar});
+    try writer.print("  status: {s}\n", .{rendered.status_bar});
     try writer.writeByte('\n');
 }
 
-fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator, zmx_env: *const zmx.Env) !void {
-    var mux = multiplexer.Multiplexer.init(alloc, layout_native.NativeLayoutEngine.init());
+fn printMultiplexerPOC(
+    writer: *std.Io.Writer,
+    alloc: std.mem.Allocator,
+    cfg: config.Config,
+    zmx_env: *const zmx.Env,
+) !void {
+    var mux = multiplexer.Multiplexer.init(alloc, pickLayoutEngine(cfg.layout_backend));
     defer mux.deinit();
 
     _ = try mux.createTab("dev");
+    try mux.workspace_mgr.setActiveLayoutDefaults(cfg.default_layout, cfg.master_count, cfg.master_ratio_permille, cfg.gap);
     const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
     const resized = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
     const reattach = try mux.handleReattach(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
