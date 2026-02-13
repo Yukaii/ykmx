@@ -258,14 +258,16 @@ const RuntimeTerminal = struct {
             _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &raw);
         }
 
-        // Enter alternate screen, disable autowrap for compositor draws, hide cursor.
-        _ = c.write(c.STDOUT_FILENO, "\x1b[?1049h\x1b[?7l\x1b[?25l", 20);
+        // Enter alternate screen, enable mouse reporting (click/drag/all-motion + SGR), disable autowrap, hide cursor.
+        const enter_seq = "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[?25l";
+        _ = c.write(c.STDOUT_FILENO, enter_seq, enter_seq.len);
         return rt;
     }
 
     fn leave(self: *RuntimeTerminal) void {
-        // Restore autowrap, show cursor, leave alternate screen.
-        _ = c.write(c.STDOUT_FILENO, "\x1b[?7h\x1b[?25h\x1b[?1049l", 20);
+        // Disable mouse reporting, restore autowrap, show cursor, leave alternate screen.
+        const leave_seq = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?7h\x1b[?25h\x1b[?1049l";
+        _ = c.write(c.STDOUT_FILENO, leave_seq, leave_seq.len);
         if (self.had_termios) {
             _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &self.original_termios);
         }

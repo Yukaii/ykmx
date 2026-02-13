@@ -163,19 +163,28 @@ pub const Multiplexer = struct {
                     }
                 },
                 .forward_sequence => |seq| {
+                    var consumed_mouse = false;
                     if (screen) |s| {
-                        try self.handleMouseFromEvent(s, seq.mouse);
+                        if (seq.mouse != null) {
+                            consumed_mouse = true;
+                            self.handleMouseFromEvent(s, seq.mouse) catch |err| switch (err) {
+                                error.OutOfMemory => return err,
+                                else => {},
+                            };
+                        }
                     }
-                    if (self.popup_mgr.hasModalOpen()) {
-                        self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
-                            error.NoFocusedPopup, error.UnknownWindow => {},
-                            else => return err,
-                        };
-                    } else {
-                        self.sendInputToFocused(seq.slice()) catch |err| switch (err) {
-                            error.NoFocusedWindow, error.UnknownWindow => {},
-                            else => return err,
-                        };
+                    if (!consumed_mouse) {
+                        if (self.popup_mgr.hasModalOpen()) {
+                            self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
+                                error.NoFocusedPopup, error.UnknownWindow => {},
+                                else => return err,
+                            };
+                        } else {
+                            self.sendInputToFocused(seq.slice()) catch |err| switch (err) {
+                                error.NoFocusedWindow, error.UnknownWindow => {},
+                                else => return err,
+                            };
+                        }
                     }
                     if (seq.mouse) |mouse| self.last_mouse_event = mouse;
                 },
@@ -238,13 +247,23 @@ pub const Multiplexer = struct {
                             try self.workspace_mgr.moveFocusedWindowToTab(dst);
                         }
                     },
-                    .next_window => try self.workspace_mgr.focusNextWindowActive(),
-                    .prev_window => try self.workspace_mgr.focusPrevWindowActive(),
+                    .next_window => {
+                        try self.workspace_mgr.focusNextWindowActive();
+                        _ = try self.markActiveWindowsDirty();
+                        self.requestRedraw();
+                    },
+                    .prev_window => {
+                        try self.workspace_mgr.focusPrevWindowActive();
+                        _ = try self.markActiveWindowsDirty();
+                        self.requestRedraw();
+                    },
                     .focus_left => {
                         if (screen) |s| {
                             try self.focusDirectional(s, .left);
                         } else {
                             try self.workspace_mgr.focusPrevWindowActive();
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
                         }
                     },
                     .focus_down => {
@@ -252,6 +271,8 @@ pub const Multiplexer = struct {
                             try self.focusDirectional(s, .down);
                         } else {
                             try self.workspace_mgr.focusNextWindowActive();
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
                         }
                     },
                     .focus_up => {
@@ -259,6 +280,8 @@ pub const Multiplexer = struct {
                             try self.focusDirectional(s, .up);
                         } else {
                             try self.workspace_mgr.focusPrevWindowActive();
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
                         }
                     },
                     .focus_right => {
@@ -266,6 +289,8 @@ pub const Multiplexer = struct {
                             try self.focusDirectional(s, .right);
                         } else {
                             try self.workspace_mgr.focusNextWindowActive();
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
                         }
                     },
                     .cycle_layout => {
@@ -745,7 +770,7 @@ pub const Multiplexer = struct {
         }
 
         const motion = (mouse.button & 32) != 0;
-        if (self.drag_state.resizing_master and motion) {
+        if (self.drag_state.resizing_master and (motion or mouse.button == 0)) {
             try self.applyDragResize(screen, px);
             return;
         }
@@ -772,6 +797,7 @@ pub const Multiplexer = struct {
             if (self.topmostPopupAt(px, py)) |popup_id| {
                 if (self.popup_mgr.focusAndRaise(popup_id)) {
                     if (self.popup_mgr.focusedWindowId()) |wid| try self.markWindowDirty(wid);
+                    self.requestRedraw();
                     return;
                 }
             }
@@ -793,6 +819,7 @@ pub const Multiplexer = struct {
 
             try self.workspace_mgr.setFocusedWindowIndexActive(i);
             try self.markWindowDirty(tab.windows.items[i].id);
+            self.requestRedraw();
             return;
         }
     }
@@ -836,7 +863,8 @@ pub const Multiplexer = struct {
         const ratio_u32 = (@as(u32, local_x) * 1000) / @as(u32, screen.width);
         const clamped: u16 = @intCast(@max(@as(u32, 100), @min(@as(u32, 900), ratio_u32)));
         try self.workspace_mgr.setActiveMasterRatioPermille(clamped);
-        _ = try self.resizeActiveWindowsToLayout(screen);
+        _ = self.resizeActiveWindowsToLayout(screen) catch 0;
+        self.requestRedraw();
     }
 
     fn focusDirectional(
@@ -892,6 +920,7 @@ pub const Multiplexer = struct {
         if (best_idx) |idx| {
             try self.workspace_mgr.setFocusedWindowIndexActive(idx);
             _ = try self.markActiveWindowsDirty();
+            self.requestRedraw();
         }
     }
 
@@ -1284,7 +1313,7 @@ test "multiplexer tick surfaces detach request" {
     try testing.expect(!mux.consumeDetachRequested());
 }
 
-test "multiplexer forwards csi sequence and captures mouse metadata" {
+test "multiplexer captures mouse metadata without forwarding to pane" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
 
@@ -1296,16 +1325,8 @@ test "multiplexer forwards csi sequence and captures mouse metadata" {
 
     try mux.handleInputBytes("\x1b[<0;3;4M");
 
-    var tries: usize = 0;
-    while (tries < 40) : (tries += 1) {
-        _ = try mux.pollOnce(30);
-        const out = try mux.windowOutput(win_id);
-        if (std.mem.indexOf(u8, out, "\x1b[<0;3;4M") != null) break;
-        std.Thread.sleep(20 * std.time.ns_per_ms);
-    }
-
     const out = try mux.windowOutput(win_id);
-    try testing.expect(std.mem.indexOf(u8, out, "\x1b[<0;3;4M") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\x1b[<0;3;4M") == null);
 
     const mouse = mux.consumeLastMouseEvent() orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(u16, 0), mouse.button);
@@ -1332,7 +1353,7 @@ test "multiplexer click-to-focus selects pane by mouse coordinates" {
     try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
 }
 
-test "multiplexer click forwards mouse sequence to newly focused pane" {
+test "multiplexer click focuses pane without forwarding mouse sequence" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
 
@@ -1346,18 +1367,10 @@ test "multiplexer click forwards mouse sequence to newly focused pane" {
     const click = "\x1b[<0;70;5M";
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, click);
 
-    var tries: usize = 0;
-    while (tries < 40) : (tries += 1) {
-        _ = try mux.pollOnce(20);
-        const right_out = try mux.windowOutput(right_id);
-        if (std.mem.indexOf(u8, right_out, click) != null) break;
-        std.Thread.sleep(10 * std.time.ns_per_ms);
-    }
-
     const left_out = try mux.windowOutput(left_id);
     const right_out = try mux.windowOutput(right_id);
 
-    try testing.expect(std.mem.indexOf(u8, right_out, click) != null);
+    try testing.expect(std.mem.indexOf(u8, right_out, click) == null);
     try testing.expect(std.mem.indexOf(u8, left_out, click) == null);
 }
 
@@ -1384,6 +1397,47 @@ test "multiplexer drag-resize updates master ratio for vertical stack" {
     const after = try mux.workspace_mgr.activeMasterRatioPermille();
     try testing.expect(after != before);
     try testing.expect(after > before);
+}
+
+test "multiplexer drag-resize burst does not error" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("left", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("right", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;49;5M");
+    var x: usize = 20;
+    while (x < 75) : (x += 1) {
+        var seq_buf: [32]u8 = undefined;
+        const seq = try std.fmt.bufPrint(&seq_buf, "\x1b[<32;{};5M", .{x});
+        try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
+    }
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;70;5m");
+}
+
+test "multiplexer focus command requests redraw immediately" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, 'J' });
+    const t = try mux.tick(0, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+        .sigwinch = false,
+        .sighup = false,
+        .sigterm = false,
+    });
+    try testing.expect(t.redraw);
 }
 
 test "multiplexer reattach path marks active windows dirty and requests redraw" {
