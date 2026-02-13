@@ -62,7 +62,7 @@ pub fn main() !void {
 
     try printZmxAndSignalPOC(out, zmx_env);
     try printWorkspacePOC(out, alloc);
-    try printMultiplexerPOC(out, alloc);
+    try printMultiplexerPOC(out, alloc, &zmx_env);
     try renderSideBySide(out, &left, &right);
     try out.flush();
 }
@@ -112,7 +112,7 @@ fn printWorkspacePOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
     try writer.writeByte('\n');
 }
 
-fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
+fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator, zmx_env: *const zmx.Env) !void {
     var mux = multiplexer.Multiplexer.init(alloc, layout_native.NativeLayoutEngine.init());
     defer mux.deinit();
 
@@ -120,6 +120,8 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
     const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
     const resized = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
     try mux.handleInputBytes("hello-from-input-layer\n");
+    var detach_invoked = false;
+    var detach_ok = false;
 
     var tries: usize = 0;
     while (tries < 20) : (tries += 1) {
@@ -128,6 +130,10 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
             .sighup = false,
             .sigterm = false,
         });
+        if (tick_result.detach_requested) {
+            detach_invoked = true;
+            detach_ok = zmx_env.detachCurrentSession(alloc) catch false;
+        }
         const out = try mux.windowOutput(win_id);
         if (std.mem.indexOf(u8, out, "hello-from-input-layer") != null) break;
         if (tick_result.should_shutdown) break;
@@ -143,6 +149,7 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
     try writer.print("  resized_windows={}\n", .{resized});
     try writer.print("  focused_window={}\n", .{focused});
     try writer.print("  dirty_windows={}\n", .{dirty.len});
+    try writer.print("  detach_invoked={} detach_ok={}\n", .{ detach_invoked, detach_ok });
     if (out.len > 0) {
         try writer.print("  sample: {s}", .{out});
     }

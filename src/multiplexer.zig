@@ -13,12 +13,14 @@ pub const Multiplexer = struct {
     dirty_windows: std.AutoHashMapUnmanaged(u32, void) = .{},
     input_router: input_mod.Router = .{},
     detach_requested: bool = false,
+    last_mouse_event: ?input_mod.MouseEvent = null,
 
     pub const TickResult = struct {
         reads: usize,
         resized: usize,
         redraw: bool,
         should_shutdown: bool,
+        detach_requested: bool,
     };
 
     pub fn init(allocator: std.mem.Allocator, layout_engine: layout.LayoutEngine) Multiplexer {
@@ -92,6 +94,10 @@ pub const Multiplexer = struct {
                 .forward => |c| {
                     var tmp = [_]u8{c};
                     try self.sendInputToFocused(&tmp);
+                },
+                .forward_sequence => |seq| {
+                    try self.sendInputToFocused(seq.slice());
+                    if (seq.mouse) |mouse| self.last_mouse_event = mouse;
                 },
                 .command => |cmd| switch (cmd) {
                     .create_window => {
@@ -231,12 +237,20 @@ pub const Multiplexer = struct {
         return value;
     }
 
+    pub fn consumeLastMouseEvent(self: *Multiplexer) ?input_mod.MouseEvent {
+        const value = self.last_mouse_event;
+        self.last_mouse_event = null;
+        return value;
+    }
+
     pub fn tick(
         self: *Multiplexer,
         timeout_ms: i32,
         screen: layout.Rect,
         signals: signal_mod.Snapshot,
     ) !TickResult {
+        const detach_requested = self.consumeDetachRequested();
+
         if (signals.sighup or signals.sigterm) {
             try self.gracefulShutdown();
             return .{
@@ -244,6 +258,7 @@ pub const Multiplexer = struct {
                 .resized = 0,
                 .redraw = false,
                 .should_shutdown = true,
+                .detach_requested = detach_requested,
             };
         }
 
@@ -262,6 +277,7 @@ pub const Multiplexer = struct {
             .resized = resized,
             .redraw = redraw,
             .should_shutdown = false,
+            .detach_requested = detach_requested,
         };
     }
 
@@ -412,6 +428,7 @@ test "multiplexer tick handles sigterm shutdown" {
 
     try testing.expect(result.should_shutdown);
     try testing.expectEqual(@as(usize, 0), mux.ptys.count());
+    try testing.expect(!result.detach_requested);
 }
 
 test "multiplexer close focused window command cleans up maps" {
@@ -445,4 +462,54 @@ test "multiplexer detach command toggles detach request flag" {
     try mux.handleInputBytes(&.{ 0x07, '\\' });
     try testing.expect(mux.consumeDetachRequested());
     try testing.expect(!mux.consumeDetachRequested());
+}
+
+test "multiplexer tick surfaces detach request" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    try mux.handleInputBytes(&.{ 0x07, '\\' });
+
+    const result = try mux.tick(0, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+        .sigwinch = false,
+        .sighup = false,
+        .sigterm = false,
+    });
+
+    try testing.expect(result.detach_requested);
+    try testing.expect(!mux.consumeDetachRequested());
+}
+
+test "multiplexer forwards csi sequence and captures mouse metadata" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+
+    try mux.handleInputBytes("\x1b[<0;3;4M");
+
+    var tries: usize = 0;
+    while (tries < 40) : (tries += 1) {
+        _ = try mux.pollOnce(30);
+        const out = try mux.windowOutput(win_id);
+        if (std.mem.indexOf(u8, out, "\x1b[<0;3;4M") != null) break;
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+
+    const out = try mux.windowOutput(win_id);
+    try testing.expect(std.mem.indexOf(u8, out, "\x1b[<0;3;4M") != null);
+
+    const mouse = mux.consumeLastMouseEvent() orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u16, 0), mouse.button);
+    try testing.expectEqual(@as(u16, 3), mouse.x);
+    try testing.expectEqual(@as(u16, 4), mouse.y);
+    try testing.expect(mouse.pressed);
 }

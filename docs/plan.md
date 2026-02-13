@@ -498,11 +498,14 @@ Implemented in repository:
 - `src/pty.zig`: true PTY backend (`forkpty`), nonblocking master I/O, resize via `TIOCSWINSZ`, PTY tests
 - `src/multiplexer.zig`: window->PTY routing, poll loop, output buffer per window, routing + resize propagation tests
 - `src/input.zig`: prefix-key router (`Ctrl+G`) for command-vs-forwarded input decisions
+- `src/input.zig`: prefix router + ESC/CSI sequence parser + SGR mouse metadata extraction
 - `src/zmx.zig`: ZMX environment/session detection (`$ZMX_SESSION`, `$ZMX_DIR`, `$XDG_RUNTIME_DIR/zmx`)
+- `src/zmx.zig`: ZMX environment/session detection + detach command execution helper (`zmx detach <session>`)
 - `src/signal.zig`: signal handler scaffold for `SIGWINCH`, `SIGHUP`, `SIGTERM` with drainable atomic flags
 - Multiplexer runtime tick behavior: `SIGWINCH` => resize + redraw hint, `SIGHUP`/`SIGTERM` => graceful PTY shutdown path
 - Dirty-window tracking and focused-window query APIs for renderer integration
 - Input command actions wired: create window, close focused window, next/prev tab, next/prev focused window, detach request flag
+- Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
 - `build.zig`: `run` and `test` steps wired
 
 Validated locally:
@@ -510,9 +513,9 @@ Validated locally:
 - `zig build run` passes
 
 Next implementation focus:
-- Expand input routing from byte-level to full key/mouse event parsing (including escape sequence handling and mouse coordinates).
 - Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
-- Add detach behavior integration with actual zmx detach command path (currently detach is an internal request flag).
+- Use parsed mouse coordinates for click-to-focus and optional drag-to-resize behavior.
+- Add attach/reattach validation harness and explicit redraw-on-reattach path tests.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
