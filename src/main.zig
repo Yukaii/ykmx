@@ -98,6 +98,7 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
 
     _ = try mux.createTab("dev");
     const win_id = try mux.createCommandWindow("cmd", &.{ "/bin/sh", "-c", "printf 'hello-from-multiplexer\\n'" });
+    const resized = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
 
     var tries: usize = 0;
     while (tries < 20) : (tries += 1) {
@@ -110,6 +111,7 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
     const out = try mux.windowOutput(win_id);
     try writer.writeAll("multiplexer(poll-route):\n");
     try writer.print("  win {} bytes={}\n", .{ win_id, out.len });
+    try writer.print("  resized_windows={}\n", .{resized});
     if (out.len > 0) {
         try writer.print("  sample: {s}", .{out});
     }

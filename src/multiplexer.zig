@@ -66,6 +66,26 @@ pub const Multiplexer = struct {
         return self.workspace_mgr.computeActiveLayout(screen);
     }
 
+    pub fn resizeActiveWindowsToLayout(self: *Multiplexer, screen: layout.Rect) !usize {
+        const rects = try self.computeActiveLayout(screen);
+        defer self.allocator.free(rects);
+
+        const tab = try self.workspace_mgr.activeTab();
+        var resized: usize = 0;
+
+        const n = @min(tab.windows.items.len, rects.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const w = tab.windows.items[i];
+            const p = self.ptys.getPtr(w.id) orelse continue;
+            const r = rects[i];
+            try p.resize(r.height, r.width);
+            resized += 1;
+        }
+
+        return resized;
+    }
+
     pub fn pollOnce(self: *Multiplexer, timeout_ms: i32) !usize {
         var pollfds: std.ArrayListUnmanaged(posixPollFd()) = .{};
         defer pollfds.deinit(self.allocator);
@@ -146,4 +166,19 @@ test "multiplexer routes command output to the owning window" {
 
     const out = try mux.windowOutput(win_id);
     try testing.expect(std.mem.indexOf(u8, out, "mux-ok") != null);
+}
+
+test "multiplexer propagates active layout size to ptys" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const resized = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 80, .height = 24 });
+    try testing.expectEqual(@as(usize, 2), resized);
 }

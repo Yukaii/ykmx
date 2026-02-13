@@ -1,8 +1,19 @@
 const std = @import("std");
 const posix = std.posix;
+const builtin = @import("builtin");
+
+const c = @cImport({
+    @cInclude("util.h");
+    @cInclude("unistd.h");
+    @cInclude("signal.h");
+    @cInclude("sys/ioctl.h");
+});
 
 pub const Pty = struct {
-    child: std.process.Child,
+    allocator: std.mem.Allocator,
+    pid: posix.pid_t,
+    master: std.fs.File,
+    exited: bool = false,
 
     pub fn spawnShell(allocator: std.mem.Allocator) !Pty {
         const shell_owned = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
@@ -14,74 +25,107 @@ pub const Pty = struct {
     }
 
     pub fn spawnCommand(allocator: std.mem.Allocator, argv: []const []const u8) !Pty {
+        if (builtin.os.tag == .windows) return error.UnsupportedPlatform;
         if (argv.len == 0) return error.EmptyArgv;
 
-        var child = std.process.Child.init(argv, allocator);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
+        var c_argv = try allocator.alloc(?[*:0]u8, argv.len + 1);
+        defer allocator.free(c_argv);
 
-        try child.spawn();
+        for (argv, 0..) |arg, i| {
+            c_argv[i] = try allocator.dupeZ(u8, arg);
+        }
+        c_argv[argv.len] = null;
+        defer {
+            for (c_argv[0..argv.len]) |maybe| {
+                if (maybe) |z| allocator.free(std.mem.sliceTo(z, 0));
+            }
+        }
 
-        if (child.stdout) |*out| try setNonBlocking(out.handle);
-        if (child.stderr) |*err_out| try setNonBlocking(err_out.handle);
+        var ws: c.struct_winsize = .{
+            .ws_row = 24,
+            .ws_col = 80,
+            .ws_xpixel = 0,
+            .ws_ypixel = 0,
+        };
 
-        return .{ .child = child };
+        var master_fd: c_int = -1;
+        const pid_raw = c.forkpty(&master_fd, null, null, &ws);
+        if (pid_raw < 0) return error.ForkPtyFailed;
+
+        if (pid_raw == 0) {
+            _ = c.execvp(c_argv[0].?, @ptrCast(c_argv.ptr));
+            c._exit(127);
+        }
+
+        const master_file: std.fs.File = .{ .handle = @intCast(master_fd) };
+        try setNonBlocking(master_file.handle);
+
+        return .{
+            .allocator = allocator,
+            .pid = @intCast(pid_raw),
+            .master = master_file,
+            .exited = false,
+        };
     }
 
     pub fn stdinFile(self: *Pty) ?*std.fs.File {
-        if (self.child.stdin) |*f| return f;
-        return null;
+        return &self.master;
     }
 
     pub fn stdoutFile(self: *Pty) ?*std.fs.File {
-        if (self.child.stdout) |*f| return f;
-        return null;
+        return &self.master;
     }
 
-    pub fn stderrFile(self: *Pty) ?*std.fs.File {
-        if (self.child.stderr) |*f| return f;
+    pub fn stderrFile(_: *Pty) ?*std.fs.File {
         return null;
     }
 
     pub fn write(self: *Pty, bytes: []const u8) !void {
-        const stdin_file = self.stdinFile() orelse return error.ChildStdinUnavailable;
-        try stdin_file.writeAll(bytes);
+        try self.master.writeAll(bytes);
     }
 
     pub fn readStdout(self: *Pty, buf: []u8) !usize {
-        const out = self.stdoutFile() orelse return error.ChildStdoutUnavailable;
-        return out.read(buf) catch |err| switch (err) {
+        return self.master.read(buf) catch |err| switch (err) {
             error.WouldBlock => 0,
             else => err,
         };
     }
 
-    pub fn readStderr(self: *Pty, buf: []u8) !usize {
-        const err_out = self.stderrFile() orelse return error.ChildStderrUnavailable;
-        return err_out.read(buf) catch |err| switch (err) {
-            error.WouldBlock => 0,
-            else => err,
+    pub fn readStderr(_: *Pty, _: []u8) !usize {
+        return 0;
+    }
+
+    pub fn resize(self: *Pty, rows: u16, cols: u16) !void {
+        var ws: c.struct_winsize = .{
+            .ws_row = @intCast(rows),
+            .ws_col = @intCast(cols),
+            .ws_xpixel = 0,
+            .ws_ypixel = 0,
         };
+
+        if (c.ioctl(self.master.handle, c.TIOCSWINSZ, &ws) != 0) {
+            return error.IoctlFailed;
+        }
     }
 
     pub fn terminate(self: *Pty) !void {
-        if (self.child.term != null) return;
-        _ = try self.child.kill();
+        if (self.exited) return;
+        try posix.kill(self.pid, posix.SIG.TERM);
     }
 
-    pub fn wait(self: *Pty) !std.process.Child.Term {
-        return self.child.wait();
+    pub fn wait(self: *Pty) !u32 {
+        if (self.exited) return 0;
+        const result = posix.waitpid(self.pid, 0);
+        self.exited = true;
+        return result.status;
     }
 
     pub fn deinit(self: *Pty) void {
-        if (self.child.term == null) {
-            _ = self.child.kill() catch {};
-            _ = self.child.wait() catch {};
-        } else {
-            _ = self.child.wait() catch {};
+        if (!self.exited) {
+            _ = posix.kill(self.pid, posix.SIG.TERM) catch {};
+            _ = self.wait() catch {};
         }
-
+        self.master.close();
         self.* = undefined;
     }
 
@@ -99,11 +143,11 @@ test "pty captures command stdout" {
     var p = try Pty.spawnCommand(testing.allocator, &.{ "/bin/sh", "-c", "printf 'hello-from-pty\\n'" });
     defer p.deinit();
 
-    var got: [128]u8 = undefined;
+    var got: [256]u8 = undefined;
     var total: usize = 0;
 
     var attempts: usize = 0;
-    while (attempts < 20) : (attempts += 1) {
+    while (attempts < 40) : (attempts += 1) {
         const n = try p.readStdout(got[total..]);
         total += n;
         if (std.mem.indexOf(u8, got[0..total], "hello-from-pty") != null) break;
@@ -111,4 +155,13 @@ test "pty captures command stdout" {
     }
 
     try testing.expect(std.mem.indexOf(u8, got[0..total], "hello-from-pty") != null);
+}
+
+test "pty resize ioctl path succeeds" {
+    const testing = std.testing;
+
+    var p = try Pty.spawnCommand(testing.allocator, &.{ "/bin/sh", "-c", "sleep 0.1" });
+    defer p.deinit();
+
+    try p.resize(30, 100);
 }
