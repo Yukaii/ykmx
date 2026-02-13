@@ -201,26 +201,90 @@ const Layout = struct {
 
 ### Rendering Pipeline
 
-1. **Layout Calculation:**
-   - Calculate positions for all windows based on current layout
-   - Handle floating windows (popups) with z-index sorting
-   - Account for gaps and borders
+**Overview:**
 
-2. **VT State Update:**
-   - Read output from each PTY
-   - Update terminal state in ghostty-vt
-   - Capture scrollback
+Each window owns a `ghostty_vt.Terminal` instance. PTY output is fed into the VT
+instance via `vtStream().nextSlice()`. The renderer reads cell data from each VT
+instance's active screen and composites them into a single output stream written
+to stdout.
 
-3. **Screen Composition:**
-   - Render each window to its allocated region
-   - Apply scroll offsets
-   - Overlay popups on top
-   - Draw borders and decorations
+**1. Layout Calculation:**
+- Calculate `Rect` (row, col, width, height) for each window based on current layout
+- Sort floating windows (popups) by z-index
+- Account for gaps and borders (1-cell borders, configurable gaps)
 
-4. **Output:**
-   - Generate terminal escape sequences
-   - Send to stdout
-   - Handle terminal resize events
+**2. VT State Update:**
+- `poll()` all PTY file descriptors for readable data
+- For each PTY with data: read into buffer, feed via `vt_stream.nextSlice(buf[0..n])`
+- Each VT instance independently tracks cursor, scrollback, alternate screen, etc.
+- Mark windows with new data as "dirty" for rendering
+
+**3. Screen Composition (cell-by-cell):**
+
+```
+For each frame:
+  1. Allocate a screen buffer: cells[total_rows][total_cols]
+  2. For each tiled window (back to front):
+     - For each row in window.layout.height:
+       - For each col in window.layout.width:
+         - Read cell from window.vt.screens.active at (col, row + scroll_offset)
+         - Write cell to screen buffer at (window.layout.x + col, window.layout.y + row)
+  3. Draw borders between windows (box-drawing characters)
+  4. For each popup (sorted by z_index, low to high):
+     - Same cell-by-cell copy, overwriting screen buffer
+     - Draw popup border/shadow
+  5. Diff against previous frame's screen buffer
+  6. Emit only changed cells as escape sequences
+```
+
+**Cell Representation:**
+```zig
+const Cell = struct {
+    char: u21,              // Unicode codepoint (or 0 for empty)
+    fg: Color,              // Foreground color (indexed, RGB, or default)
+    bg: Color,              // Background color
+    flags: StyleFlags,      // Bold, italic, underline, etc.
+    wide: bool,             // Part of a wide character
+};
+```
+
+**4. Diff-Based Output:**
+
+Rather than redrawing the entire screen every frame, maintain a `prev_buffer` and
+`curr_buffer`. On each frame:
+- Compare cell-by-cell between prev and curr
+- For contiguous runs of changed cells, emit:
+  - `CSI row;col H` (cursor position)
+  - `CSI 38;2;r;g;b m` (fg color) / `CSI 48;2;r;g;b m` (bg color) as needed
+  - Character data
+- Swap prev/curr buffers
+- This keeps output minimal and avoids flicker
+
+**5. Cursor Handling:**
+- Only one window has focus; only that window's cursor is visible
+- After compositing, position the real terminal cursor at the focused window's
+  cursor position (translated to absolute screen coordinates)
+- Hide cursor during rendering (`CSI ?25l`), show after (`CSI ?25h`)
+
+**6. Performance Targets:**
+- Frame budget: <16ms (60fps) for smooth interaction
+- Only re-render when at least one window is dirty (PTY output or user input)
+- Batch PTY reads: drain all available data per poll cycle before rendering
+- Coalesce rapid updates: if multiple PTY reads happen within one poll cycle,
+  only render once
+
+**Alternate Screen Handling:**
+- Programs like vim/less use the alternate screen buffer
+- `ghostty_vt.Terminal` tracks this automatically via `screens.active`
+- When a window switches to alternate screen, its scrollback is preserved
+  in the primary screen; rendering reads from whichever screen is active
+
+**Terminal Resize:**
+- On SIGWINCH: get new terminal size, recalculate all layouts
+- For each window: call `term.resize(alloc, new_cols, new_rows)` with the
+  window's new dimensions (not the full terminal size)
+- Send `TIOCSWINSZ` ioctl to each child PTY with its new dimensions
+- Re-render full frame (mark all windows dirty)
 
 ### Input Handling
 
@@ -241,19 +305,78 @@ const Layout = struct {
 
 **Goal:** Seamless integration with zmx for session persistence
 
+**How zmx Works (key insight from source):**
+
+zmx's ghostty-vt instance sits **outside** the active data path. The daemon
+reads PTY output, sends it to all connected clients, and **also** feeds it to
+a ghostty-vt `Terminal` via `vtStream().nextSlice()`. The VT instance is only
+used for state snapshots when a client reconnects — it does not sit between
+the PTY and the client during normal operation.
+
+```
+zmx daemon architecture:
+  PTY output ──┬──► client sockets (live data)
+               └──► ghostty-vt Terminal (state tracking for reconnect)
+```
+
+**VT Instance Architecture (N+1 model):**
+
+When ykwm runs inside zmx, there are N+1 ghostty-vt instances:
+- **1 instance in zmx daemon**: Tracks the *composed* output that ykwm writes to stdout.
+  This is what zmx uses to restore the screen when a client reconnects.
+- **N instances in ykwm**: One per window, tracking each child PTY's state independently.
+
+This is correct and intentional. zmx's VT instance sees ykwm's final rendered output
+(escape sequences for the composed screen), not the raw per-window PTY data. On zmx
+reconnect, zmx replays ykwm's last rendered frame — which is exactly what the user
+should see.
+
+```
+┌─ zmx daemon ──────────────────────────────────────┐
+│                                                    │
+│  ykwm stdout ──┬──► client sockets                │
+│                └──► zmx's ghostty-vt (1 instance)  │
+│                                                    │
+│  ┌─ ykwm process ──────────────────────────────┐   │
+│  │  PTY 1 ──► ghostty-vt #1 ──┐               │   │
+│  │  PTY 2 ──► ghostty-vt #2 ──┤ compositor    │   │
+│  │  PTY 3 ──► ghostty-vt #3 ──┘ ──► stdout    │   │
+│  └─────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────┘
+```
+
+**State Restoration on zmx Reconnect:**
+
+When a client reconnects to zmx, zmx replays the last rendered frame. This
+restores the *visual* state but not ykwm's internal state (window layout,
+scroll positions, focus). Two strategies:
+
+1. **Visual-only restore (simpler, Phase 5 MVP):**
+   - zmx replays the last frame → user sees the composed screen
+   - ykwm is still running, so it immediately re-renders the next frame
+   - User sees a brief flash but state is fully intact
+   - This works because ykwm doesn't need to serialize anything — it stays alive
+
+2. **Full state restore (future, if ykwm itself needs to restart):**
+   - Serialize ykwm state to a file: window layout, scroll positions, focus,
+     per-window VT state (via `TerminalFormatter`)
+   - On restart, deserialize and reconstruct windows
+   - Requires a state file format (JSON or binary)
+   - Not needed for zmx integration since zmx keeps ykwm alive
+
 **Key Requirements:**
 - [ ] Spawn as command within zmx session: `zmx attach <name> ykwm`
 - [ ] Proper PTY handoff between zmx and ykwm
-- [ ] State restoration on reattach (scrollback, window layout)
-- [ ] Coordinate with zmx's `libghostty-vt` for terminal state
-- [ ] Handle zmx's Unix socket protocol for client communication
-- [ ] Graceful detach/reattach without losing window state
+- [ ] Handle zmx detach/reattach gracefully (ykwm stays alive, re-renders on reattach)
+- [ ] Handle terminal resize on reattach (zmx sends SIGWINCH)
+- [ ] Graceful shutdown on zmx kill (SIGHUP/SIGTERM handling)
 
 **Integration Points:**
-- Use zmx's socket directory (`$ZMX_DIR` or `$XDG_RUNTIME_DIR/zmx`)
-- Compatible with zmx's scrollback restoration via ghostty-vt
+- Use zmx's socket directory (`$ZMX_DIR` or `$XDG_RUNTIME_DIR/zmx`) for any
+  ykwm-specific IPC if needed (e.g., `ykwm-ctl` commands)
+- Detect `$ZMX_SESSION` env var to know we're inside zmx
 - Work with zmx's `attach`, `detach`, `history` commands
-- Support multiple clients viewing same session
+- Support multiple clients viewing same session (zmx handles this transparently)
 
 ### dvtm Inspiration
 
@@ -277,6 +400,23 @@ Study dvtm's (~4000 lines of C):
 - Layout algorithms in `tile.c`, `bstack.c`, `grid.c`
 
 ## Implementation Phases
+
+### Phase 0: Proof of Concept (Week 0)
+
+**Goals:**
+- Validate ghostty-vt cell-level API access
+- Validate basic compositing approach
+
+**Deliverables:**
+- [ ] Minimal Zig project that depends on ghostty-vt
+- [ ] Create two `ghostty_vt.Terminal` instances, feed sample data
+- [ ] Read individual cells from `term.screens.active` and write composed output to stdout
+- [ ] Verify cell attributes (fg, bg, style) are accessible
+
+**Exit Criteria:**
+- Can read cell-by-cell from ghostty-vt screen grid
+- Can render two VT instances side-by-side to stdout
+- If cell access is not available, document alternative approach before proceeding
 
 ### Phase 1: Foundation (Weeks 1-2)
 
@@ -342,54 +482,68 @@ Study dvtm's (~4000 lines of C):
 - Modal mode blocks input
 - Popup closes correctly
 
-### Phase 4: Scrollback & Experimental UX (Weeks 7-8)
+### Phase 4: Scrollback (Weeks 7-8)
 
 **Goals:**
 - Scrollback buffers
-- Synchronized scrolling
-- Experimental features
+- Scroll navigation
+- Search
 
 **Deliverables:**
-- [ ] Scrollback buffer implementation
-- [ ] Scroll navigation
-- [ ] Search functionality
-- [ ] Synchronized scroll mode
-- [ ] Inline expandable sections
-- [ ] Contextual popups
+- [ ] Scrollback buffer implementation (per-window, backed by ghostty-vt's scrollback)
+- [ ] Scroll navigation (page up/down, half-page)
+- [ ] Search functionality (forward/backward search within scrollback)
+- [ ] Scroll position indicators (status bar shows scroll offset)
 
 **Testing:**
-- Scroll through history
-- Sync scroll multiple windows
-- Expand/collapse output sections
+- Scroll through history in a window
+- Search finds text in scrollback
+- Scroll indicators update correctly
 
-### Phase 5: Polish & zmx Integration (Weeks 9-10)
+### Phase 5: zmx Integration & Polish (Weeks 9-10)
 
 **Goals:**
 - Full zmx integration
 - Mouse support
 - Performance optimization
-- Documentation
 
 **Deliverables:**
-- [ ] zmx session attachment: `zmx attach <session> ykwm`
-- [ ] State serialization for zmx restoration
-- [ ] Coordinate scrollback with zmx's ghostty-vt instance
-- [ ] Unix socket protocol for zmx client communication
-- [ ] Mouse event handling
-- [ ] Performance benchmarks
+- [ ] Verify `zmx attach <session> ykwm` works correctly
+- [ ] Handle zmx detach/reattach (SIGWINCH, re-render)
+- [ ] Handle zmx kill (SIGHUP/SIGTERM graceful shutdown)
+- [ ] Mouse event handling (click to focus, click to position cursor)
+- [ ] Performance benchmarks (<16ms frame time)
 - [ ] User documentation
 - [ ] Example configurations (including zmx workflow)
 - [ ] Shell completions
 
 **Testing:**
-- `zmx attach dev ykwm` - starts ykwm in zmx session
-- Detach with `MOD+\`, reattach with `zmx attach dev`
-- Window layout and scrollback restored correctly
+- `zmx attach dev ykwm` — starts ykwm in zmx session
+- Detach with `ctrl+\`, reattach with `zmx attach dev`
+- ykwm re-renders correctly on reattach
 - Multiple clients can view same ykwm session via zmx
-- Mouse clicks work
+- Mouse clicks focus correct window
 - Performance is acceptable (<16ms frame time)
 
-### Phase 6: Advanced Features (Ongoing)
+### Phase 6: Experimental UX (Weeks 11-12)
+
+**Goals:**
+- Synchronized scrolling across tiles
+- Experimental interaction patterns
+
+**Deliverables:**
+- [ ] Synchronized scroll mode (all visible tiles scroll together)
+- [ ] Inline expandable sections (fold/unfold command output)
+- [ ] Contextual popups that follow cursor
+- [ ] Preview panes (hover to see full output)
+- [ ] Zoom transitions between tile and fullscreen
+
+**Testing:**
+- Sync scroll multiple windows
+- Expand/collapse output sections
+- Contextual popups appear at correct positions
+
+### Phase 7: Advanced Features (Ongoing)
 
 **Future Enhancements:**
 - [ ] Tree-style popup management
@@ -418,9 +572,57 @@ Study dvtm's (~4000 lines of C):
 
 **Why:**
 - Already used by zmx
-- Fast, GPU-accelerated
-- Modern feature support
+- Modern feature support (OSC 52, OSC 8, Kitty keyboard protocol, etc.)
 - Same codebase as Ghostty terminal
+- Proven serialization/restoration via `TerminalFormatter`
+
+**Dependency Details:**
+
+ghostty-vt is consumed as a Zig package dependency from the Ghostty monorepo. zmx's
+`build.zig.zon` demonstrates the pattern:
+
+```zig
+.dependencies = .{
+    .ghostty = .{
+        .url = "git+https://github.com/ghostty-org/ghostty.git?ref=HEAD#<commit>",
+        .hash = "ghostty-<version>",
+    },
+},
+```
+
+In `build.zig`, the module is imported via lazy dependency:
+
+```zig
+if (b.lazyDependency("ghostty", .{
+    .target = target,
+    .optimize = optimize,
+})) |dep| {
+    exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+}
+```
+
+**Key API Surface (used by zmx, needed by ykwm):**
+
+| API | Purpose |
+|-----|---------|
+| `ghostty_vt.Terminal.init(alloc, .{ .cols, .rows, .max_scrollback })` | Create a VT instance |
+| `term.vtStream()` / `vt_stream.nextSlice(data)` | Feed PTY output into VT state |
+| `term.resize(alloc, cols, rows)` | Handle terminal resize |
+| `term.screens.active.cursor` | Read cursor position (x, y, pending_wrap) |
+| `ghostty_vt.formatter.TerminalFormatter.init(term, opts)` | Serialize VT state to escape sequences, plain text, or HTML |
+| `term.deinit(alloc)` | Cleanup |
+
+**ykwm additionally needs (for cell-by-cell rendering):**
+
+| API | Purpose |
+|-----|---------|
+| `term.screens.active` | Access the active screen grid |
+| Screen row/cell iteration | Read individual cells for compositing |
+| Cell attributes (fg, bg, style flags) | Generate per-cell escape sequences |
+
+**Risk:** The cell-level API for reading individual screen cells needs verification against the Ghostty source. zmx only uses the `TerminalFormatter` bulk serialization path. If direct cell access isn't exposed, ykwm would need to either: (a) use `TerminalFormatter` per-window and clip the output, or (b) contribute cell-access APIs upstream.
+
+**Validation Step (Phase 0):** Before starting Phase 1, write a minimal proof-of-concept that creates a `ghostty_vt.Terminal`, feeds it sample data, and reads back individual cells from `term.screens.active`. This validates the rendering approach before building window management on top of it.
 
 ### Layout Strategy
 
@@ -430,9 +632,15 @@ Study dvtm's (~4000 lines of C):
 - Popups built on floating window infrastructure
 
 **Configuration:**
-- Static config at compile time (like dwm/dvtm) for simplicity
-- Runtime config file for user preferences
-- Hot-reload for development
+
+Runtime config file only (no compile-time config). While dwm/dvtm use compile-time
+configuration, this creates friction for iterating on an experimental UX project.
+
+- **Config file:** `$XDG_CONFIG_HOME/ykwm/config.zig` or `$HOME/.config/ykwm/config.zig`
+  parsed at startup (Zig-style config like Ghostty, or a simpler key=value format)
+- **Defaults:** Sensible built-in defaults so ykwm works without a config file
+- **No hot-reload in v1:** Config is read at startup. Restart to apply changes.
+  Hot-reload can be added later if needed, but adds complexity for little initial gain.
 
 ## Keybindings (Default)
 
@@ -490,9 +698,54 @@ Session:
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Terminal emulation bugs | High | Use ghostty-vt, extensive testing |
+| ghostty-vt cell API not exposed | High | Phase 0 validates this before committing to architecture |
 | Performance issues | Medium | Profile early, optimize rendering |
 | Complex input handling | Medium | Start simple, add features gradually |
 | Scope creep | High | Strict phase milestones |
+
+### Error Handling & Edge Cases
+
+**Child PTY Death:**
+- Monitor child processes via `waitpid()` (non-blocking, checked each poll cycle)
+- When a child exits: mark window as "exited", display exit code in the window area
+- User can close the dead window with `MOD+x` or it auto-closes (configurable)
+- If the last window dies, ykwm exits cleanly
+
+**Terminal Resize Propagation:**
+- On `SIGWINCH`: recalculate all window layouts for the new terminal size
+- For each window: compute its new dimensions from the layout engine
+- Call `term.resize(alloc, new_cols, new_rows)` on each window's VT instance
+- Send `TIOCSWINSZ` ioctl to each child PTY with its new per-window dimensions
+- Force a full re-render (all windows dirty)
+
+**Alternate Screen Programs (vim, less, htop):**
+- `ghostty_vt.Terminal` handles alternate screen switching automatically
+- When a program enters alternate screen, `term.screens.active` points to the
+  alternate screen; rendering reads from whichever is active
+- When a program exits alternate screen, the primary screen (with scrollback)
+  is restored automatically
+- No special handling needed in the compositor
+
+**ykwm Crash Recovery:**
+- Child PTYs survive ykwm crashing (they're separate processes)
+- On crash, child processes receive SIGHUP and typically exit
+- Future: write a state file periodically so a restarted ykwm could reattach
+  to orphaned PTYs (not in initial scope)
+- zmx keeps its own session alive regardless of ykwm state
+
+**Signal Handling:**
+- `SIGWINCH`: terminal resize (see above)
+- `SIGHUP`: graceful shutdown (clean up PTYs, close sockets)
+- `SIGTERM`: graceful shutdown (same as SIGHUP)
+- `SIGINT`: ignored in multiplexer mode (passed to focused child)
+- `SIGCHLD`: child process exited (mark window as dead)
+- `SIGPIPE`: ignored (broken pipe to a dead client)
+
+**Input Edge Cases:**
+- Multi-byte UTF-8 sequences split across reads: buffer partial sequences
+- Paste bracketing (`ESC [200~` ... `ESC [201~`): pass through to focused window
+- Mouse escape sequences: parse and route to correct window by coordinates
+- Kitty keyboard protocol: detect and pass through to focused window
 
 ## References
 
@@ -549,6 +802,6 @@ Session:
 
 ---
 
-*Document Version: 1.0*
-*Last Updated: 2026-02-13*
+*Document Version: 1.1*
+*Last Updated: 2026-02-12*
 *Status: Planning Phase*
