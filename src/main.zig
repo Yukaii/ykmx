@@ -60,6 +60,37 @@ pub fn main() !void {
             try out.flush();
             return;
         }
+        if (std.mem.eql(u8, args[1], "--benchmark-layout")) {
+            const iterations: usize = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 500;
+            const result = try benchmark.runLayoutChurn(alloc, iterations);
+
+            var buf: [768]u8 = undefined;
+            var w = std.fs.File.stdout().writer(&buf);
+            const out = &w.interface;
+
+            try out.print(
+                "layout_benchmark backend={s} iterations={} avg_ms={d:.3} p95_ms={d:.3} max_ms={d:.3}\n",
+                .{
+                    result.native.backend,
+                    result.native.iterations,
+                    result.native.avg_ms,
+                    result.native.p95_ms,
+                    result.native.max_ms,
+                },
+            );
+
+            if (result.opentui) |op| {
+                try out.print(
+                    "layout_benchmark backend={s} iterations={} avg_ms={d:.3} p95_ms={d:.3} max_ms={d:.3}\n",
+                    .{ op.backend, op.iterations, op.avg_ms, op.p95_ms, op.max_ms },
+                );
+            } else {
+                try out.writeAll("layout_benchmark backend=opentui status=unavailable (OpenTUINotIntegratedYet)\n");
+            }
+
+            try out.flush();
+            return;
+        }
         if (std.mem.eql(u8, args[1], "--smoke-zmx")) {
             const session = if (args.len > 2) args[2] else "ykwm-smoke";
             const ok = try zmx.smokeAttachRoundTrip(alloc, session, "ykwm-zmx-smoke");
@@ -149,6 +180,8 @@ fn printHelp() !void {
         \\  ykwm                 Run interactive runtime loop
         \\  ykwm --poc           Run verbose development POC output
         \\  ykwm --benchmark [N] Run frame benchmark (default N=200)
+        \\  ykwm --benchmark-layout [N]
+        \\                      Run layout churn benchmark (default N=500)
         \\  ykwm --smoke-zmx [session]
         \\  ykwm --version
         \\  ykwm --help

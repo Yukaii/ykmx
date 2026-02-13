@@ -387,11 +387,11 @@ scroll positions, focus). Two strategies:
    - Not needed for zmx integration since zmx keeps ykwm alive
 
 **Key Requirements:**
-- [ ] Spawn as command within zmx session: `zmx attach <name> ykwm`
-- [ ] Proper PTY handoff between zmx and ykwm
-- [ ] Handle zmx detach/reattach gracefully (ykwm stays alive, re-renders on reattach)
-- [ ] Handle terminal resize on reattach (zmx sends SIGWINCH)
-- [ ] Graceful shutdown on zmx kill (SIGHUP/SIGTERM handling)
+- [x] Spawn as command within zmx session: `zmx attach <name> ykwm`
+- [x] Proper PTY handoff between zmx and ykwm
+- [x] Handle zmx detach/reattach gracefully (ykwm stays alive, re-renders on reattach)
+- [x] Handle terminal resize on reattach (zmx sends SIGWINCH)
+- [x] Graceful shutdown on zmx kill (SIGHUP/SIGTERM handling)
 
 **Integration Points:**
 - Use zmx's socket directory (`$ZMX_DIR` or `$XDG_RUNTIME_DIR/zmx`) for any
@@ -433,7 +433,7 @@ Study dvtm's (~4000 lines of C):
 - [x] Minimal Zig project that depends on ghostty-vt
 - [x] Create two `ghostty_vt.Terminal` instances, feed sample data
 - [x] Read individual cells from `term.screens.active` and write composed output to stdout
-- [ ] Verify cell attributes (fg, bg, style) are accessible
+- [x] Verify cell attributes (fg, bg, style) are accessible
 
 **Exit Criteria:**
 - Can read cell-by-cell from ghostty-vt screen grid
@@ -452,6 +452,12 @@ Study dvtm's (~4000 lines of C):
 - [x] Implement one OpenTUI adapter for the same vertical-stack layout
 - [ ] Compare outputs for identical inputs (golden tests)
 - [ ] Benchmark both paths under resize + create/close window churn
+
+**Status (2026-02-13):**
+- Golden parity harness added in `src/layout_opentui.zig` for vertical-stack cases (single window, many windows, tiny sizes, non-zero gaps, master-count variation); currently `SkipZigTest` until OpenTUI adapter is fully integrated (`error.OpenTUINotIntegratedYet`).
+- Layout churn benchmark added via `ykwm --benchmark-layout [N]` with resize + window-count churn simulation and avg/p95/max reporting.
+- Sample run (`N=500`): `native avg=0.014ms p95=0.019ms max=0.043ms`; `opentui=unavailable`.
+- Interim decision: keep `native` as active backend; retain `LayoutEngine` boundary and keep OpenTUI behind adapter until integration is complete.
 
 **Decision Criteria (go/no-go):**
 - Correctness: identical or intentionally equivalent tile rectangles
@@ -561,6 +567,36 @@ Next implementation focus:
   - Colored shell prompts/output render correctly in both panes
   - No raw ANSI/control-sequence artifacts in pane content
   - Acceptable redraw smoothness during continuous output
+
+### Execution Order (Next)
+
+1. **Phase 0.5 closure (correctness first)**
+   - [x] Add golden tests comparing `layout_native` and `layout_opentui` rect outputs for identical inputs (`vertical stack` first).
+   - [x] Include edge cases: 1 window, many windows, tiny terminal sizes, non-zero gaps, master count changes.
+   - Done when OpenTUI integration is complete and parity tests run without `SkipZigTest`.
+
+2. **Phase 0.5 closure (performance second)**
+   - [x] Add benchmark path for layout churn: repeated resize + create/close window cycles for both backends.
+   - [x] Capture avg/p95/max timings and document backend decision (`native`, `opentui`, or `hybrid`) in this plan.
+   - Done when OpenTUI benchmark data is available (currently reported as unavailable) and decision can be revisited.
+
+3. **Runtime compatibility soak hardening**
+   - [ ] Run targeted manual soak scenarios for `fish`, `fzf`, and `zoxide` flows in live runtime.
+   - [ ] Keep parser/query compatibility fixes narrow and add regression tests per fix.
+   - Done when no reproducible raw-sequence/render corruption remains in those scenarios.
+
+4. **Phase 6 start (incremental slice)**
+   - [ ] Implement synchronized scroll mode toggle (`MOD+s`) for visible tiled windows only.
+   - [ ] Define clear state model (global sync-scroll flag + per-window offset source-of-truth).
+   - [ ] Add tests for scroll propagation, focus changes, and tab boundaries.
+   - Done when sync-scroll is stable enough to mark the first Phase 6 deliverable complete.
+
+5. **Phase 6 follow-ons**
+   - [ ] Inline fold/unfold output sections.
+   - [ ] Cursor-following contextual popups.
+   - [ ] Hover preview panes.
+   - [ ] Tile/fullscreen zoom transitions.
+   - Order these by implementation risk and testability after sync-scroll lands.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
