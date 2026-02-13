@@ -142,6 +142,15 @@ pub const Pty = struct {
         self.* = undefined;
     }
 
+    pub fn deinitNoWait(self: *Pty) void {
+        if (!self.exited) {
+            _ = posix.kill(self.pid, posix.SIG.TERM) catch {};
+            _ = self.reapIfExited() catch {};
+        }
+        self.master.close();
+        self.* = undefined;
+    }
+
     fn setNonBlocking(fd: posix.fd_t) !void {
         var flags = try posix.fcntl(fd, posix.F.GETFL, 0);
         const nonblock_bits_u32: u32 = @bitCast(posix.O{ .NONBLOCK = true });

@@ -100,6 +100,16 @@ pub const PopupManager = struct {
         return self.close(id);
     }
 
+    pub fn closeByWindowId(self: *PopupManager, window_id: u32) ?Popup {
+        for (self.popups.items, 0..) |p, i| {
+            if (p.window_id != window_id) continue;
+            const removed = self.popups.orderedRemove(i);
+            self.recomputeFocusAfterRemove(removed.id);
+            return removed;
+        }
+        return null;
+    }
+
     pub fn closeTopmost(self: *PopupManager) ?Popup {
         if (self.popups.items.len == 0) return null;
         var best_idx: usize = 0;

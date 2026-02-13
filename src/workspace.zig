@@ -184,6 +184,30 @@ pub const WorkspaceManager = struct {
         return id;
     }
 
+    pub fn closeWindowById(self: *WorkspaceManager, window_id: u32) !bool {
+        for (self.tabs.items) |*tab| {
+            var i: usize = 0;
+            while (i < tab.windows.items.len) : (i += 1) {
+                if (tab.windows.items[i].id != window_id) continue;
+
+                var w = tab.windows.orderedRemove(i);
+                w.deinit(self.allocator);
+
+                if (tab.windows.items.len == 0) {
+                    tab.focused_index = null;
+                } else if (tab.focused_index) |focus| {
+                    if (focus == i and i >= tab.windows.items.len) {
+                        tab.focused_index = tab.windows.items.len - 1;
+                    } else if (focus > i) {
+                        tab.focused_index = focus - 1;
+                    }
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
     pub fn activeLayoutType(self: *WorkspaceManager) !layout.LayoutType {
         const tab = try self.activeTab();
         return tab.layout_type;

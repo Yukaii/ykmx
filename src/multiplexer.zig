@@ -128,14 +128,12 @@ pub const Multiplexer = struct {
 
     pub fn sendInputToFocused(self: *Multiplexer, bytes: []const u8) !void {
         const focused_id = try self.workspace_mgr.focusedWindowIdActive();
-        const p = self.ptys.getPtr(focused_id) orelse return error.UnknownWindow;
-        try p.write(bytes);
+        try self.sendInputToWindow(focused_id, bytes);
     }
 
     fn sendInputToFocusedPopup(self: *Multiplexer, bytes: []const u8) !void {
         const focused_id = self.popup_mgr.focusedWindowId() orelse return error.NoFocusedPopup;
-        const p = self.ptys.getPtr(focused_id) orelse return error.UnknownWindow;
-        try p.write(bytes);
+        try self.sendInputToWindow(focused_id, bytes);
     }
 
     pub fn handleInputBytes(self: *Multiplexer, bytes: []const u8) !void {
@@ -153,9 +151,15 @@ pub const Multiplexer = struct {
                 .forward => |c| {
                     var tmp = [_]u8{c};
                     if (self.popup_mgr.hasModalOpen()) {
-                        try self.sendInputToFocusedPopup(&tmp);
+                        self.sendInputToFocusedPopup(&tmp) catch |err| switch (err) {
+                            error.NoFocusedPopup, error.UnknownWindow => {},
+                            else => return err,
+                        };
                     } else {
-                        try self.sendInputToFocused(&tmp);
+                        self.sendInputToFocused(&tmp) catch |err| switch (err) {
+                            error.NoFocusedWindow, error.UnknownWindow => {},
+                            else => return err,
+                        };
                     }
                 },
                 .forward_sequence => |seq| {
@@ -163,9 +167,15 @@ pub const Multiplexer = struct {
                         try self.handleMouseFromEvent(s, seq.mouse);
                     }
                     if (self.popup_mgr.hasModalOpen()) {
-                        try self.sendInputToFocusedPopup(seq.slice());
+                        self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
+                            error.NoFocusedPopup, error.UnknownWindow => {},
+                            else => return err,
+                        };
                     } else {
-                        try self.sendInputToFocused(seq.slice());
+                        self.sendInputToFocused(seq.slice()) catch |err| switch (err) {
+                            error.NoFocusedWindow, error.UnknownWindow => {},
+                            else => return err,
+                        };
                     }
                     if (seq.mouse) |mouse| self.last_mouse_event = mouse;
                 },
@@ -510,6 +520,9 @@ pub const Multiplexer = struct {
             redraw = true;
         }
 
+        const exited_windows = try self.reapExitedWindows();
+        if (exited_windows > 0) redraw = true;
+
         const reads = try self.pollOnce(timeout_ms);
         if (reads > 0) redraw = true;
         const popup_updates = try self.processPopupTick();
@@ -550,7 +563,7 @@ pub const Multiplexer = struct {
 
     pub fn closeFocusedWindow(self: *Multiplexer) !u32 {
         const id = try self.workspace_mgr.closeFocusedWindowActive();
-        if (self.ptys.getPtr(id)) |p| p.deinit();
+        if (self.ptys.getPtr(id)) |p| p.deinitNoWait();
         _ = self.ptys.fetchRemove(id);
         _ = self.da_parse_states.fetchRemove(id);
 
@@ -687,6 +700,14 @@ pub const Multiplexer = struct {
 
     fn markWindowDirty(self: *Multiplexer, window_id: u32) !void {
         try self.dirty_windows.put(self.allocator, window_id, {});
+    }
+
+    fn sendInputToWindow(self: *Multiplexer, window_id: u32, bytes: []const u8) !void {
+        const p = self.ptys.getPtr(window_id) orelse return error.UnknownWindow;
+        p.write(bytes) catch {
+            try self.handleWindowExit(window_id);
+            return error.UnknownWindow;
+        };
     }
 
     fn requestRedraw(self: *Multiplexer) void {
@@ -998,7 +1019,7 @@ pub const Multiplexer = struct {
         defer self.allocator.free(removed.title);
 
         if (removed.window_id) |window_id| {
-            if (self.ptys.getPtr(window_id)) |p| p.deinit();
+            if (self.ptys.getPtr(window_id)) |p| p.deinitNoWait();
             _ = self.ptys.fetchRemove(window_id);
             _ = self.da_parse_states.fetchRemove(window_id);
             if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
@@ -1007,6 +1028,50 @@ pub const Multiplexer = struct {
             _ = self.scrollbacks.fetchRemove(window_id);
             _ = self.dirty_windows.fetchRemove(window_id);
         }
+    }
+
+    fn cleanupWindowResources(self: *Multiplexer, window_id: u32) void {
+        if (self.ptys.getPtr(window_id)) |p| p.deinitNoWait();
+        _ = self.ptys.fetchRemove(window_id);
+        _ = self.da_parse_states.fetchRemove(window_id);
+        if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
+        _ = self.stdout_buffers.fetchRemove(window_id);
+        if (self.scrollbacks.getPtr(window_id)) |sb| sb.deinit();
+        _ = self.scrollbacks.fetchRemove(window_id);
+        _ = self.dirty_windows.fetchRemove(window_id);
+    }
+
+    fn handleWindowExit(self: *Multiplexer, window_id: u32) !void {
+        if (self.popup_mgr.closeByWindowId(window_id)) |removed| {
+            self.cleanupClosedPopup(removed);
+            self.requestRedraw();
+            return;
+        }
+        if (try self.workspace_mgr.closeWindowById(window_id)) {
+            self.cleanupWindowResources(window_id);
+            self.requestRedraw();
+        } else {
+            self.cleanupWindowResources(window_id);
+            self.requestRedraw();
+        }
+    }
+
+    fn reapExitedWindows(self: *Multiplexer) !usize {
+        var exited = std.ArrayList(u32).empty;
+        defer exited.deinit(self.allocator);
+
+        var it = self.ptys.iterator();
+        while (it.next()) |entry| {
+            const window_id = entry.key_ptr.*;
+            if (try entry.value_ptr.reapIfExited()) {
+                try exited.append(self.allocator, window_id);
+            }
+        }
+
+        for (exited.items) |window_id| {
+            try self.handleWindowExit(window_id);
+        }
+        return exited.items.len;
     }
 
     fn resizePopupWindows(self: *Multiplexer, screen: layout.Rect) !usize {
@@ -1528,6 +1593,56 @@ test "multiplexer fzf popup auto-close path cleans up exited popup window" {
 
     try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
     try testing.expect(!mux.ptys.contains(popup_win));
+}
+
+test "multiplexer exited window is cleaned up without shutting down loop" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("oneshot", &.{ "/bin/sh", "-c", "exit 0" });
+
+    var tries: usize = 0;
+    while (tries < 40 and mux.ptys.contains(win_id)) : (tries += 1) {
+        const t = try mux.tick(10, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+            .sigwinch = false,
+            .sighup = false,
+            .sigterm = false,
+        });
+        try testing.expect(!t.should_shutdown);
+    }
+
+    try testing.expect(!mux.ptys.contains(win_id));
+}
+
+test "multiplexer exited non-auto-close popup cleans up only popup" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("base", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.openCommandPopup(
+        "oneshot-popup",
+        &.{ "/bin/sh", "-c", "exit 0" },
+        .{ .x = 0, .y = 0, .width = 80, .height = 24 },
+        true,
+        false,
+    );
+
+    var tries: usize = 0;
+    while (tries < 40 and mux.popup_mgr.count() > 0) : (tries += 1) {
+        const t = try mux.tick(10, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+            .sigwinch = false,
+            .sighup = false,
+            .sigterm = false,
+        });
+        try testing.expect(!t.should_shutdown);
+    }
+
+    try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
+    try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.activeWindowCount());
 }
 
 test "multiplexer scroll commands adjust focused window scroll offset" {
