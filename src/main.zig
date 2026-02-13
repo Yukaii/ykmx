@@ -554,6 +554,9 @@ fn writeStyledRow(
     var active_style: ?ghostty_vt.Style = null;
     var x: usize = 0;
     while (x < total_cols) : (x += 1) {
+        // Column-lock each cell write to avoid cursor drift/autowrap artifacts
+        // from ambiguous glyph widths in host terminal font rendering.
+        try writeFmtBlocking(out, "\x1b[{};{}H", .{ row + 1, x + 1 });
         const pane_cell = paneCellAt(panes, x, row);
         if (pane_cell) |pc| {
             if (pc.skip_draw) continue;

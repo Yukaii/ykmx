@@ -252,7 +252,8 @@ pub const Multiplexer = struct {
             const w = tab.windows.items[i];
             const p = self.ptys.getPtr(w.id) orelse continue;
             const r = rects[i];
-            try p.resize(r.height, r.width);
+            const inner = contentSizeForRect(r, screen);
+            try p.resize(inner.rows, inner.cols);
             try self.markWindowDirty(w.id);
             resized += 1;
         }
@@ -679,6 +680,22 @@ pub const Multiplexer = struct {
             }
         }
         return count;
+    }
+
+    fn contentSizeForRect(r: layout.Rect, screen: layout.Rect) struct { rows: u16, cols: u16 } {
+        // Keep this consistent with renderer border policy:
+        // left/top border always drawn, right/bottom only on outer edge.
+        const left_border: u16 = 1;
+        const top_border: u16 = 1;
+        const right_border: u16 = if (r.x + r.width == screen.x + screen.width) 1 else 0;
+        const bottom_border: u16 = if (r.y + r.height == screen.y + screen.height) 1 else 0;
+
+        const cols = r.width - left_border - right_border;
+        const rows = r.height - top_border - bottom_border;
+        return .{
+            .rows = @max(@as(u16, 1), rows),
+            .cols = @max(@as(u16, 1), cols),
+        };
     }
 
     fn posixPollFd() type {
