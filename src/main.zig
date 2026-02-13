@@ -248,7 +248,7 @@ const RuntimeTerminal = struct {
             rt.had_termios = true;
             rt.original_termios = termios_state;
             var raw = termios_state;
-            raw.c_lflag &= ~@as(c_uint, @intCast(c.ECHO | c.ICANON));
+            raw.c_lflag &= ~@as(c_uint, @intCast(c.ECHO | c.ICANON | c.ISIG));
             raw.c_iflag &= ~@as(c_uint, @intCast(c.IXON | c.ICRNL));
             raw.c_oflag &= ~@as(c_uint, @intCast(c.OPOST));
             raw.c_cc[c.VMIN] = 0;
@@ -279,12 +279,15 @@ const RuntimeSize = struct {
 };
 
 const PaneRenderRef = struct {
-    rect: layout.Rect,
+    content_x: u16,
+    content_y: u16,
+    content_w: u16,
+    content_h: u16,
     term: *Terminal,
 };
 
 const PaneRenderCell = struct {
-    ch: u8,
+    cp: u21,
     style: ghostty_vt.Style,
 };
 
@@ -428,19 +431,25 @@ fn renderRuntimeFrame(
     for (rects[0..n], 0..) |r, i| {
         active_ids[i] = tab.windows.items[i].id;
         if (r.width < 2 or r.height < 2) continue;
-        drawBorder(canvas, total_cols, content_rows, r, if (tab.focused_index == i) '*' else ' ');
-        const inner_w = r.width - 2;
-        const inner_h = r.height - 2;
+        const border = computeBorderMask(rects[0..n], i, r, content);
+        drawBorder(canvas, total_cols, content_rows, r, border, if (tab.focused_index == i) '*' else ' ');
+        const inner_x = r.x + (if (border.left) @as(u16, 1) else @as(u16, 0));
+        const inner_y = r.y + (if (border.top) @as(u16, 1) else @as(u16, 0));
+        const inner_w = r.width - (if (border.left) @as(u16, 1) else @as(u16, 0)) - (if (border.right) @as(u16, 1) else @as(u16, 0));
+        const inner_h = r.height - (if (border.top) @as(u16, 1) else @as(u16, 0)) - (if (border.bottom) @as(u16, 1) else @as(u16, 0));
         if (inner_w == 0 or inner_h == 0) continue;
 
         const title = tab.windows.items[i].title;
-        drawText(canvas, total_cols, content_rows, r.x + 1, r.y, title, inner_w);
+        drawText(canvas, total_cols, content_rows, inner_x, r.y, title, inner_w);
 
         const window_id = tab.windows.items[i].id;
         const output = mux.windowOutput(window_id) catch "";
         const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
         panes[pane_count] = .{
-            .rect = r,
+            .content_x = inner_x,
+            .content_y = inner_y,
+            .content_w = inner_w,
+            .content_h = inner_h,
             .term = &wv.term,
         };
         pane_count += 1;
@@ -450,8 +459,8 @@ fn renderRuntimeFrame(
             const cx: usize = @min(@as(usize, @intCast(cursor.x)), @as(usize, inner_w - 1));
             const cy: usize = @min(@as(usize, @intCast(cursor.y)), @as(usize, inner_h - 1));
             focused_cursor_abs = .{
-                .row = @as(usize, r.y + 1) + cy + 1,
-                .col = @as(usize, r.x + 1) + cx + 1,
+                .row = @as(usize, inner_y) + cy + 1,
+                .col = @as(usize, inner_x) + cx + 1,
             };
         }
     }
@@ -482,29 +491,55 @@ fn renderRuntimeFrame(
     try writeAllBlocking(out, "\x1b[?25h");
 }
 
-fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, marker: u8) void {
+const BorderMask = struct {
+    left: bool,
+    right: bool,
+    top: bool,
+    bottom: bool,
+};
+
+fn computeBorderMask(rects: []const layout.Rect, idx: usize, r: layout.Rect, content: layout.Rect) BorderMask {
+    _ = rects;
+    _ = idx;
+    return .{
+        // Draw left/top for all panes; right/bottom only on container edge.
+        // This keeps exactly one separator at shared boundaries.
+        .left = true,
+        .top = true,
+        .right = (r.x + r.width == content.x + content.width),
+        .bottom = (r.y + r.height == content.y + content.height),
+    };
+}
+
+fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, border: BorderMask, marker: u8) void {
     const x0: usize = r.x;
     const y0: usize = r.y;
     const x1: usize = x0 + r.width - 1;
     const y1: usize = y0 + r.height - 1;
     if (x1 >= cols or y1 >= rows) return;
 
-    putCell(canvas, cols, x0, y0, '+');
-    putCell(canvas, cols, x1, y0, '+');
-    putCell(canvas, cols, x0, y1, '+');
-    putCell(canvas, cols, x1, y1, '+');
+    if (border.left and border.top) putCell(canvas, cols, x0, y0, '+');
+    if (border.right and border.top) putCell(canvas, cols, x1, y0, '+');
+    if (border.left and border.bottom) putCell(canvas, cols, x0, y1, '+');
+    if (border.right and border.bottom) putCell(canvas, cols, x1, y1, '+');
 
-    var x = x0 + 1;
-    while (x < x1) : (x += 1) {
-        putCell(canvas, cols, x, y0, '-');
-        putCell(canvas, cols, x, y1, '-');
+    if (border.top) {
+        var x = x0 + 1;
+        while (x < x1) : (x += 1) putCell(canvas, cols, x, y0, '-');
     }
-    var y = y0 + 1;
-    while (y < y1) : (y += 1) {
-        putCell(canvas, cols, x0, y, '|');
-        putCell(canvas, cols, x1, y, '|');
+    if (border.bottom) {
+        var x = x0 + 1;
+        while (x < x1) : (x += 1) putCell(canvas, cols, x, y1, '-');
     }
-    if (x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, marker);
+    if (border.left) {
+        var y = y0 + 1;
+        while (y < y1) : (y += 1) putCell(canvas, cols, x0, y, '|');
+    }
+    if (border.right) {
+        var y = y0 + 1;
+        while (y < y1) : (y += 1) putCell(canvas, cols, x1, y, '|');
+    }
+    if (border.top and x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, marker);
 }
 
 fn writeStyledRow(
@@ -533,7 +568,7 @@ fn writeStyledRow(
                 try writeStyle(out, pc.style);
                 active_style = pc.style;
             }
-            try writeByteBlocking(out, pc.ch);
+            try writeCodepointBlocking(out, pc.cp);
             continue;
         }
 
@@ -558,10 +593,10 @@ fn paneCellAt(
     y: usize,
 ) ?PaneRenderCell {
     for (panes) |pane| {
-        const inner_x0: usize = pane.rect.x + 1;
-        const inner_y0: usize = pane.rect.y + 1;
-        const inner_x1: usize = pane.rect.x + pane.rect.width - 1;
-        const inner_y1: usize = pane.rect.y + pane.rect.height - 1;
+        const inner_x0: usize = pane.content_x;
+        const inner_y0: usize = pane.content_y;
+        const inner_x1: usize = pane.content_x + pane.content_w;
+        const inner_y1: usize = pane.content_y + pane.content_h;
         if (x < inner_x0 or x >= inner_x1 or y < inner_y0 or y >= inner_y1) continue;
 
         const local_x: usize = x - inner_x0;
@@ -572,12 +607,12 @@ fn paneCellAt(
                 .y = @intCast(local_y),
             },
         }) orelse return .{
-            .ch = ' ',
+            .cp = ' ',
             .style = .{},
         };
 
-        const cp = maybe_cell.cell.codepoint();
-        const ch: u8 = if (cp >= 32 and cp < 127) @intCast(cp) else ' ';
+        const cp_raw = maybe_cell.cell.codepoint();
+        const cp: u21 = if (cp_raw >= 32) cp_raw else ' ';
         var style: ghostty_vt.Style = if (maybe_cell.cell.style_id == 0)
             .{}
         else
@@ -593,7 +628,7 @@ fn paneCellAt(
             else => {},
         }
         return .{
-            .ch = ch,
+            .cp = cp,
             .style = style,
         };
     }
@@ -653,6 +688,14 @@ fn writeAllBlocking(out: *std.Io.Writer, bytes: []const u8) !void {
 fn writeByteBlocking(out: *std.Io.Writer, b: u8) !void {
     var one = [1]u8{b};
     try writeAllBlocking(out, &one);
+}
+
+fn writeCodepointBlocking(out: *std.Io.Writer, cp: u21) !void {
+    var scratch: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(cp, &scratch) catch {
+        return writeByteBlocking(out, '?');
+    };
+    try writeAllBlocking(out, scratch[0..n]);
 }
 
 fn writeFmtBlocking(out: *std.Io.Writer, comptime fmt: []const u8, args: anytype) !void {
