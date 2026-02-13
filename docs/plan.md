@@ -490,6 +490,7 @@ Study dvtm's (~4000 lines of C):
 
 Implemented in repository:
 - `src/main.zig`: ghostty-vt POC render + workspace/layout POC output
+- `src/main.zig`: interactive runtime loop (alternate screen, raw input, live pane rendering, tab/status lines)
 - `src/layout.zig`: layout interface/types (`LayoutEngine`, `LayoutParams`, `Rect`)
 - `src/layout_native.zig`: native layout implementations (vertical/horizontal/grid/fullscreen) + unit tests
 - `src/layout_opentui.zig`: OpenTUI adapter placeholder for backend wiring
@@ -524,13 +525,30 @@ Implemented in repository:
 - Basic drag-to-resize support for vertical stack (divider hit-test + master ratio update + PTY resize propagation)
 - Reattach path explicitly implemented and tested (`handleReattach`: resize + mark active windows dirty + redraw=true)
 - `build.zig`: `run` and `test` steps wired
+- Live runtime now renders pane content from per-window `ghostty-vt` state (control sequences parsed correctly)
+- Live runtime now emits per-cell VT styles/colors from `ghostty-vt` (`style_id` + background-only cell colors), so shell prompts/output preserve ANSI colors in panes
+- Live runtime now positions the terminal cursor to the focused pane's VT cursor location after each composed frame
 
 Validated locally:
 - `zig build test` passes
 - `zig build run` passes
 
 Next implementation focus:
-- Start Phase 6 synchronized scrolling and experimental interaction models.
+- Move from full-screen clear redraw to diff-based rendering for lower flicker and lower write volume.
+- Then start Phase 6 synchronized scrolling and experimental interaction models.
+
+### Next Milestone (Immediate)
+
+- **Milestone:** Production-ready live renderer baseline
+- **Scope:**
+  - [x] Per-cell color/style output from `ghostty-vt` attributes
+  - [x] Cursor placement for focused pane
+  - [ ] Diff-based frame flush (no full-screen clear each frame)
+  - [ ] Runtime smoke test: two shells, colored prompt/output, cursor/focus updates, resize + reattach preserved
+- **Exit Criteria:**
+  - Colored shell prompts/output render correctly in both panes
+  - No raw ANSI/control-sequence artifacts in pane content
+  - Acceptable redraw smoothness during continuous output
 
 ### Phase 2: Core Features (Weeks 3-4)
 

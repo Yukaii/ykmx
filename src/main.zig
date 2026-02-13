@@ -278,6 +278,16 @@ const RuntimeSize = struct {
     rows: u16,
 };
 
+const PaneRenderRef = struct {
+    rect: layout.Rect,
+    term: *Terminal,
+};
+
+const PaneRenderCell = struct {
+    ch: u8,
+    style: ghostty_vt.Style,
+};
+
 const RuntimeVtState = struct {
     const WindowVt = struct {
         term: Terminal,
@@ -410,6 +420,10 @@ fn renderRuntimeFrame(
     const n = @min(rects.len, tab.windows.items.len);
     var active_ids = try allocator.alloc(u32, n);
     defer allocator.free(active_ids);
+    var panes = try allocator.alloc(PaneRenderRef, n);
+    defer allocator.free(panes);
+    var pane_count: usize = 0;
+    var focused_cursor_abs: ?struct { row: usize, col: usize } = null;
 
     for (rects[0..n], 0..) |r, i| {
         active_ids[i] = tab.windows.items[i].id;
@@ -425,7 +439,21 @@ fn renderRuntimeFrame(
         const window_id = tab.windows.items[i].id;
         const output = mux.windowOutput(window_id) catch "";
         const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
-        drawPaneOutputFromVt(canvas, total_cols, content_rows, r, &wv.term);
+        panes[pane_count] = .{
+            .rect = r,
+            .term = &wv.term,
+        };
+        pane_count += 1;
+
+        if (tab.focused_index == i) {
+            const cursor = wv.term.screens.active.cursor;
+            const cx: usize = @min(@as(usize, @intCast(cursor.x)), @as(usize, inner_w - 1));
+            const cy: usize = @min(@as(usize, @intCast(cursor.y)), @as(usize, inner_h - 1));
+            focused_cursor_abs = .{
+                .row = @as(usize, r.y + 1) + cy + 1,
+                .col = @as(usize, r.x + 1) + cx + 1,
+            };
+        }
     }
     try vt_state.prune(active_ids);
 
@@ -439,13 +467,19 @@ fn renderRuntimeFrame(
     while (row < content_rows) : (row += 1) {
         const start = row * total_cols;
         try writeFmtBlocking(out, "\x1b[{};1H", .{row + 1});
-        try writeClippedLine(out, canvas[start .. start + total_cols], total_cols);
+        try writeStyledRow(out, canvas[start .. start + total_cols], total_cols, row, panes[0..pane_count]);
     }
     try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 1});
+    try writeAllBlocking(out, "\x1b[0m");
     try writeClippedLine(out, tab_line, total_cols);
     try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
     try writeClippedLine(out, status_line, total_cols);
-    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
+    if (focused_cursor_abs) |p| {
+        try writeFmtBlocking(out, "\x1b[{};{}H", .{ p.row, p.col });
+    } else {
+        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
+    }
+    try writeAllBlocking(out, "\x1b[?25h");
 }
 
 fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, marker: u8) void {
@@ -473,34 +507,97 @@ fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, marker: u8
     if (x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, marker);
 }
 
-fn drawPaneOutputFromVt(
-    canvas: []u8,
-    cols: usize,
-    _: usize,
-    r: layout.Rect,
-    term: *Terminal,
-) void {
-    const inner_x: usize = r.x + 1;
-    const inner_y: usize = r.y + 1;
-    const inner_w: usize = r.width - 2;
-    const inner_h: usize = r.height - 2;
-    if (inner_w == 0 or inner_h == 0) return;
-
-    var y: usize = 0;
-    while (y < inner_h) : (y += 1) {
-        var x: usize = 0;
-        while (x < inner_w) : (x += 1) {
-            const maybe_cell = term.screens.active.pages.getCell(.{
-                .active = .{
-                    .x = @intCast(x),
-                    .y = @intCast(y),
-                },
-            }) orelse continue;
-            const cp = maybe_cell.cell.codepoint();
-            const ch: u8 = if (cp >= 32 and cp < 127) @intCast(cp) else ' ';
-            putCell(canvas, cols, inner_x + x, inner_y + y, ch);
+fn writeStyledRow(
+    out: *std.Io.Writer,
+    canvas_row: []const u8,
+    total_cols: usize,
+    row: usize,
+    panes: []const PaneRenderRef,
+) !void {
+    var active_style: ?ghostty_vt.Style = null;
+    var x: usize = 0;
+    while (x < total_cols) : (x += 1) {
+        const pane_cell = paneCellAt(panes, x, row);
+        if (pane_cell) |pc| {
+            if (pc.style.default()) {
+                if (active_style != null) {
+                    try writeAllBlocking(out, "\x1b[0m");
+                    active_style = null;
+                }
+            } else if (active_style) |current| {
+                if (!current.eql(pc.style)) {
+                    try writeStyle(out, pc.style);
+                    active_style = pc.style;
+                }
+            } else {
+                try writeStyle(out, pc.style);
+                active_style = pc.style;
+            }
+            try writeByteBlocking(out, pc.ch);
+            continue;
         }
+
+        if (active_style != null) {
+            try writeAllBlocking(out, "\x1b[0m");
+            active_style = null;
+        }
+        try writeByteBlocking(out, canvas_row[x]);
     }
+    if (active_style != null) try writeAllBlocking(out, "\x1b[0m");
+}
+
+fn writeStyle(out: *std.Io.Writer, style: ghostty_vt.Style) !void {
+    var buf: [160]u8 = undefined;
+    const sgr = try std.fmt.bufPrint(&buf, "{f}", .{style.formatterVt()});
+    try writeAllBlocking(out, sgr);
+}
+
+fn paneCellAt(
+    panes: []const PaneRenderRef,
+    x: usize,
+    y: usize,
+) ?PaneRenderCell {
+    for (panes) |pane| {
+        const inner_x0: usize = pane.rect.x + 1;
+        const inner_y0: usize = pane.rect.y + 1;
+        const inner_x1: usize = pane.rect.x + pane.rect.width - 1;
+        const inner_y1: usize = pane.rect.y + pane.rect.height - 1;
+        if (x < inner_x0 or x >= inner_x1 or y < inner_y0 or y >= inner_y1) continue;
+
+        const local_x: usize = x - inner_x0;
+        const local_y: usize = y - inner_y0;
+        const maybe_cell = pane.term.screens.active.pages.getCell(.{
+            .active = .{
+                .x = @intCast(local_x),
+                .y = @intCast(local_y),
+            },
+        }) orelse return .{
+            .ch = ' ',
+            .style = .{},
+        };
+
+        const cp = maybe_cell.cell.codepoint();
+        const ch: u8 = if (cp >= 32 and cp < 127) @intCast(cp) else ' ';
+        var style: ghostty_vt.Style = if (maybe_cell.cell.style_id == 0)
+            .{}
+        else
+            maybe_cell.node.data.styles.get(maybe_cell.node.data.memory, maybe_cell.cell.style_id).*;
+
+        switch (maybe_cell.cell.content_tag) {
+            .bg_color_palette => style.bg_color = .{ .palette = maybe_cell.cell.content.color_palette },
+            .bg_color_rgb => style.bg_color = .{ .rgb = .{
+                .r = maybe_cell.cell.content.color_rgb.r,
+                .g = maybe_cell.cell.content.color_rgb.g,
+                .b = maybe_cell.cell.content.color_rgb.b,
+            } },
+            else => {},
+        }
+        return .{
+            .ch = ch,
+            .style = style,
+        };
+    }
+    return null;
 }
 
 fn drawText(
