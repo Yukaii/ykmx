@@ -13,6 +13,10 @@ pub const Command = enum {
     move_window_next_tab,
     next_window,
     prev_window,
+    focus_left,
+    focus_down,
+    focus_up,
+    focus_right,
     cycle_layout,
     resize_master_shrink,
     resize_master_grow,
@@ -78,13 +82,17 @@ pub const Router = struct {
                 ']' => .{ .command = .next_tab },
                 '[' => .{ .command = .prev_tab },
                 'm' => .{ .command = .move_window_next_tab },
-                'j' => .{ .command = .next_window },
-                'k' => .{ .command = .prev_window },
+                'h' => .{ .command = .focus_left },
+                'j' => .{ .command = .focus_down },
+                'k' => .{ .command = .focus_up },
+                'l' => .{ .command = .focus_right },
+                'J' => .{ .command = .next_window },
+                'K' => .{ .command = .prev_window },
                 ' ' => .{ .command = .cycle_layout },
-                'h' => .{ .command = .resize_master_shrink },
-                'l' => .{ .command = .resize_master_grow },
-                'i' => .{ .command = .master_count_increase },
-                'o' => .{ .command = .master_count_decrease },
+                'H' => .{ .command = .resize_master_shrink },
+                'L' => .{ .command = .resize_master_grow },
+                'I' => .{ .command = .master_count_increase },
+                'O' => .{ .command = .master_count_decrease },
                 'u' => .{ .command = .scroll_page_up },
                 'd' => .{ .command = .scroll_page_down },
                 '\\' => .{ .command = .detach },
@@ -209,16 +217,30 @@ test "input router parses master resize and count commands" {
     var r = Router{};
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
-    try testing.expectEqual(Event{ .command = .resize_master_shrink }, r.feedByte('h'));
+    try testing.expectEqual(Event{ .command = .resize_master_shrink }, r.feedByte('H'));
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
-    try testing.expectEqual(Event{ .command = .resize_master_grow }, r.feedByte('l'));
+    try testing.expectEqual(Event{ .command = .resize_master_grow }, r.feedByte('L'));
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
-    try testing.expectEqual(Event{ .command = .master_count_increase }, r.feedByte('i'));
+    try testing.expectEqual(Event{ .command = .master_count_increase }, r.feedByte('I'));
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
-    try testing.expectEqual(Event{ .command = .master_count_decrease }, r.feedByte('o'));
+    try testing.expectEqual(Event{ .command = .master_count_decrease }, r.feedByte('O'));
+}
+
+test "input router parses directional focus commands" {
+    const testing = std.testing;
+    var r = Router{};
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .focus_left }, r.feedByte('h'));
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .focus_down }, r.feedByte('j'));
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .focus_up }, r.feedByte('k'));
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .focus_right }, r.feedByte('l'));
 }
 
 test "input router parses popup commands" {

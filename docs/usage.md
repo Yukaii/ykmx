@@ -74,10 +74,11 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G w` close active tab
 - `Ctrl+G ]` / `Ctrl+G [` next/prev tab
 - `Ctrl+G m` move focused window to next tab
-- `Ctrl+G j` / `Ctrl+G k` next/prev window
+- `Ctrl+G h` / `Ctrl+G j` / `Ctrl+G k` / `Ctrl+G l` focus left/down/up/right pane
+- `Ctrl+G J` / `Ctrl+G K` next/prev window (index order)
 - `Ctrl+G Space` cycle layout
-- `Ctrl+G h` / `Ctrl+G l` shrink/grow master area ratio
-- `Ctrl+G i` / `Ctrl+G o` increase/decrease master pane count
+- `Ctrl+G H` / `Ctrl+G L` shrink/grow master area ratio
+- `Ctrl+G I` / `Ctrl+G O` increase/decrease master pane count
 - `Ctrl+G p` open popup (`fzf` flow)
 - `Ctrl+G Escape` close focused popup
 - `Ctrl+G Tab` cycle popup focus

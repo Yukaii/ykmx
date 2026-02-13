@@ -8,6 +8,13 @@ const popup_mod = @import("popup.zig");
 const scrollback_mod = @import("scrollback.zig");
 
 pub const Multiplexer = struct {
+    const FocusDirection = enum {
+        left,
+        right,
+        up,
+        down,
+    };
+
     const DaParseState = enum(u2) {
         idle,
         esc,
@@ -215,6 +222,34 @@ pub const Multiplexer = struct {
                     },
                     .next_window => try self.workspace_mgr.focusNextWindowActive(),
                     .prev_window => try self.workspace_mgr.focusPrevWindowActive(),
+                    .focus_left => {
+                        if (screen) |s| {
+                            try self.focusDirectional(s, .left);
+                        } else {
+                            try self.workspace_mgr.focusPrevWindowActive();
+                        }
+                    },
+                    .focus_down => {
+                        if (screen) |s| {
+                            try self.focusDirectional(s, .down);
+                        } else {
+                            try self.workspace_mgr.focusNextWindowActive();
+                        }
+                    },
+                    .focus_up => {
+                        if (screen) |s| {
+                            try self.focusDirectional(s, .up);
+                        } else {
+                            try self.workspace_mgr.focusPrevWindowActive();
+                        }
+                    },
+                    .focus_right => {
+                        if (screen) |s| {
+                            try self.focusDirectional(s, .right);
+                        } else {
+                            try self.workspace_mgr.focusNextWindowActive();
+                        }
+                    },
                     .cycle_layout => {
                         _ = try self.workspace_mgr.cycleActiveLayout();
                         if (screen) |s| {
@@ -680,6 +715,62 @@ pub const Multiplexer = struct {
         const clamped: u16 = @intCast(@max(@as(u32, 100), @min(@as(u32, 900), ratio_u32)));
         try self.workspace_mgr.setActiveMasterRatioPermille(clamped);
         _ = try self.resizeActiveWindowsToLayout(screen);
+    }
+
+    fn focusDirectional(
+        self: *Multiplexer,
+        screen: layout.Rect,
+        dir: FocusDirection,
+    ) !void {
+        const rects = try self.computeActiveLayout(screen);
+        defer self.allocator.free(rects);
+
+        const tab = try self.workspace_mgr.activeTab();
+        const n = @min(rects.len, tab.windows.items.len);
+        if (n == 0) return;
+        const current = tab.focused_index orelse 0;
+        if (current >= n) return;
+
+        const cur = rects[current];
+        const cur_cx = @as(i32, cur.x) + @divTrunc(@as(i32, cur.width), 2);
+        const cur_cy = @as(i32, cur.y) + @divTrunc(@as(i32, cur.height), 2);
+
+        var best_idx: ?usize = null;
+        var best_score: i32 = std.math.maxInt(i32);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (i == current) continue;
+            const cand = rects[i];
+            if (cand.width == 0 or cand.height == 0) continue;
+
+            const cx = @as(i32, cand.x) + @divTrunc(@as(i32, cand.width), 2);
+            const cy = @as(i32, cand.y) + @divTrunc(@as(i32, cand.height), 2);
+            const dx = cx - cur_cx;
+            const dy = cy - cur_cy;
+
+            const primary: i32 = switch (dir) {
+                .left => -dx,
+                .right => dx,
+                .up => -dy,
+                .down => dy,
+            };
+            if (primary <= 0) continue;
+
+            const secondary: i32 = switch (dir) {
+                .left, .right => @intCast(@abs(dy)),
+                .up, .down => @intCast(@abs(dx)),
+            };
+            const score = primary * 1000 + secondary;
+            if (score < best_score) {
+                best_score = score;
+                best_idx = i;
+            }
+        }
+
+        if (best_idx) |idx| {
+            try self.workspace_mgr.setFocusedWindowIndexActive(idx);
+            _ = try self.markActiveWindowsDirty();
+        }
     }
 
     fn countPrimaryDaQueries(state: *DaParseState, bytes: []const u8) usize {
