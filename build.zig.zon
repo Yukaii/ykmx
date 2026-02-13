@@ -1,0 +1,17 @@
+.{
+    .name = .ykwm,
+    .version = "0.0.0",
+    .fingerprint = 0x208ce61fc15c0faa,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .ghostty = .{
+            .url = "git+https://github.com/ghostty-org/ghostty.git?ref=main",
+            .hash = "ghostty-1.3.0-dev-5UdBC9U2TQQIJZmEYY7SLrmFGcW6-0jQkYMirsuocfDI",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -129,6 +129,25 @@ No existing solution provides:
 - Jump to previous/next prompt
 - Triple-click to select command output
 
+### 5. Tabs / Workspaces
+
+**Workspace Model:**
+- Multiple tabs (workspaces), each with independent window tree and layout state
+- Fast tab switching without destroying PTYs
+- Optional per-tab default layout
+
+**Tab Operations:**
+- Create/close tab
+- Rename tab
+- Next/previous tab cycling
+- Move window between tabs
+- Jump directly to tab by index
+
+**State Rules:**
+- Active tab owns input focus and visible rendering
+- Inactive tabs keep PTYs alive and continue buffering output
+- Optional lazy render for inactive tabs to reduce frame cost
+
 ## Technical Design
 
 ### Core Components
@@ -138,7 +157,10 @@ src/
 ├── main.zig              # Entry point, CLI parsing
 ├── multiplexer.zig       # Main event loop, window management
 ├── window.zig            # Window structure and operations
-├── layout.zig            # Layout engine (tiling algorithms)
+├── workspace.zig         # Tab/workspace manager and active workspace state
+├── layout.zig            # Layout engine interface + shared types
+├── layout_native.zig     # Native tiling algorithms (direct implementation)
+├── layout_opentui.zig    # OpenTUI-backed layout adapter (optional)
 ├── popup.zig             # Popup/floating window management
 ├── renderer.zig          # Terminal rendering and output
 ├── pty.zig               # PTY management and I/O
@@ -418,6 +440,28 @@ Study dvtm's (~4000 lines of C):
 - Can render two VT instances side-by-side to stdout
 - If cell access is not available, document alternative approach before proceeding
 
+### Phase 0.5: Layout Spike (Week 1, parallel to early Foundation)
+
+**Goals:**
+- Evaluate OpenTUI as a layout engine candidate for tiling math
+- Avoid hard-coupling the multiplexer to one layout implementation
+
+**Deliverables:**
+- [ ] Define a `LayoutEngine` interface (`computeLayout`, `resize`, `setMasterCount`, etc.)
+- [ ] Implement one native vertical-stack layout through the interface
+- [ ] Implement one OpenTUI adapter for the same vertical-stack layout
+- [ ] Compare outputs for identical inputs (golden tests)
+- [ ] Benchmark both paths under resize + create/close window churn
+
+**Decision Criteria (go/no-go):**
+- Correctness: identical or intentionally equivalent tile rectangles
+- Performance: no meaningful regression under target interaction patterns
+- Complexity: adapter maintenance cost is acceptable for future layouts/popups
+
+**Exit Criteria:**
+- Clear decision documented: `native`, `opentui`, or `hybrid`
+- Interface retained so decision can be revisited without renderer rewrite
+
 ### Phase 1: Foundation (Weeks 1-2)
 
 **Goals:**
@@ -425,6 +469,7 @@ Study dvtm's (~4000 lines of C):
 - Single layout (vertical stack)
 - PTY spawning and I/O
 - Basic rendering
+- Layout engine abstraction in place (selected backend from Phase 0.5)
 - **Study dvtm codebase for layout algorithms**
 
 **Deliverables:**
@@ -433,7 +478,8 @@ Study dvtm's (~4000 lines of C):
 - [ ] Window data structure
 - [ ] Basic rendering loop
 - [ ] Input handling framework
-- [ ] Vertical stack layout
+- [ ] Vertical stack layout via `LayoutEngine`
+- [ ] Backend selection wiring (`layout_native` or `layout_opentui`)
 
 **Testing:**
 - Spawn multiple shells
@@ -445,6 +491,7 @@ Study dvtm's (~4000 lines of C):
 **Goals:**
 - Multiple layouts
 - Window lifecycle management
+- Tab/workspace support
 - Configuration system
 - Better rendering
 
@@ -453,6 +500,9 @@ Study dvtm's (~4000 lines of C):
 - [ ] Grid layout
 - [ ] Fullscreen zoom
 - [ ] Window creation/closing
+- [ ] Tab/workspace create/close/switch
+- [ ] Move window across tabs
+- [ ] Tab bar in status line (name + active marker)
 - [ ] Configuration file support
 - [ ] Window titles
 - [ ] Status bar
@@ -460,6 +510,7 @@ Study dvtm's (~4000 lines of C):
 **Testing:**
 - Create/close windows dynamically
 - Switch layouts
+- Switch tabs and preserve per-tab layout/focus
 - Configuration reload
 
 ### Phase 3: Popup System (Weeks 5-6)
@@ -548,9 +599,42 @@ Study dvtm's (~4000 lines of C):
 **Future Enhancements:**
 - [ ] Tree-style popup management
 - [ ] AI-powered contextual popups
-- [ ] Plugin system
+- [ ] Plugin system (long-term)
 - [ ] Remote session support
 - [ ] Collaborative editing
+
+## Long-term Plugin Support
+
+### Scope
+
+Plugin support is a long-term goal and is not required for MVP phases.
+Initial focus is core stability (PTY, layout, rendering, tabs, zmx integration).
+
+### Plugin Capabilities (proposed)
+
+- Custom commands (keybinding-triggered actions)
+- Status bar widgets (read-only data surfaces)
+- Popup providers (custom picker/content sources)
+- Layout extensions (optional additional layout algorithms)
+
+### Safety Model (proposed)
+
+- Default-deny capability manifest per plugin (`pty`, `fs`, `network`, `ipc`)
+- Explicit user consent for privileged capabilities
+- Per-plugin crash isolation so plugin failures do not crash ykwm
+
+### API Shape (proposed)
+
+- Stable core plugin API with semantic versioning
+- Event hooks: `on_start`, `on_key`, `on_window_open`, `on_layout_changed`, `on_tick`
+- Command registration: `:plugin.command` namespace
+- Structured request/response IPC boundary (JSON-RPC or messagepack)
+
+### Runtime Strategy (proposed)
+
+- Out-of-process plugin host as default for safety and isolation
+- Optional in-process fast path only for trusted/built-in plugins
+- Hot-reload for development; cold-restart for production by default
 
 ## Technical Decisions
 
@@ -624,12 +708,33 @@ if (b.lazyDependency("ghostty", .{
 
 **Validation Step (Phase 0):** Before starting Phase 1, write a minimal proof-of-concept that creates a `ghostty_vt.Terminal`, feeds it sample data, and reads back individual cells from `term.screens.active`. This validates the rendering approach before building window management on top of it.
 
+### Layout Engine Candidate: OpenTUI
+
+OpenTUI is now a candidate because it is implemented in Zig and can be integrated
+without crossing language boundaries.
+
+**Proposed usage boundary:**
+- Use OpenTUI for layout computation only (tile rect calculation)
+- Keep terminal rendering/compositing in ykwm (ghostty-vt + custom renderer)
+- Keep popup z-index/focus policy in ykwm even if popup rect math uses OpenTUI
+
+**Non-goals for initial integration:**
+- Replacing the VT layer
+- Replacing the frame-diff renderer
+- Replacing input routing policy
+
+**Adoption strategy:**
+- Start with a narrow adapter for one layout (vertical stack)
+- Expand to grid/horizontal/fullscreen only if phase 0.5 metrics are good
+- Keep native fallback implementation available during phases 1-2
+
 ### Layout Strategy
 
-**Tiling First:**
-- Start with proven dwm-style tiling
-- Floating windows as secondary concern
-- Popups built on floating window infrastructure
+**Abstraction First:**
+- Define layout types and `Rect` outputs independent of backend
+- Implement tiling behavior first (vertical stack), backend-swappable
+- Floating windows remain a secondary concern
+- Popups build on floating window infrastructure, not on backend-specific APIs
 
 **Configuration:**
 
@@ -670,6 +775,13 @@ Scrolling:
 Session:
   MOD + \          Detach from session
   MOD + q          Quit
+
+Tabs:
+  MOD + t          New tab
+  MOD + w          Close current tab
+  MOD + ]/[        Next/previous tab
+  MOD + Shift + 1-9  Jump to tab N
+  MOD + m          Move focused window to next tab
 ```
 
 ## Comparison with Existing Tools
@@ -679,6 +791,7 @@ Session:
 | Session Persistence | ✓ (via zmx) | ✓ | ✗ (use abduco) | ✓ |
 | OSC 133 Support | ✓ | ✗ | ✓ | ✓ |
 | Floating Popups | ✓ | ✓ | ✗ | ✗ |
+| Tabs / Workspaces | ✓ | ✓ | ✓ (tags) | ✗ |
 | Tiling Layouts | ✓ | ✓ | ✓ (inspired) | ✗ |
 | Scrollback Sync | ✓ | ✗ | ✗ | ✗ |
 | Native Terminal Features | ✓ | ✗ | ✓ | ✓ |
@@ -699,6 +812,8 @@ Session:
 |------|--------|------------|
 | Terminal emulation bugs | High | Use ghostty-vt, extensive testing |
 | ghostty-vt cell API not exposed | High | Phase 0 validates this before committing to architecture |
+| OpenTUI integration mismatch (APIs/perf) | Medium | Phase 0.5 spike + keep native fallback behind `LayoutEngine` |
+| Plugin API instability (future) | Medium | Keep plugin API out of MVP; introduce after core API and event model stabilize |
 | Performance issues | Medium | Profile early, optimize rendering |
 | Complex input handling | Medium | Start simple, add features gradually |
 | Scope creep | High | Strict phase milestones |
@@ -802,6 +917,6 @@ Session:
 
 ---
 
-*Document Version: 1.1*
-*Last Updated: 2026-02-12*
+*Document Version: 1.2*
+*Last Updated: 2026-02-13*
 *Status: Planning Phase*
