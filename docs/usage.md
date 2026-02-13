@@ -79,8 +79,8 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G Space` cycle layout
 - `Ctrl+G H` / `Ctrl+G L` shrink/grow master area ratio
 - `Ctrl+G I` / `Ctrl+G O` increase/decrease master pane count
-- `Ctrl+G p` open popup (`fzf` flow)
-- `Ctrl+G Escape` close focused popup
+- `Ctrl+G p` toggle popup shell (floating terminal window)
+- `Ctrl+G Escape` close focused popup immediately
 - `Ctrl+G Tab` cycle popup focus
 - `Ctrl+G u` / `Ctrl+G d` page up/down scrollback
 - `Ctrl+G \` detach request

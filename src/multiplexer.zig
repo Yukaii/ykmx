@@ -38,6 +38,7 @@ pub const Multiplexer = struct {
     last_mouse_event: ?input_mod.MouseEvent = null,
     drag_state: DragState = .{},
     next_popup_window_id: u32 = 1_000_000,
+    redraw_requested: bool = false,
 
     pub const TickResult = struct {
         reads: usize,
@@ -176,14 +177,21 @@ pub const Multiplexer = struct {
                         _ = try self.closeFocusedWindow();
                     },
                     .open_popup => {
-                        const s = screen orelse layout.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
-                        _ = try self.openFzfPopup(s, true);
+                        if (self.popup_mgr.count() > 0) {
+                            try self.closeFocusedPopup();
+                        } else {
+                            const s = screen orelse layout.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
+                            _ = try self.openShellPopup("popup-shell", s, true);
+                        }
+                        self.requestRedraw();
                     },
                     .close_popup => {
                         try self.closeFocusedPopup();
+                        self.requestRedraw();
                     },
                     .cycle_popup => {
                         self.popup_mgr.cycleFocus();
+                        self.requestRedraw();
                     },
                     .new_tab => {
                         const n = self.workspace_mgr.tabCount();
@@ -498,6 +506,7 @@ pub const Multiplexer = struct {
         var redraw = false;
         if (signals.sigwinch) {
             resized = try self.resizeActiveWindowsToLayout(screen);
+            resized += try self.resizePopupWindows(screen);
             redraw = true;
         }
 
@@ -505,6 +514,7 @@ pub const Multiplexer = struct {
         if (reads > 0) redraw = true;
         const popup_updates = try self.processPopupTick();
         if (popup_updates > 0) redraw = true;
+        if (self.consumeRedrawRequested()) redraw = true;
 
         return .{
             .reads = reads,
@@ -573,6 +583,12 @@ pub const Multiplexer = struct {
         try self.scrollbacks.put(self.allocator, popup_window_id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 2_000));
         try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
 
+        const popup_inner_rows: u16 = if (rect.height > 2) rect.height - 2 else 1;
+        const popup_inner_cols: u16 = if (rect.width > 2) rect.width - 2 else 1;
+        if (self.ptys.getPtr(popup_window_id)) |pp| {
+            try pp.resize(popup_inner_rows, popup_inner_cols);
+        }
+
         const popup_id = try self.popup_mgr.create(.{
             .window_id = popup_window_id,
             .title = title,
@@ -580,6 +596,43 @@ pub const Multiplexer = struct {
             .modal = modal,
             .auto_close = auto_close,
             .kind = .command,
+            .animate = true,
+        });
+        try self.markWindowDirty(popup_window_id);
+        return popup_id;
+    }
+
+    pub fn openShellPopup(
+        self: *Multiplexer,
+        title: []const u8,
+        screen: layout.Rect,
+        modal: bool,
+    ) !u32 {
+        const popup_window_id = self.next_popup_window_id;
+        self.next_popup_window_id += 1;
+
+        const rect = centeredPopupRect(screen, 70, 60);
+        var p = try pty_mod.Pty.spawnShell(self.allocator);
+        errdefer p.deinit();
+
+        try self.ptys.put(self.allocator, popup_window_id, p);
+        try self.stdout_buffers.put(self.allocator, popup_window_id, .{});
+        try self.scrollbacks.put(self.allocator, popup_window_id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 2_000));
+        try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
+
+        const popup_inner_rows: u16 = if (rect.height > 2) rect.height - 2 else 1;
+        const popup_inner_cols: u16 = if (rect.width > 2) rect.width - 2 else 1;
+        if (self.ptys.getPtr(popup_window_id)) |pp| {
+            try pp.resize(popup_inner_rows, popup_inner_cols);
+        }
+
+        const popup_id = try self.popup_mgr.create(.{
+            .window_id = popup_window_id,
+            .title = title,
+            .rect = rect,
+            .modal = modal,
+            .auto_close = false,
+            .kind = .persistent,
             .animate = true,
         });
         try self.markWindowDirty(popup_window_id);
@@ -597,10 +650,23 @@ pub const Multiplexer = struct {
         return self.openCommandPopup("fzf", &.{ "/bin/sh", "-c", script }, screen, modal, true);
     }
 
+    pub fn openInteractivePopup(self: *Multiplexer, screen: layout.Rect, modal: bool) !u32 {
+        const script =
+            \\if command -v fzf >/dev/null 2>&1; then
+            \\  printf 'one\ntwo\nthree\n' | fzf --height=100% --layout=reverse --prompt='ykwm> '
+            \\else
+            \\  printf 'fzf not found on PATH\n'
+            \\  printf 'Press Enter to close...'
+            \\  IFS= read -r _
+            \\fi
+        ;
+        return self.openCommandPopup("popup", &.{ "/bin/sh", "-c", script }, screen, modal, true);
+    }
+
     pub fn closeFocusedPopup(self: *Multiplexer) !void {
-        if (self.popup_mgr.startCloseAnimationFocused()) return;
-        const removed = self.popup_mgr.closeFocused() orelse return;
+        const removed = self.popup_mgr.closeFocused() orelse self.popup_mgr.closeTopmost() orelse return;
         self.cleanupClosedPopup(removed);
+        self.requestRedraw();
     }
 
     pub fn closeActiveTab(self: *Multiplexer) !void {
@@ -621,6 +687,16 @@ pub const Multiplexer = struct {
 
     fn markWindowDirty(self: *Multiplexer, window_id: u32) !void {
         try self.dirty_windows.put(self.allocator, window_id, {});
+    }
+
+    fn requestRedraw(self: *Multiplexer) void {
+        self.redraw_requested = true;
+    }
+
+    fn consumeRedrawRequested(self: *Multiplexer) bool {
+        const v = self.redraw_requested;
+        self.redraw_requested = false;
+        return v;
     }
 
     fn markActiveWindowsDirty(self: *Multiplexer) !usize {
@@ -671,6 +747,16 @@ pub const Multiplexer = struct {
         px: u16,
         py: u16,
     ) !void {
+        if (self.popup_mgr.count() > 0) {
+            if (self.topmostPopupAt(px, py)) |popup_id| {
+                if (self.popup_mgr.focusAndRaise(popup_id)) {
+                    if (self.popup_mgr.focusedWindowId()) |wid| try self.markWindowDirty(wid);
+                    return;
+                }
+            }
+            if (self.popup_mgr.hasModalOpen()) return;
+        }
+
         const rects = try self.computeActiveLayout(screen);
         defer self.allocator.free(rects);
 
@@ -688,6 +774,21 @@ pub const Multiplexer = struct {
             try self.markWindowDirty(tab.windows.items[i].id);
             return;
         }
+    }
+
+    fn topmostPopupAt(self: *const Multiplexer, px: u16, py: u16) ?u32 {
+        var best_id: ?u32 = null;
+        var best_z: u32 = 0;
+        for (self.popup_mgr.popups.items) |p| {
+            const inside_x = px >= p.rect.x and px < (p.rect.x + p.rect.width);
+            const inside_y = py >= p.rect.y and py < (p.rect.y + p.rect.height);
+            if (!(inside_x and inside_y)) continue;
+            if (best_id == null or p.z_index >= best_z) {
+                best_id = p.id;
+                best_z = p.z_index;
+            }
+        }
+        return best_id;
     }
 
     fn hitDividerForVerticalStack(self: *Multiplexer, screen: layout.Rect, px: u16, py: u16) !bool {
@@ -906,6 +1007,44 @@ pub const Multiplexer = struct {
             _ = self.scrollbacks.fetchRemove(window_id);
             _ = self.dirty_windows.fetchRemove(window_id);
         }
+    }
+
+    fn resizePopupWindows(self: *Multiplexer, screen: layout.Rect) !usize {
+        var resized: usize = 0;
+        for (self.popup_mgr.popups.items) |*p| {
+            p.rect = clampPopupRect(screen, p.rect);
+            const window_id = p.window_id orelse continue;
+            if (self.ptys.getPtr(window_id)) |proc| {
+                const rows: u16 = if (p.rect.height > 2) p.rect.height - 2 else 1;
+                const cols: u16 = if (p.rect.width > 2) p.rect.width - 2 else 1;
+                try proc.resize(rows, cols);
+                try self.markWindowDirty(window_id);
+                resized += 1;
+            }
+        }
+        return resized;
+    }
+
+    fn clampPopupRect(screen: layout.Rect, rect: layout.Rect) layout.Rect {
+        var r = rect;
+        const min_w: u16 = if (screen.width >= 3) 3 else screen.width;
+        const min_h: u16 = if (screen.height >= 3) 3 else screen.height;
+        const max_w: u16 = screen.width;
+        const max_h: u16 = screen.height;
+        if (r.width < min_w) r.width = min_w;
+        if (r.height < min_h) r.height = min_h;
+        if (r.width > max_w) r.width = max_w;
+        if (r.height > max_h) r.height = max_h;
+
+        const x_min = screen.x;
+        const y_min = screen.y;
+        const x_max = if (screen.width > r.width) screen.x + screen.width - r.width else screen.x;
+        const y_max = if (screen.height > r.height) screen.y + screen.height - r.height else screen.y;
+        if (r.x < x_min) r.x = x_min;
+        if (r.y < y_min) r.y = y_min;
+        if (r.x > x_max) r.x = x_max;
+        if (r.y > y_max) r.y = y_max;
+        return r;
     }
 };
 
@@ -1295,6 +1434,38 @@ test "multiplexer opens and closes command popup" {
     }
     try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
     try testing.expect(!mux.ptys.contains(popup_window_id));
+}
+
+test "multiplexer opens shell popup" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("base", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const popup_id = try mux.openShellPopup("popup-shell", .{ .x = 0, .y = 0, .width = 80, .height = 24 }, true);
+    _ = popup_id;
+
+    try testing.expectEqual(@as(usize, 1), mux.popup_mgr.count());
+    const popup_window_id = mux.focusedPopupWindowId() orelse return error.TestUnexpectedResult;
+    try testing.expect(mux.ptys.contains(popup_window_id));
+}
+
+test "multiplexer Ctrl+G p toggles popup shell" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("base", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 24 };
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'p' });
+    try testing.expectEqual(@as(usize, 1), mux.popup_mgr.count());
+
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'p' });
+    try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
 }
 
 test "multiplexer modal popup captures forwarded input" {

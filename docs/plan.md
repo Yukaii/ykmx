@@ -529,13 +529,15 @@ Implemented in repository:
 - Live runtime now emits per-cell VT styles/colors from `ghostty-vt` (`style_id` + background-only cell colors), so shell prompts/output preserve ANSI colors in panes
 - Live runtime now positions the terminal cursor to the focused pane's VT cursor location after each composed frame
 - Live runtime now uses diff-based frame flushing with a cached frame model (changed cells only; no full-screen clear each redraw)
+- Popup overlay rendering now respects z-order and topmost precedence during composition (base panes no longer mask popup cells)
+- Popup focus now raises z-index (`cycle popup` + mouse click on popup), and modal popups capture click focus from underlying panes
 
 Validated locally:
 - `zig build test` passes
 - `zig build run` passes
 
 Next implementation focus:
-- Move from full-screen clear redraw to diff-based rendering for lower flicker and lower write volume.
+- Complete runtime smoke matrix (popup layering/focus, reattach, resize, mouse interactions) in `docs/compatibility.md`.
 - Then start Phase 6 synchronized scrolling and experimental interaction models.
 
 ### Next Milestone (Immediate)
@@ -545,7 +547,7 @@ Next implementation focus:
   - [x] Per-cell color/style output from `ghostty-vt` attributes
   - [x] Cursor placement for focused pane
   - [x] Diff-based frame flush (no full-screen clear each frame)
-  - [ ] Runtime smoke test: two shells, colored prompt/output, cursor/focus updates, resize + reattach preserved
+  - [ ] Runtime smoke test: two shells, colored prompt/output, cursor/focus updates, popup layering/focus, resize + reattach preserved
 - **Exit Criteria:**
   - Colored shell prompts/output render correctly in both panes
   - No raw ANSI/control-sequence artifacts in pane content

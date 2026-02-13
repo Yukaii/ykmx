@@ -96,7 +96,7 @@ pub const Router = struct {
                 'u' => .{ .command = .scroll_page_up },
                 'd' => .{ .command = .scroll_page_down },
                 '\\' => .{ .command = .detach },
-                else => .noop,
+                else => .{ .forward = b },
             };
         }
 
@@ -255,6 +255,13 @@ test "input router parses popup commands" {
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .cycle_popup }, r.feedByte('\t'));
+}
+
+test "input router forwards unknown prefixed keys" {
+    const testing = std.testing;
+    var r = Router{};
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .forward = 'q' }, r.feedByte('q'));
 }
 
 test "input router parses scroll commands" {

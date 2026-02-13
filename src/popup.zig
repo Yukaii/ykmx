@@ -100,6 +100,21 @@ pub const PopupManager = struct {
         return self.close(id);
     }
 
+    pub fn closeTopmost(self: *PopupManager) ?Popup {
+        if (self.popups.items.len == 0) return null;
+        var best_idx: usize = 0;
+        var best_z: u32 = self.popups.items[0].z_index;
+        for (self.popups.items, 0..) |p, i| {
+            if (p.z_index >= best_z) {
+                best_z = p.z_index;
+                best_idx = i;
+            }
+        }
+        const removed = self.popups.orderedRemove(best_idx);
+        self.recomputeFocusAfterRemove(removed.id);
+        return removed;
+    }
+
     pub fn focused(self: *PopupManager) ?*Popup {
         const id = self.focused_popup_id orelse return null;
         return self.getById(id);
@@ -130,12 +145,19 @@ pub const PopupManager = struct {
             for (self.popups.items, 0..) |p, i| {
                 if (p.id != id) continue;
                 const next = (i + 1) % self.popups.items.len;
-                self.focused_popup_id = self.popups.items[next].id;
+                _ = self.focusAndRaise(self.popups.items[next].id);
                 return;
             }
         }
 
-        self.focused_popup_id = self.popups.items[self.popups.items.len - 1].id;
+        _ = self.focusAndRaise(self.popups.items[self.popups.items.len - 1].id);
+    }
+
+    pub fn focusAndRaise(self: *PopupManager, popup_id: u32) bool {
+        const p = self.getById(popup_id) orelse return false;
+        self.focused_popup_id = popup_id;
+        p.z_index = self.nextZIndex();
+        return true;
     }
 
     pub fn count(self: *const PopupManager) usize {
@@ -268,6 +290,29 @@ test "popup manager modal detection and close focused" {
     const closed = pm.closeFocused() orelse return error.TestUnexpectedResult;
     defer testing.allocator.free(closed.title);
     try testing.expectEqual(@as(usize, 0), pm.count());
+}
+
+test "popup manager cycle focus raises z-index" {
+    const testing = std.testing;
+    var pm = PopupManager.init(testing.allocator);
+    defer pm.deinit();
+
+    const a = try pm.create(.{
+        .title = "a",
+        .rect = .{ .x = 1, .y = 1, .width = 10, .height = 5 },
+    });
+    const b = try pm.create(.{
+        .title = "b",
+        .rect = .{ .x = 2, .y = 2, .width = 10, .height = 5 },
+    });
+    const old_b_z = pm.popups.items[1].z_index;
+
+    pm.cycleFocus();
+
+    try testing.expectEqual(a, pm.focused_popup_id.?);
+    const pa = pm.focused().?;
+    try testing.expect(pa.z_index > old_b_z);
+    try testing.expect(a != b);
 }
 
 test "popup manager animation tick removes fade-out popup" {

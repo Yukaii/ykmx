@@ -455,20 +455,26 @@ fn renderRuntimeFrame(
     const canvas = try allocator.alloc(u8, canvas_len);
     defer allocator.free(canvas);
     @memset(canvas, ' ');
+    const popup_overlay = try allocator.alloc(bool, canvas_len);
+    defer allocator.free(popup_overlay);
+    @memset(popup_overlay, false);
 
     const rects = try mux.computeActiveLayout(content);
     defer allocator.free(rects);
     const tab = try mux.workspace_mgr.activeTab();
     const n = @min(rects.len, tab.windows.items.len);
-    var active_ids = try allocator.alloc(u32, n);
+    const popup_count = mux.popup_mgr.count();
+    var active_ids = try allocator.alloc(u32, n + popup_count);
     defer allocator.free(active_ids);
-    var panes = try allocator.alloc(PaneRenderRef, n);
+    var panes = try allocator.alloc(PaneRenderRef, n + popup_count);
     defer allocator.free(panes);
     var pane_count: usize = 0;
+    var active_id_count: usize = 0;
     var focused_cursor_abs: ?struct { row: usize, col: usize } = null;
 
     for (rects[0..n], 0..) |r, i| {
-        active_ids[i] = tab.windows.items[i].id;
+        active_ids[active_id_count] = tab.windows.items[i].id;
+        active_id_count += 1;
         if (r.width < 2 or r.height < 2) continue;
         const border = computeBorderMask(rects[0..n], i, r, content);
         const insets = computeContentInsets(rects[0..n], i, r, border);
@@ -504,7 +510,64 @@ fn renderRuntimeFrame(
             };
         }
     }
-    try vt_state.prune(active_ids);
+
+    var popup_order = try allocator.alloc(usize, mux.popup_mgr.popups.items.len);
+    defer allocator.free(popup_order);
+    for (popup_order, 0..) |*slot, i| slot.* = i;
+    var po_i: usize = 1;
+    while (po_i < popup_order.len) : (po_i += 1) {
+        const key = popup_order[po_i];
+        const key_z = mux.popup_mgr.popups.items[key].z_index;
+        var j = po_i;
+        while (j > 0 and mux.popup_mgr.popups.items[popup_order[j - 1]].z_index > key_z) : (j -= 1) {
+            popup_order[j] = popup_order[j - 1];
+        }
+        popup_order[j] = key;
+    }
+
+    for (popup_order) |popup_idx| {
+        const p = mux.popup_mgr.popups.items[popup_idx];
+        const window_id = p.window_id orelse continue;
+        if (window_id == 0) continue;
+        if (p.rect.width < 2 or p.rect.height < 2) continue;
+
+        active_ids[active_id_count] = window_id;
+        active_id_count += 1;
+
+        const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
+        drawBorder(canvas, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) '*' else ' ');
+
+        const inner_x = p.rect.x + 1;
+        const inner_y = p.rect.y + 1;
+        const inner_w = p.rect.width - 2;
+        const inner_h = p.rect.height - 2;
+        if (inner_w == 0 or inner_h == 0) continue;
+
+        drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
+        markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
+
+        const output = mux.windowOutput(window_id) catch "";
+        const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
+        panes[pane_count] = .{
+            .content_x = inner_x,
+            .content_y = inner_y,
+            .content_w = inner_w,
+            .content_h = inner_h,
+            .term = &wv.term,
+        };
+        pane_count += 1;
+
+        if (mux.popup_mgr.focused_popup_id == p.id) {
+            const cursor = wv.term.screens.active.cursor;
+            const cx: usize = @min(@as(usize, @intCast(cursor.x)), @as(usize, inner_w - 1));
+            const cy: usize = @min(@as(usize, @intCast(cursor.y)), @as(usize, inner_h - 1));
+            focused_cursor_abs = .{
+                .row = @as(usize, inner_y) + cy + 1,
+                .col = @as(usize, inner_x) + cx + 1,
+            };
+        }
+    }
+    try vt_state.prune(active_ids[0..active_id_count]);
 
     const tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
     defer allocator.free(tab_line);
@@ -524,6 +587,15 @@ fn renderRuntimeFrame(
         const start = row * total_cols;
         var x: usize = 0;
         while (x < total_cols) : (x += 1) {
+            if (popup_overlay[row_off + x]) {
+                curr[row_off + x] = .{
+                    .text = [_]u8{ canvas[start + x] } ++ ([_]u8{0} ** 31),
+                    .text_len = 1,
+                    .style = .{},
+                    .styled = false,
+                };
+                continue;
+            }
             const pane_cell = paneCellAt(panes[0..pane_count], x, row);
             if (pane_cell) |pc| {
                 if (pc.skip_draw) {
@@ -685,6 +757,32 @@ fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, border: Bo
     if (border.top and x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, marker);
 }
 
+fn markPopupOverlay(
+    overlay: []bool,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+) void {
+    if (r.width < 2 or r.height < 2) return;
+    const x0: usize = r.x;
+    const y0: usize = r.y;
+    const x1: usize = x0 + r.width - 1;
+    const y1: usize = y0 + r.height - 1;
+    if (x0 >= cols or y0 >= rows) return;
+    if (x1 >= cols or y1 >= rows) return;
+
+    var x = x0;
+    while (x <= x1) : (x += 1) {
+        overlay[y0 * cols + x] = true;
+        overlay[y1 * cols + x] = true;
+    }
+    var y = y0;
+    while (y <= y1) : (y += 1) {
+        overlay[y * cols + x0] = true;
+        overlay[y * cols + x1] = true;
+    }
+}
+
 fn writeStyledRow(
     out: *std.Io.Writer,
     canvas_row: []const u8,
@@ -759,7 +857,10 @@ fn paneCellAt(
     x: usize,
     y: usize,
 ) ?PaneRenderCell {
-    for (panes) |pane| {
+    var i: usize = panes.len;
+    while (i > 0) {
+        i -= 1;
+        const pane = panes[i];
         const inner_x0: usize = pane.content_x;
         const inner_y0: usize = pane.content_y;
         const inner_x1: usize = pane.content_x + pane.content_w;
