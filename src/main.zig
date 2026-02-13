@@ -175,6 +175,10 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     var term = try RuntimeTerminal.enter();
     defer term.leave();
 
+    var last_size = getTerminalSize();
+    var last_content = contentRect(last_size);
+    _ = mux.resizeActiveWindowsToLayout(last_content) catch {};
+
     var buf: [256]u8 = undefined;
     var w = std.fs.File.stdout().writer(&buf);
     const out = &w.interface;
@@ -189,6 +193,14 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     while (true) {
         const size = getTerminalSize();
         const content = contentRect(size);
+        if (size.cols != last_size.cols or size.rows != last_size.rows or
+            content.width != last_content.width or content.height != last_content.height)
+        {
+            _ = mux.resizeActiveWindowsToLayout(content) catch {};
+            force_redraw = true;
+            last_size = size;
+            last_content = content;
+        }
 
         while (true) {
             const n = readStdinNonBlocking(&input_buf) catch |err| switch (err) {
@@ -322,16 +334,18 @@ fn renderRuntimeFrame(
     const status_line = try status.renderStatusBarWithScroll(allocator, &mux.workspace_mgr, mux.focusedScrollOffset());
     defer allocator.free(status_line);
 
-    try out.writeAll("\x1b[2J\x1b[H");
+    try writeAllBlocking(out, "\x1b[2J");
     var row: usize = 0;
     while (row < content_rows) : (row += 1) {
         const start = row * total_cols;
-        try out.writeAll(canvas[start .. start + total_cols]);
-        try out.writeAll("\r\n");
+        try writeFmtBlocking(out, "\x1b[{};1H", .{row + 1});
+        try writeClippedLine(out, canvas[start .. start + total_cols], total_cols);
     }
+    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 1});
     try writeClippedLine(out, tab_line, total_cols);
-    try out.writeAll("\r\n");
+    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
     try writeClippedLine(out, status_line, total_cols);
+    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
 }
 
 fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, marker: u8) void {
@@ -429,11 +443,40 @@ fn putCell(canvas: []u8, cols: usize, x: usize, y: usize, ch: u8) void {
 
 fn writeClippedLine(out: *std.Io.Writer, line: []const u8, max_cols: usize) !void {
     const clipped_len = @min(line.len, max_cols);
-    try out.writeAll(line[0..clipped_len]);
+    try writeAllBlocking(out, line[0..clipped_len]);
     if (clipped_len < max_cols) {
         var i: usize = clipped_len;
-        while (i < max_cols) : (i += 1) try out.writeByte(' ');
+        while (i < max_cols) : (i += 1) try writeByteBlocking(out, ' ');
     }
+}
+
+fn writeAllBlocking(out: *std.Io.Writer, bytes: []const u8) !void {
+    var written: usize = 0;
+    var retries: usize = 0;
+    while (written < bytes.len) {
+        const n = out.write(bytes[written..]) catch |err| switch (err) {
+            error.WriteFailed => {
+                retries += 1;
+                if (retries > 2000) return err;
+                std.Thread.sleep(1 * std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+        retries = 0;
+        written += n;
+    }
+}
+
+fn writeByteBlocking(out: *std.Io.Writer, b: u8) !void {
+    var one = [1]u8{b};
+    try writeAllBlocking(out, &one);
+}
+
+fn writeFmtBlocking(out: *std.Io.Writer, comptime fmt: []const u8, args: anytype) !void {
+    var buf: [128]u8 = undefined;
+    const text = try std.fmt.bufPrint(&buf, fmt, args);
+    try writeAllBlocking(out, text);
 }
 
 fn pickLayoutEngine(backend: config.LayoutBackend) layout.LayoutEngine {
