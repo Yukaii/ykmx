@@ -477,7 +477,7 @@ Study dvtm's (~4000 lines of C):
 - [x] PTY management (create, read, write) — true PTY backend (`forkpty`) and resize ioctl path in place
 - [x] Window data structure
 - [x] Basic rendering loop
-- [ ] Input handling framework
+- [x] Input handling framework — basic prefix router + focused-window forwarding implemented
 - [x] Vertical stack layout via `LayoutEngine`
 - [x] Backend selection wiring (`layout_native` or `layout_opentui`)
 
@@ -497,6 +497,9 @@ Implemented in repository:
 - `src/workspace.zig`: tab/workspace manager with window move between tabs
 - `src/pty.zig`: true PTY backend (`forkpty`), nonblocking master I/O, resize via `TIOCSWINSZ`, PTY tests
 - `src/multiplexer.zig`: window->PTY routing, poll loop, output buffer per window, routing + resize propagation tests
+- `src/input.zig`: prefix-key router (`Ctrl+G`) for command-vs-forwarded input decisions
+- `src/zmx.zig`: ZMX environment/session detection (`$ZMX_SESSION`, `$ZMX_DIR`, `$XDG_RUNTIME_DIR/zmx`)
+- `src/signal.zig`: signal handler scaffold for `SIGWINCH`, `SIGHUP`, `SIGTERM` with drainable atomic flags
 - `build.zig`: `run` and `test` steps wired
 
 Validated locally:
@@ -504,8 +507,9 @@ Validated locally:
 - `zig build run` passes
 
 Next implementation focus:
-- Implement input routing layer (`src/input.zig`) to forward keyboard/mouse to focused window process.
+- Expand input routing from byte-level to full key/mouse event parsing (including escape sequence handling and mouse coordinates).
 - Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
+- Wire signal events into runtime loop behavior: `SIGWINCH` => recompute layout + resize PTYs + full redraw, `SIGHUP`/`SIGTERM` => graceful shutdown path.
 
 ### Phase 2: Core Features (Weeks 3-4)
 

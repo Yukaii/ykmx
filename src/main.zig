@@ -2,7 +2,9 @@ const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const layout_native = @import("layout_native.zig");
 const multiplexer = @import("multiplexer.zig");
+const signal_mod = @import("signal.zig");
 const workspace = @import("workspace.zig");
+const zmx = @import("zmx.zig");
 
 const Terminal = ghostty_vt.Terminal;
 
@@ -13,6 +15,10 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
+
+    signal_mod.installHandlers();
+    var zmx_env = try zmx.detect(alloc);
+    defer zmx_env.deinit(alloc);
 
     var left = try Terminal.init(alloc, .{
         .rows = POC_ROWS,
@@ -54,10 +60,24 @@ pub fn main() !void {
     try out.print("left cursor: x={} y={}\n", .{ left.screens.active.cursor.x, left.screens.active.cursor.y });
     try out.print("right cursor: x={} y={}\n\n", .{ right.screens.active.cursor.x, right.screens.active.cursor.y });
 
+    try printZmxAndSignalPOC(out, zmx_env);
     try printWorkspacePOC(out, alloc);
     try printMultiplexerPOC(out, alloc);
     try renderSideBySide(out, &left, &right);
     try out.flush();
+}
+
+fn printZmxAndSignalPOC(writer: *std.Io.Writer, env: zmx.Env) !void {
+    try writer.writeAll("zmx(signal+env integration scaffold):\n");
+    try writer.print("  in_session={}\n", .{env.in_session});
+    try writer.print("  session={s}\n", .{env.session_name orelse "(none)"});
+    try writer.print("  socket_dir={s}\n", .{env.socket_dir orelse "(none)"});
+
+    const snap = signal_mod.drain();
+    try writer.print(
+        "  signals(sigwinch={}, sighup={}, sigterm={})\n\n",
+        .{ snap.sigwinch, snap.sighup, snap.sigterm },
+    );
 }
 
 fn printWorkspacePOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
@@ -97,14 +117,15 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
     defer mux.deinit();
 
     _ = try mux.createTab("dev");
-    const win_id = try mux.createCommandWindow("cmd", &.{ "/bin/sh", "-c", "printf 'hello-from-multiplexer\\n'" });
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
     const resized = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
+    try mux.handleInputBytes("hello-from-input-layer\n");
 
     var tries: usize = 0;
     while (tries < 20) : (tries += 1) {
         _ = try mux.pollOnce(30);
         const out = try mux.windowOutput(win_id);
-        if (std.mem.indexOf(u8, out, "hello-from-multiplexer") != null) break;
+        if (std.mem.indexOf(u8, out, "hello-from-input-layer") != null) break;
         std.Thread.sleep(20 * std.time.ns_per_ms);
     }
 

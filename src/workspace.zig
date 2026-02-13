@@ -64,6 +64,19 @@ pub const WorkspaceManager = struct {
         return &self.tabs.items[idx];
     }
 
+    pub fn tabCount(self: *const WorkspaceManager) usize {
+        return self.tabs.items.len;
+    }
+
+    pub fn activeTabIndex(self: *const WorkspaceManager) ?usize {
+        return self.active_tab_index;
+    }
+
+    pub fn activeWindowCount(self: *WorkspaceManager) !usize {
+        const tab = try self.activeTab();
+        return tab.windows.items.len;
+    }
+
     pub fn addWindowToActive(self: *WorkspaceManager, title: []const u8) !u32 {
         var tab = try self.activeTab();
         const id = self.next_window_id;
@@ -113,6 +126,27 @@ pub const WorkspaceManager = struct {
         } else if (focus >= src.windows.items.len) {
             src.focused_index = src.windows.items.len - 1;
         }
+    }
+
+    pub fn focusedWindowIdActive(self: *WorkspaceManager) !u32 {
+        const tab = try self.activeTab();
+        const focus = tab.focused_index orelse return error.NoFocusedWindow;
+        if (focus >= tab.windows.items.len) return error.NoFocusedWindow;
+        return tab.windows.items[focus].id;
+    }
+
+    pub fn focusNextWindowActive(self: *WorkspaceManager) !void {
+        const tab = try self.activeTab();
+        if (tab.windows.items.len == 0) return error.NoFocusedWindow;
+        const current = tab.focused_index orelse 0;
+        tab.focused_index = (current + 1) % tab.windows.items.len;
+    }
+
+    pub fn focusPrevWindowActive(self: *WorkspaceManager) !void {
+        const tab = try self.activeTab();
+        if (tab.windows.items.len == 0) return error.NoFocusedWindow;
+        const current = tab.focused_index orelse 0;
+        tab.focused_index = if (current == 0) tab.windows.items.len - 1 else current - 1;
     }
 };
 

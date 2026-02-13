@@ -2,12 +2,14 @@ const std = @import("std");
 const layout = @import("layout.zig");
 const workspace = @import("workspace.zig");
 const pty_mod = @import("pty.zig");
+const input_mod = @import("input.zig");
 
 pub const Multiplexer = struct {
     allocator: std.mem.Allocator,
     workspace_mgr: workspace.WorkspaceManager,
     ptys: std.AutoHashMapUnmanaged(u32, pty_mod.Pty) = .{},
     stdout_buffers: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u8)) = .{},
+    input_router: input_mod.Router = .{},
 
     pub fn init(allocator: std.mem.Allocator, layout_engine: layout.LayoutEngine) Multiplexer {
         return .{
@@ -64,6 +66,48 @@ pub const Multiplexer = struct {
 
     pub fn computeActiveLayout(self: *Multiplexer, screen: layout.Rect) ![]layout.Rect {
         return self.workspace_mgr.computeActiveLayout(screen);
+    }
+
+    pub fn sendInputToFocused(self: *Multiplexer, bytes: []const u8) !void {
+        const focused_id = try self.workspace_mgr.focusedWindowIdActive();
+        const p = self.ptys.getPtr(focused_id) orelse return error.UnknownWindow;
+        try p.write(bytes);
+    }
+
+    pub fn handleInputBytes(self: *Multiplexer, bytes: []const u8) !void {
+        for (bytes) |b| {
+            const ev = self.input_router.feedByte(b);
+            switch (ev) {
+                .forward => |c| {
+                    var tmp = [_]u8{c};
+                    try self.sendInputToFocused(&tmp);
+                },
+                .command => |cmd| switch (cmd) {
+                    .create_window => {
+                        _ = try self.createShellWindow("shell");
+                    },
+                    .next_tab => {
+                        const n = self.workspace_mgr.tabCount();
+                        if (n > 0) {
+                            const current = self.workspace_mgr.activeTabIndex() orelse 0;
+                            try self.switchTab((current + 1) % n);
+                        }
+                    },
+                    .prev_tab => {
+                        const n = self.workspace_mgr.tabCount();
+                        if (n > 0) {
+                            const current = self.workspace_mgr.activeTabIndex() orelse 0;
+                            const prev = if (current == 0) n - 1 else current - 1;
+                            try self.switchTab(prev);
+                        }
+                    },
+                    .next_window => try self.workspace_mgr.focusNextWindowActive(),
+                    .prev_window => try self.workspace_mgr.focusPrevWindowActive(),
+                    .close_window, .detach => {},
+                },
+                .noop => {},
+            }
+        }
     }
 
     pub fn resizeActiveWindowsToLayout(self: *Multiplexer, screen: layout.Rect) !usize {
@@ -181,4 +225,43 @@ test "multiplexer propagates active layout size to ptys" {
 
     const resized = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 80, .height = 24 });
     try testing.expectEqual(@as(usize, 2), resized);
+}
+
+test "multiplexer forwards input to focused window pty" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+
+    try mux.sendInputToFocused("ping\n");
+
+    var tries: usize = 0;
+    while (tries < 40) : (tries += 1) {
+        _ = try mux.pollOnce(30);
+        const out = try mux.windowOutput(win_id);
+        if (std.mem.indexOf(u8, out, "ping") != null) break;
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+
+    const out = try mux.windowOutput(win_id);
+    try testing.expect(std.mem.indexOf(u8, out, "ping") != null);
+}
+
+test "multiplexer handles prefix create-window command" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const before = try mux.workspace_mgr.activeWindowCount();
+    try mux.handleInputBytes(&.{ 0x07, 'c' });
+    const after = try mux.workspace_mgr.activeWindowCount();
+
+    try testing.expectEqual(before + 1, after);
 }
