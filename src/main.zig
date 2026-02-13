@@ -12,6 +12,12 @@ const status = @import("status.zig");
 const benchmark = @import("benchmark.zig");
 
 const Terminal = ghostty_vt.Terminal;
+const c = @cImport({
+    @cInclude("unistd.h");
+    @cInclude("sys/ioctl.h");
+    @cInclude("termios.h");
+    @cInclude("fcntl.h");
+});
 
 const POC_ROWS: u16 = 12;
 const POC_COLS: u16 = 36;
@@ -140,7 +146,7 @@ fn printHelp() !void {
         \\ykwm - experimental terminal multiplexer
         \\
         \\Usage:
-        \\  ykwm                 Run runtime scaffold (quiet mode)
+        \\  ykwm                 Run interactive runtime loop
         \\  ykwm --poc           Run verbose development POC output
         \\  ykwm --benchmark [N] Run frame benchmark (default N=200)
         \\  ykwm --smoke-zmx [session]
@@ -155,20 +161,278 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     signal_mod.installHandlers();
     var env = try zmx.detect(allocator);
     defer env.deinit(allocator);
+    var cfg = try config.load(allocator);
+    defer cfg.deinit(allocator);
+
+    var mux = multiplexer.Multiplexer.init(allocator, pickLayoutEngine(cfg.layout_backend));
+    defer mux.deinit();
+
+    _ = try mux.createTab("main");
+    try mux.workspace_mgr.setActiveLayoutDefaults(cfg.default_layout, cfg.master_count, cfg.master_ratio_permille, cfg.gap);
+    _ = try mux.createShellWindow("shell-1");
+    _ = try mux.createShellWindow("shell-2");
+
+    var term = try RuntimeTerminal.enter();
+    defer term.leave();
 
     var buf: [256]u8 = undefined;
     var w = std.fs.File.stdout().writer(&buf);
     const out = &w.interface;
     try out.print(
-        "ykwm runtime loop started (session={s})\n",
+        "ykwm runtime loop started (session={s})\r\n",
         .{env.session_name orelse "(none)"},
     );
     try out.flush();
 
+    var force_redraw = true;
+    var input_buf: [1024]u8 = undefined;
     while (true) {
+        const size = getTerminalSize();
+        const content = contentRect(size);
+
+        while (true) {
+            const n = readStdinNonBlocking(&input_buf) catch |err| switch (err) {
+                error.WouldBlock => break,
+                else => return err,
+            };
+            if (n == 0) break;
+            try mux.handleInputBytesWithScreen(content, input_buf[0..n]);
+        }
+
         const snap = signal_mod.drain();
-        if (snap.sighup or snap.sigterm) break;
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        const tick_result = try mux.tick(30, content, snap);
+
+        if (tick_result.detach_requested) {
+            _ = env.detachCurrentSession(allocator) catch {};
+        }
+        if (tick_result.should_shutdown) break;
+
+        if (snap.sigwinch) force_redraw = true;
+        if (force_redraw or tick_result.redraw) {
+            try renderRuntimeFrame(out, allocator, &mux, size, content);
+            try out.flush();
+            force_redraw = false;
+        }
+    }
+}
+
+const RuntimeTerminal = struct {
+    had_termios: bool = false,
+    original_termios: c.struct_termios = undefined,
+    original_flags: c_int = 0,
+
+    fn enter() !RuntimeTerminal {
+        var rt: RuntimeTerminal = .{};
+
+        rt.original_flags = c.fcntl(c.STDIN_FILENO, c.F_GETFL, @as(c_int, 0));
+        if (rt.original_flags >= 0) {
+            _ = c.fcntl(c.STDIN_FILENO, c.F_SETFL, rt.original_flags | c.O_NONBLOCK);
+        }
+
+        var termios_state: c.struct_termios = undefined;
+        if (c.tcgetattr(c.STDIN_FILENO, &termios_state) == 0) {
+            rt.had_termios = true;
+            rt.original_termios = termios_state;
+            var raw = termios_state;
+            raw.c_lflag &= ~@as(c_uint, @intCast(c.ECHO | c.ICANON));
+            raw.c_iflag &= ~@as(c_uint, @intCast(c.IXON | c.ICRNL));
+            raw.c_oflag &= ~@as(c_uint, @intCast(c.OPOST));
+            raw.c_cc[c.VMIN] = 0;
+            raw.c_cc[c.VTIME] = 0;
+            _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &raw);
+        }
+
+        // Enter alternate screen and hide cursor.
+        _ = c.write(c.STDOUT_FILENO, "\x1b[?1049h\x1b[?25l", 14);
+        return rt;
+    }
+
+    fn leave(self: *RuntimeTerminal) void {
+        // Show cursor and leave alternate screen.
+        _ = c.write(c.STDOUT_FILENO, "\x1b[?25h\x1b[?1049l", 14);
+        if (self.had_termios) {
+            _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &self.original_termios);
+        }
+        if (self.original_flags >= 0) {
+            _ = c.fcntl(c.STDIN_FILENO, c.F_SETFL, self.original_flags);
+        }
+    }
+};
+
+const RuntimeSize = struct {
+    cols: u16,
+    rows: u16,
+};
+
+fn getTerminalSize() RuntimeSize {
+    var ws: c.struct_winsize = undefined;
+    if (c.ioctl(c.STDOUT_FILENO, c.TIOCGWINSZ, &ws) == 0) {
+        const cols: u16 = if (ws.ws_col > 0) @intCast(ws.ws_col) else 80;
+        const rows: u16 = if (ws.ws_row > 0) @intCast(ws.ws_row) else 24;
+        return .{ .cols = cols, .rows = rows };
+    }
+    return .{ .cols = 80, .rows = 24 };
+}
+
+fn contentRect(size: RuntimeSize) layout.Rect {
+    // Reserve two lines at bottom for tab + status bars.
+    const usable_rows: u16 = if (size.rows > 3) size.rows - 2 else 1;
+    return .{ .x = 0, .y = 0, .width = size.cols, .height = usable_rows };
+}
+
+fn readStdinNonBlocking(buf: []u8) !usize {
+    return std.posix.read(c.STDIN_FILENO, buf);
+}
+
+fn renderRuntimeFrame(
+    out: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    mux: *multiplexer.Multiplexer,
+    size: RuntimeSize,
+    content: layout.Rect,
+) !void {
+    const total_cols: usize = size.cols;
+    const content_rows: usize = content.height;
+    const canvas_len = total_cols * content_rows;
+    var canvas = try allocator.alloc(u8, canvas_len);
+    defer allocator.free(canvas);
+    @memset(canvas, ' ');
+
+    const rects = try mux.computeActiveLayout(content);
+    defer allocator.free(rects);
+    const tab = try mux.workspace_mgr.activeTab();
+    const n = @min(rects.len, tab.windows.items.len);
+
+    for (rects[0..n], 0..) |r, i| {
+        if (r.width < 2 or r.height < 2) continue;
+        drawBorder(canvas, total_cols, content_rows, r, if (tab.focused_index == i) '*' else ' ');
+        const inner_w = r.width - 2;
+        const inner_h = r.height - 2;
+        if (inner_w == 0 or inner_h == 0) continue;
+
+        const title = tab.windows.items[i].title;
+        drawText(canvas, total_cols, content_rows, r.x + 1, r.y, title, inner_w);
+
+        const output = mux.windowOutput(tab.windows.items[i].id) catch "";
+        try drawPaneOutput(allocator, canvas, total_cols, content_rows, r, output);
+    }
+
+    const tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
+    defer allocator.free(tab_line);
+    const status_line = try status.renderStatusBarWithScroll(allocator, &mux.workspace_mgr, mux.focusedScrollOffset());
+    defer allocator.free(status_line);
+
+    try out.writeAll("\x1b[2J\x1b[H");
+    var row: usize = 0;
+    while (row < content_rows) : (row += 1) {
+        const start = row * total_cols;
+        try out.writeAll(canvas[start .. start + total_cols]);
+        try out.writeAll("\r\n");
+    }
+    try writeClippedLine(out, tab_line, total_cols);
+    try out.writeAll("\r\n");
+    try writeClippedLine(out, status_line, total_cols);
+}
+
+fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, marker: u8) void {
+    const x0: usize = r.x;
+    const y0: usize = r.y;
+    const x1: usize = x0 + r.width - 1;
+    const y1: usize = y0 + r.height - 1;
+    if (x1 >= cols or y1 >= rows) return;
+
+    putCell(canvas, cols, x0, y0, '+');
+    putCell(canvas, cols, x1, y0, '+');
+    putCell(canvas, cols, x0, y1, '+');
+    putCell(canvas, cols, x1, y1, '+');
+
+    var x = x0 + 1;
+    while (x < x1) : (x += 1) {
+        putCell(canvas, cols, x, y0, '-');
+        putCell(canvas, cols, x, y1, '-');
+    }
+    var y = y0 + 1;
+    while (y < y1) : (y += 1) {
+        putCell(canvas, cols, x0, y, '|');
+        putCell(canvas, cols, x1, y, '|');
+    }
+    if (x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, marker);
+}
+
+fn drawPaneOutput(
+    allocator: std.mem.Allocator,
+    canvas: []u8,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+    bytes: []const u8,
+) !void {
+    const inner_x: usize = r.x + 1;
+    const inner_y: usize = r.y + 1;
+    const inner_w: usize = r.width - 2;
+    const inner_h: usize = r.height - 2;
+    if (inner_w == 0 or inner_h == 0) return;
+
+    const filtered = try filterPrintable(allocator, bytes);
+    defer allocator.free(filtered);
+
+    var total_lines: usize = 0;
+    var count_it = std.mem.splitScalar(u8, filtered, '\n');
+    while (count_it.next()) |_| total_lines += 1;
+    const skip = total_lines -| inner_h;
+
+    var line_idx: usize = 0;
+    var draw_idx: usize = 0;
+    var it = std.mem.splitScalar(u8, filtered, '\n');
+    while (it.next()) |line| : (line_idx += 1) {
+        if (line_idx < skip) continue;
+        if (draw_idx >= inner_h) break;
+        drawText(canvas, cols, rows, @intCast(inner_x), @intCast(inner_y + draw_idx), line, @intCast(inner_w));
+        draw_idx += 1;
+    }
+}
+
+fn filterPrintable(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    for (bytes) |b| {
+        if (b == '\n' or b == '\t' or (b >= 32 and b < 127)) {
+            try out.append(allocator, b);
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+fn drawText(
+    canvas: []u8,
+    cols: usize,
+    rows: usize,
+    x_start: u16,
+    y: u16,
+    text: []const u8,
+    max_w: u16,
+) void {
+    if (y >= rows) return;
+    var x: usize = x_start;
+    const y_usize: usize = y;
+    var i: usize = 0;
+    while (i < text.len and i < max_w and x < cols) : (i += 1) {
+        putCell(canvas, cols, x, y_usize, text[i]);
+        x += 1;
+    }
+}
+
+fn putCell(canvas: []u8, cols: usize, x: usize, y: usize, ch: u8) void {
+    canvas[y * cols + x] = ch;
+}
+
+fn writeClippedLine(out: *std.Io.Writer, line: []const u8, max_cols: usize) !void {
+    const clipped_len = @min(line.len, max_cols);
+    try out.writeAll(line[0..clipped_len]);
+    if (clipped_len < max_cols) {
+        var i: usize = clipped_len;
+        while (i < max_cols) : (i += 1) try out.writeByte(' ');
     }
 }
 
