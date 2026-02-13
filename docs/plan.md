@@ -506,6 +506,7 @@ Implemented in repository:
 - Dirty-window tracking and focused-window query APIs for renderer integration
 - Input command actions wired: create window, close focused window, next/prev tab, next/prev focused window, detach request flag
 - Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
+- Mouse coordinate path wired for click-to-focus (layout rect hit-test -> focused window update)
 - `build.zig`: `run` and `test` steps wired
 
 Validated locally:
@@ -514,8 +515,8 @@ Validated locally:
 
 Next implementation focus:
 - Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
-- Use parsed mouse coordinates for click-to-focus and optional drag-to-resize behavior.
 - Add attach/reattach validation harness and explicit redraw-on-reattach path tests.
+- Extend mouse handling for drag/resize interactions.
 
 ### Phase 2: Core Features (Weeks 3-4)
 

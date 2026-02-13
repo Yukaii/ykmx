@@ -88,6 +88,14 @@ pub const Multiplexer = struct {
     }
 
     pub fn handleInputBytes(self: *Multiplexer, bytes: []const u8) !void {
+        return self.handleInputBytesWithScreen(null, bytes);
+    }
+
+    pub fn handleInputBytesWithScreen(
+        self: *Multiplexer,
+        screen: ?layout.Rect,
+        bytes: []const u8,
+    ) !void {
         for (bytes) |b| {
             const ev = self.input_router.feedByte(b);
             switch (ev) {
@@ -96,6 +104,9 @@ pub const Multiplexer = struct {
                     try self.sendInputToFocused(&tmp);
                 },
                 .forward_sequence => |seq| {
+                    if (screen) |s| {
+                        try self.applyMouseFocusFromEvent(s, seq.mouse);
+                    }
                     try self.sendInputToFocused(seq.slice());
                     if (seq.mouse) |mouse| self.last_mouse_event = mouse;
                 },
@@ -308,6 +319,36 @@ pub const Multiplexer = struct {
         try self.dirty_windows.put(self.allocator, window_id, {});
     }
 
+    fn applyMouseFocusFromEvent(
+        self: *Multiplexer,
+        screen: layout.Rect,
+        maybe_mouse: ?input_mod.MouseEvent,
+    ) !void {
+        const mouse = maybe_mouse orelse return;
+        if (!mouse.pressed or mouse.button != 0) return;
+
+        const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
+        const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
+
+        const rects = try self.computeActiveLayout(screen);
+        defer self.allocator.free(rects);
+
+        const tab = try self.workspace_mgr.activeTab();
+        const n = @min(rects.len, tab.windows.items.len);
+
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const r = rects[i];
+            const inside_x = px >= r.x and px < (r.x + r.width);
+            const inside_y = py >= r.y and py < (r.y + r.height);
+            if (!(inside_x and inside_y)) continue;
+
+            try self.workspace_mgr.setFocusedWindowIndexActive(i);
+            try self.markWindowDirty(tab.windows.items[i].id);
+            return;
+        }
+    }
+
     fn posixPollFd() type {
         return std.posix.pollfd;
     }
@@ -512,4 +553,22 @@ test "multiplexer forwards csi sequence and captures mouse metadata" {
     try testing.expectEqual(@as(u16, 3), mouse.x);
     try testing.expectEqual(@as(u16, 4), mouse.y);
     try testing.expect(mouse.pressed);
+}
+
+test "multiplexer click-to-focus selects pane by mouse coordinates" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("left", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("right", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    try testing.expectEqual(@as(usize, 0), try mux.workspace_mgr.focusedWindowIndexActive());
+
+    // Click near the right side in a 2-pane vertical layout.
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;70;5M");
+    try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
 }

@@ -135,6 +135,19 @@ pub const WorkspaceManager = struct {
         return tab.windows.items[focus].id;
     }
 
+    pub fn focusedWindowIndexActive(self: *WorkspaceManager) !usize {
+        const tab = try self.activeTab();
+        const focus = tab.focused_index orelse return error.NoFocusedWindow;
+        if (focus >= tab.windows.items.len) return error.NoFocusedWindow;
+        return focus;
+    }
+
+    pub fn setFocusedWindowIndexActive(self: *WorkspaceManager, index: usize) !void {
+        const tab = try self.activeTab();
+        if (index >= tab.windows.items.len) return error.InvalidWindowIndex;
+        tab.focused_index = index;
+    }
+
     pub fn focusNextWindowActive(self: *WorkspaceManager) !void {
         const tab = try self.activeTab();
         if (tab.windows.items.len == 0) return error.NoFocusedWindow;
@@ -195,4 +208,19 @@ test "workspace manager supports tabs and window movement" {
     const ops_tab = try wm.activeTab();
     try testing.expectEqual(@as(usize, 1), ops_tab.windows.items.len);
     try testing.expectEqualStrings("shell-1", ops_tab.windows.items[0].title);
+}
+
+test "workspace manager can set focused window by index" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var wm = WorkspaceManager.init(testing.allocator, engine);
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    _ = try wm.addWindowToActive("a");
+    _ = try wm.addWindowToActive("b");
+
+    try wm.setFocusedWindowIndexActive(1);
+    try testing.expectEqual(@as(usize, 1), try wm.focusedWindowIndexActive());
 }
