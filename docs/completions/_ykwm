@@ -1,0 +1,15 @@
+#compdef ykwm
+
+_ykwm() {
+  local -a opts
+  opts=(
+    '--help[Show help]'
+    '--version[Show version]'
+    '--benchmark[Run benchmark]:frames:(100 200 300 500)'
+    '--smoke-zmx[Run zmx attach smoke test]:session:_files'
+  )
+  _describe 'option' opts
+}
+
+_ykwm "$@"
+

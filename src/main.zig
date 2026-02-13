@@ -9,6 +9,7 @@ const workspace = @import("workspace.zig");
 const zmx = @import("zmx.zig");
 const config = @import("config.zig");
 const status = @import("status.zig");
+const benchmark = @import("benchmark.zig");
 
 const Terminal = ghostty_vt.Terminal;
 
@@ -19,6 +20,46 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
+
+    const args = try std.process.argsAlloc(alloc);
+    defer std.process.argsFree(alloc, args);
+    if (args.len > 1) {
+        if (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h")) {
+            try printHelp();
+            return;
+        }
+        if (std.mem.eql(u8, args[1], "--version")) {
+            var buf: [128]u8 = undefined;
+            var w = std.fs.File.stdout().writer(&buf);
+            const out = &w.interface;
+            try out.writeAll("ykwm 0.1.0-dev\n");
+            try out.flush();
+            return;
+        }
+        if (std.mem.eql(u8, args[1], "--benchmark")) {
+            const frames: usize = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 200;
+            const result = try benchmark.run(alloc, frames);
+            var buf: [512]u8 = undefined;
+            var w = std.fs.File.stdout().writer(&buf);
+            const out = &w.interface;
+            try out.print(
+                "benchmark: frames={} avg_ms={d:.3} p95_ms={d:.3} max_ms={d:.3}\n",
+                .{ result.frames, result.avg_ms, result.p95_ms, result.max_ms },
+            );
+            try out.flush();
+            return;
+        }
+        if (std.mem.eql(u8, args[1], "--smoke-zmx")) {
+            const session = if (args.len > 2) args[2] else "ykwm-smoke";
+            const ok = try zmx.smokeAttachRoundTrip(alloc, session, "ykwm-zmx-smoke");
+            var buf: [256]u8 = undefined;
+            var w = std.fs.File.stdout().writer(&buf);
+            const out = &w.interface;
+            try out.print("zmx_smoke_ok={}\n", .{ok});
+            try out.flush();
+            return;
+        }
+    }
 
     var cfg = try config.load(alloc);
     defer cfg.deinit(alloc);
@@ -72,6 +113,24 @@ pub fn main() !void {
     try printWorkspacePOC(out, alloc, cfg);
     try printMultiplexerPOC(out, alloc, cfg, &zmx_env);
     try renderSideBySide(out, &left, &right);
+    try out.flush();
+}
+
+fn printHelp() !void {
+    var buf: [1024]u8 = undefined;
+    var w = std.fs.File.stdout().writer(&buf);
+    const out = &w.interface;
+    try out.writeAll(
+        \\ykwm - experimental terminal multiplexer
+        \\
+        \\Usage:
+        \\  ykwm                 Run the current POC flow
+        \\  ykwm --benchmark [N] Run frame benchmark (default N=200)
+        \\  ykwm --smoke-zmx [session]
+        \\  ykwm --version
+        \\  ykwm --help
+        \\
+    );
     try out.flush();
 }
 

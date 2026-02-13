@@ -907,6 +907,35 @@ test "multiplexer click-to-focus selects pane by mouse coordinates" {
     try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
 }
 
+test "multiplexer click forwards mouse sequence to newly focused pane" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const left_id = try mux.createCommandWindow("left", &.{"/bin/cat"});
+    const right_id = try mux.createCommandWindow("right", &.{"/bin/cat"});
+
+    const click = "\x1b[<0;70;5M";
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, click);
+
+    var tries: usize = 0;
+    while (tries < 40) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        const right_out = try mux.windowOutput(right_id);
+        if (std.mem.indexOf(u8, right_out, click) != null) break;
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+
+    const left_out = try mux.windowOutput(left_id);
+    const right_out = try mux.windowOutput(right_id);
+
+    try testing.expect(std.mem.indexOf(u8, right_out, click) != null);
+    try testing.expect(std.mem.indexOf(u8, left_out, click) == null);
+}
+
 test "multiplexer drag-resize updates master ratio for vertical stack" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();

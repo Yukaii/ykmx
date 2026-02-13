@@ -1,0 +1,17 @@
+# ykwm example config
+# Location:
+#   $XDG_CONFIG_HOME/ykwm/config
+#   or $HOME/.config/ykwm/config
+
+layout_backend=native
+default_layout=vertical_stack
+master_count=1
+master_ratio_permille=600
+gap=1
+
+show_tab_bar=true
+show_status_bar=true
+
+# Long-term plugin toggle scaffold
+plugins_enabled=false
+

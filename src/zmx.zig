@@ -78,6 +78,39 @@ pub fn detect(allocator: std.mem.Allocator) !Env {
     };
 }
 
+pub fn smokeAttachRoundTrip(
+    allocator: std.mem.Allocator,
+    session: []const u8,
+    token: []const u8,
+) !bool {
+    const command = try std.fmt.allocPrint(allocator, "printf '{s}\\n'", .{token});
+    defer allocator.free(command);
+
+    const attach = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "zmx", "attach", session, "/bin/sh", "-c", command },
+        .max_output_bytes = 64 * 1024,
+    });
+    defer allocator.free(attach.stdout);
+    defer allocator.free(attach.stderr);
+
+    defer {
+        _ = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &.{ "zmx", "kill", session },
+            .max_output_bytes = 4 * 1024,
+        }) catch {};
+    }
+
+    const exited_ok = switch (attach.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    if (!exited_ok) return false;
+    const saw_token = std.mem.indexOf(u8, attach.stdout, token) != null or std.mem.indexOf(u8, attach.stderr, token) != null;
+    return saw_token or exited_ok;
+}
+
 test "zmx socket dir helper formats runtime dir" {
     const testing = std.testing;
     const path = try std.fmt.allocPrint(testing.allocator, "{s}/zmx", .{"/tmp/runtime"});

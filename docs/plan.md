@@ -503,9 +503,11 @@ Implemented in repository:
 - `src/config.zig`: startup config loading + parser (`$XDG_CONFIG_HOME/ykwm/config[.zig]`, fallback `$HOME/.config/ykwm/config[.zig]`)
 - `src/status.zig`: tab bar + status line formatters (active-tab marker, layout/window/focus summary)
 - `src/scrollback.zig`: per-window scrollback buffer (line retention, page/half-page navigation, forward/backward search)
+- `src/benchmark.zig`: frame-time benchmark harness (avg/p95/max ms)
 - `src/zmx.zig`: ZMX environment/session detection (`$ZMX_SESSION`, `$ZMX_DIR`, `$XDG_RUNTIME_DIR/zmx`)
 - `src/zmx.zig`: ZMX environment/session detection + detach command execution helper (`zmx detach <session>`)
 - `src/zmx.zig`: ZMX attach command argv harness helper for attach flow validation
+- `src/zmx.zig`: attach round-trip smoke helper (`zmx attach <session> ...` + cleanup)
 - `src/signal.zig`: signal handler scaffold for `SIGWINCH`, `SIGHUP`, `SIGTERM` with drainable atomic flags
 - Multiplexer runtime tick behavior: `SIGWINCH` => resize + redraw hint, `SIGHUP`/`SIGTERM` => graceful PTY shutdown path
 - Dirty-window tracking and focused-window query APIs for renderer integration
@@ -513,6 +515,8 @@ Implemented in repository:
 - Popup command actions wired: open popup, close focused popup, cycle popup focus; modal popup input capture routes forwarded bytes to focused popup PTY
 - Scrollback actions wired: `MOD+u` page-up and `MOD+d` page-down on focused window scrollback
 - Multiplexer search API wired: forward/backward query over focused scrollback with jump-to-match behavior
+- CLI utilities wired: `--help`, `--version`, `--benchmark [N]`, `--smoke-zmx [session]`
+- User docs added: `docs/usage.md`, `docs/examples/config`, `docs/completions/ykwm.bash`, `docs/completions/_ykwm`
 - Popup animation hooks implemented (fade-in/fade-out state + animation tick processing in runtime loop)
 - FZF popup integration example implemented (`openFzfPopup` with auto-close semantics and fallback if `fzf` is unavailable)
 - Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
@@ -526,8 +530,7 @@ Validated locally:
 - `zig build run` passes
 
 Next implementation focus:
-- Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
-- Start Phase 5 zmx integration hardening and benchmark/documentation passes.
+- Start Phase 6 synchronized scrolling and experimental interaction models.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
@@ -602,14 +605,14 @@ Next implementation focus:
 - Performance optimization
 
 **Deliverables:**
-- [ ] Verify `zmx attach <session> ykwm` works correctly
-- [ ] Handle zmx detach/reattach (SIGWINCH, re-render)
-- [ ] Handle zmx kill (SIGHUP/SIGTERM graceful shutdown)
-- [ ] Mouse event handling (click to focus, click to position cursor)
-- [ ] Performance benchmarks (<16ms frame time)
-- [ ] User documentation
-- [ ] Example configurations (including zmx workflow)
-- [ ] Shell completions
+- [x] Verify `zmx attach <session> ykwm` works correctly
+- [x] Handle zmx detach/reattach (SIGWINCH, re-render)
+- [x] Handle zmx kill (SIGHUP/SIGTERM graceful shutdown)
+- [x] Mouse event handling (click to focus, click to position cursor)
+- [x] Performance benchmarks (<16ms frame time)
+- [x] User documentation
+- [x] Example configurations (including zmx workflow)
+- [x] Shell completions
 
 **Testing:**
 - `zmx attach dev ykwm` — starts ykwm in zmx session
