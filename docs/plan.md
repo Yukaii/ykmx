@@ -528,6 +528,7 @@ Implemented in repository:
 - Live runtime now renders pane content from per-window `ghostty-vt` state (control sequences parsed correctly)
 - Live runtime now emits per-cell VT styles/colors from `ghostty-vt` (`style_id` + background-only cell colors), so shell prompts/output preserve ANSI colors in panes
 - Live runtime now positions the terminal cursor to the focused pane's VT cursor location after each composed frame
+- Live runtime now uses diff-based frame flushing with a cached frame model (changed cells only; no full-screen clear each redraw)
 
 Validated locally:
 - `zig build test` passes
@@ -543,7 +544,7 @@ Next implementation focus:
 - **Scope:**
   - [x] Per-cell color/style output from `ghostty-vt` attributes
   - [x] Cursor placement for focused pane
-  - [ ] Diff-based frame flush (no full-screen clear each frame)
+  - [x] Diff-based frame flush (no full-screen clear each frame)
   - [ ] Runtime smoke test: two shells, colored prompt/output, cursor/focus updates, resize + reattach preserved
 - **Exit Criteria:**
   - Colored shell prompts/output render correctly in both panes

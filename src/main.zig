@@ -176,6 +176,8 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     defer term.leave();
     var vt_state = RuntimeVtState.init(allocator);
     defer vt_state.deinit();
+    var frame_cache = RuntimeFrameCache.init(allocator);
+    defer frame_cache.deinit();
 
     var last_size = getTerminalSize();
     var last_content = contentRect(last_size);
@@ -223,7 +225,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
         if (snap.sigwinch) force_redraw = true;
         if (force_redraw or tick_result.redraw) {
-            try renderRuntimeFrame(out, allocator, &mux, &vt_state, size, content);
+            try renderRuntimeFrame(out, allocator, &mux, &vt_state, &frame_cache, size, content);
             try out.flush();
             force_redraw = false;
         }
@@ -276,6 +278,39 @@ const RuntimeTerminal = struct {
 const RuntimeSize = struct {
     cols: u16,
     rows: u16,
+};
+
+const RuntimeRenderCell = struct {
+    text: [32]u8 = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+    text_len: u8 = 1,
+    style: ghostty_vt.Style = .{},
+    styled: bool = false,
+};
+
+const RuntimeFrameCache = struct {
+    allocator: std.mem.Allocator,
+    cols: usize = 0,
+    rows: usize = 0,
+    cells: []RuntimeRenderCell = &.{},
+
+    fn init(allocator: std.mem.Allocator) RuntimeFrameCache {
+        return .{ .allocator = allocator };
+    }
+
+    fn deinit(self: *RuntimeFrameCache) void {
+        if (self.cells.len > 0) self.allocator.free(self.cells);
+        self.* = undefined;
+    }
+
+    fn ensureSize(self: *RuntimeFrameCache, cols: usize, rows: usize) !bool {
+        if (self.cols == cols and self.rows == rows and self.cells.len == cols * rows) return false;
+        if (self.cells.len > 0) self.allocator.free(self.cells);
+        self.cols = cols;
+        self.rows = rows;
+        self.cells = try self.allocator.alloc(RuntimeRenderCell, cols * rows);
+        for (self.cells) |*cell| cell.* = .{};
+        return true;
+    }
 };
 
 const PaneRenderRef = struct {
@@ -409,13 +444,15 @@ fn renderRuntimeFrame(
     allocator: std.mem.Allocator,
     mux: *multiplexer.Multiplexer,
     vt_state: *RuntimeVtState,
+    frame_cache: *RuntimeFrameCache,
     size: RuntimeSize,
     content: layout.Rect,
 ) !void {
     const total_cols: usize = size.cols;
     const content_rows: usize = content.height;
+    const total_rows: usize = content_rows + 2;
     const canvas_len = total_cols * content_rows;
-    var canvas = try allocator.alloc(u8, canvas_len);
+    const canvas = try allocator.alloc(u8, canvas_len);
     defer allocator.free(canvas);
     @memset(canvas, ' ');
 
@@ -473,18 +510,75 @@ fn renderRuntimeFrame(
     const status_line = try status.renderStatusBarWithScroll(allocator, &mux.workspace_mgr, mux.focusedScrollOffset());
     defer allocator.free(status_line);
 
-    try writeAllBlocking(out, "\x1b[2J");
+    const resized = try frame_cache.ensureSize(total_cols, total_rows);
+    if (resized) try writeAllBlocking(out, "\x1b[2J");
+
+    var curr = try allocator.alloc(RuntimeRenderCell, total_cols * total_rows);
+    defer allocator.free(curr);
+    for (curr) |*cell| cell.* = .{};
+
     var row: usize = 0;
     while (row < content_rows) : (row += 1) {
+        const row_off = row * total_cols;
         const start = row * total_cols;
-        try writeFmtBlocking(out, "\x1b[{};1H", .{row + 1});
-        try writeStyledRow(out, canvas[start .. start + total_cols], total_cols, row, panes[0..pane_count]);
+        var x: usize = 0;
+        while (x < total_cols) : (x += 1) {
+            const pane_cell = paneCellAt(panes[0..pane_count], x, row);
+            if (pane_cell) |pc| {
+                if (pc.skip_draw) {
+                    curr[row_off + x] = .{};
+                } else {
+                    curr[row_off + x] = .{
+                        .text = pc.text,
+                        .text_len = pc.text_len,
+                        .style = pc.style,
+                        .styled = !pc.style.default(),
+                    };
+                }
+            } else {
+                curr[row_off + x] = .{
+                    .text = [_]u8{ canvas[start + x] } ++ ([_]u8{0} ** 31),
+                    .text_len = 1,
+                    .style = .{},
+                    .styled = false,
+                };
+            }
+        }
     }
-    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 1});
-    try writeAllBlocking(out, "\x1b[0m");
-    try writeClippedLine(out, tab_line, total_cols);
-    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
-    try writeClippedLine(out, status_line, total_cols);
+
+    fillPlainLine(curr[content_rows * total_cols .. (content_rows + 1) * total_cols], tab_line);
+    fillPlainLine(curr[(content_rows + 1) * total_cols .. (content_rows + 2) * total_cols], status_line);
+
+    var active_style: ?ghostty_vt.Style = null;
+    var idx: usize = 0;
+    while (idx < curr.len) : (idx += 1) {
+        const old = frame_cache.cells[idx];
+        const new = curr[idx];
+        if (!resized and renderCellEqual(old, new)) continue;
+
+        const y = idx / total_cols;
+        const x = idx % total_cols;
+        try writeFmtBlocking(out, "\x1b[{};{}H", .{ y + 1, x + 1 });
+
+        if (!new.styled) {
+            if (active_style != null) {
+                try writeAllBlocking(out, "\x1b[0m");
+                active_style = null;
+            }
+        } else if (active_style) |s| {
+            if (!s.eql(new.style)) {
+                try writeStyle(out, new.style);
+                active_style = new.style;
+            }
+        } else {
+            try writeStyle(out, new.style);
+            active_style = new.style;
+        }
+        try writeAllBlocking(out, new.text[0..new.text_len]);
+    }
+    if (active_style != null) try writeAllBlocking(out, "\x1b[0m");
+    @memcpy(frame_cache.cells, curr);
+
     if (focused_cursor_abs) |p| {
         try writeFmtBlocking(out, "\x1b[{};{}H", .{ p.row, p.col });
     } else {
@@ -585,6 +679,26 @@ fn writeStyledRow(
         try writeByteBlocking(out, canvas_row[x]);
     }
     if (active_style != null) try writeAllBlocking(out, "\x1b[0m");
+}
+
+fn fillPlainLine(dst: []RuntimeRenderCell, line: []const u8) void {
+    var i: usize = 0;
+    while (i < dst.len) : (i += 1) {
+        const ch: u8 = if (i < line.len) line[i] else ' ';
+        dst[i] = .{
+            .text = [_]u8{ ch } ++ ([_]u8{0} ** 31),
+            .text_len = 1,
+            .style = .{},
+            .styled = false,
+        };
+    }
+}
+
+fn renderCellEqual(a: RuntimeRenderCell, b: RuntimeRenderCell) bool {
+    if (a.text_len != b.text_len) return false;
+    if (a.styled != b.styled) return false;
+    if (a.styled and !a.style.eql(b.style)) return false;
+    return std.mem.eql(u8, a.text[0..a.text_len], b.text[0..b.text_len]);
 }
 
 fn writeStyle(out: *std.Io.Writer, style: ghostty_vt.Style) !void {
