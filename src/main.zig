@@ -1,7 +1,7 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
-const layout = @import("layout.zig");
 const layout_native = @import("layout_native.zig");
+const workspace = @import("workspace.zig");
 
 const Terminal = ghostty_vt.Terminal;
 
@@ -53,29 +53,39 @@ pub fn main() !void {
     try out.print("left cursor: x={} y={}\n", .{ left.screens.active.cursor.x, left.screens.active.cursor.y });
     try out.print("right cursor: x={} y={}\n\n", .{ right.screens.active.cursor.x, right.screens.active.cursor.y });
 
-    try printLayoutPOC(out, alloc);
+    try printWorkspacePOC(out, alloc);
     try renderSideBySide(out, &left, &right);
     try out.flush();
 }
 
-fn printLayoutPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
-    const engine = layout_native.NativeLayoutEngine.init();
-    const rects = try engine.compute(alloc, .{
-        .layout = .vertical_stack,
-        .screen = .{ .x = 0, .y = 0, .width = 72, .height = 12 },
-        .window_count = 2,
-        .master_count = 1,
-        .master_ratio_permille = 600,
-        .gap = 0,
-    });
-    defer alloc.free(rects);
+fn printWorkspacePOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
+    var wm = workspace.WorkspaceManager.init(alloc, layout_native.NativeLayoutEngine.init());
+    defer wm.deinit();
 
-    try writer.writeAll("layout(engine=native, type=vertical_stack):\n");
-    for (rects, 0..) |r, i| {
-        try writer.print(
-            "  pane {}: x={} y={} w={} h={}\n",
-            .{ i, r.x, r.y, r.width, r.height },
-        );
+    _ = try wm.createTab("dev");
+    _ = try wm.createTab("ops");
+
+    _ = try wm.addWindowToActive("shell-1");
+    _ = try wm.addWindowToActive("shell-2");
+    _ = try wm.addWindowToActive("shell-3");
+
+    const dev_rects = try wm.computeActiveLayout(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
+    defer alloc.free(dev_rects);
+
+    try writer.writeAll("workspace(active=dev, layout=native.vertical_stack):\n");
+    for (dev_rects, 0..) |r, i| {
+        try writer.print("  pane {}: x={} y={} w={} h={}\n", .{ i, r.x, r.y, r.width, r.height });
+    }
+
+    try wm.moveFocusedWindowToTab(1);
+    try wm.switchTab(1);
+
+    const ops_rects = try wm.computeActiveLayout(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
+    defer alloc.free(ops_rects);
+
+    try writer.writeAll("workspace(active=ops, after move-focused-window):\n");
+    for (ops_rects, 0..) |r, i| {
+        try writer.print("  pane {}: x={} y={} w={} h={}\n", .{ i, r.x, r.y, r.width, r.height });
     }
     try writer.writeByte('\n');
 }
@@ -114,14 +124,16 @@ fn writeRowAsText(writer: *std.Io.Writer, screen: *ghostty_vt.Screen, row: usize
     }
 }
 
-test "layout engine POC returns panes" {
+test "workspace layout POC returns panes" {
     const testing = std.testing;
-    const engine = layout_native.NativeLayoutEngine.init();
-    const rects = try engine.compute(testing.allocator, .{
-        .layout = .vertical_stack,
-        .screen = .{ .x = 0, .y = 0, .width = 72, .height = 12 },
-        .window_count = 2,
-    });
+    var wm = workspace.WorkspaceManager.init(testing.allocator, layout_native.NativeLayoutEngine.init());
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    _ = try wm.addWindowToActive("shell-1");
+    _ = try wm.addWindowToActive("shell-2");
+
+    const rects = try wm.computeActiveLayout(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
     defer testing.allocator.free(rects);
 
     try testing.expectEqual(@as(usize, 2), rects.len);
