@@ -278,6 +278,11 @@ pub const Multiplexer = struct {
             const w = tab.windows.items[i];
             const p = self.ptys.getPtr(w.id) orelse continue;
             const r = rects[i];
+            if (r.width == 0 or r.height == 0) {
+                // Hidden panes (e.g. fullscreen non-focused windows) keep their PTY alive
+                // but are not resized to an invalid 0x0 geometry.
+                continue;
+            }
             const inner = contentSizeForRect(r, screen);
             try p.resize(inner.rows, inner.cols);
             try self.markWindowDirty(w.id);
@@ -711,13 +716,18 @@ pub const Multiplexer = struct {
     fn contentSizeForRect(r: layout.Rect, screen: layout.Rect) struct { rows: u16, cols: u16 } {
         // Keep this consistent with renderer border policy:
         // left/top border always drawn, right/bottom only on outer edge.
+        if (r.width == 0 or r.height == 0) {
+            return .{ .rows = 1, .cols = 1 };
+        }
+
         const left_border: u16 = 1;
         const top_border: u16 = 1;
         const right_border: u16 = if (r.x + r.width == screen.x + screen.width) 1 else 0;
         const bottom_border: u16 = if (r.y + r.height == screen.y + screen.height) 1 else 0;
-
-        const cols = r.width - left_border - right_border;
-        const rows = r.height - top_border - bottom_border;
+        const cols_sub = left_border + right_border;
+        const rows_sub = top_border + bottom_border;
+        const cols = if (r.width > cols_sub) r.width - cols_sub else 1;
+        const rows = if (r.height > rows_sub) r.height - rows_sub else 1;
         return .{
             .rows = @max(@as(u16, 1), rows),
             .cols = @max(@as(u16, 1), cols),
@@ -1094,6 +1104,25 @@ test "multiplexer layout cycle command updates active layout" {
 
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, ' ' });
     try testing.expectEqual(layout.LayoutType.horizontal_stack, try mux.workspace_mgr.activeLayoutType());
+}
+
+test "multiplexer resize handles fullscreen hidden panes without crashing" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("c", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    try mux.workspace_mgr.setFocusedWindowIndexActive(1);
+    try mux.workspace_mgr.setActiveLayout(.fullscreen);
+
+    const resized = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 100, .height = 30 });
+    try testing.expectEqual(@as(usize, 1), resized);
 }
 
 test "multiplexer close active tab removes tab windows from pty maps" {
