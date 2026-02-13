@@ -256,14 +256,14 @@ const RuntimeTerminal = struct {
             _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &raw);
         }
 
-        // Enter alternate screen and hide cursor.
-        _ = c.write(c.STDOUT_FILENO, "\x1b[?1049h\x1b[?25l", 14);
+        // Enter alternate screen, disable autowrap for compositor draws, hide cursor.
+        _ = c.write(c.STDOUT_FILENO, "\x1b[?1049h\x1b[?7l\x1b[?25l", 20);
         return rt;
     }
 
     fn leave(self: *RuntimeTerminal) void {
-        // Show cursor and leave alternate screen.
-        _ = c.write(c.STDOUT_FILENO, "\x1b[?25h\x1b[?1049l", 14);
+        // Restore autowrap, show cursor, leave alternate screen.
+        _ = c.write(c.STDOUT_FILENO, "\x1b[?7h\x1b[?25h\x1b[?1049l", 20);
         if (self.had_termios) {
             _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &self.original_termios);
         }
@@ -287,8 +287,10 @@ const PaneRenderRef = struct {
 };
 
 const PaneRenderCell = struct {
-    cp: u21,
+    text: [32]u8 = [_]u8{0} ** 32,
+    text_len: u8 = 0,
     style: ghostty_vt.Style,
+    skip_draw: bool = false,
 };
 
 const RuntimeVtState = struct {
@@ -554,6 +556,7 @@ fn writeStyledRow(
     while (x < total_cols) : (x += 1) {
         const pane_cell = paneCellAt(panes, x, row);
         if (pane_cell) |pc| {
+            if (pc.skip_draw) continue;
             if (pc.style.default()) {
                 if (active_style != null) {
                     try writeAllBlocking(out, "\x1b[0m");
@@ -568,7 +571,7 @@ fn writeStyledRow(
                 try writeStyle(out, pc.style);
                 active_style = pc.style;
             }
-            try writeCodepointBlocking(out, pc.cp);
+            try writeAllBlocking(out, pc.text[0..pc.text_len]);
             continue;
         }
 
@@ -607,12 +610,37 @@ fn paneCellAt(
                 .y = @intCast(local_y),
             },
         }) orelse return .{
-            .cp = ' ',
+            .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+            .text_len = 1,
             .style = .{},
         };
 
+        if (maybe_cell.cell.wide == .spacer_tail) {
+            return .{
+                .style = .{},
+                .skip_draw = true,
+            };
+        }
+
         const cp_raw = maybe_cell.cell.codepoint();
         const cp: u21 = if (cp_raw >= 32) cp_raw else ' ';
+        var rendered: PaneRenderCell = .{
+            .style = .{},
+        };
+        rendered.text_len = @intCast(encodeCodepoint(rendered.text[0..], cp));
+        if (maybe_cell.cell.content_tag == .codepoint_grapheme) {
+            if (maybe_cell.node.data.lookupGrapheme(maybe_cell.cell)) |extra_cps| {
+                for (extra_cps) |extra_cp_raw| {
+                    const extra_cp: u21 = if (extra_cp_raw >= 32) extra_cp_raw else ' ';
+                    const used = rendered.text_len;
+                    const wrote = encodeCodepoint(rendered.text[used..], extra_cp);
+                    if (wrote == 0) break;
+                    const total = @as(usize, used) + wrote;
+                    rendered.text_len = @intCast(@min(total, rendered.text.len));
+                    if (total >= rendered.text.len) break;
+                }
+            }
+        }
         var style: ghostty_vt.Style = if (maybe_cell.cell.style_id == 0)
             .{}
         else
@@ -627,10 +655,8 @@ fn paneCellAt(
             } },
             else => {},
         }
-        return .{
-            .cp = cp,
-            .style = style,
-        };
+        rendered.style = style;
+        return rendered;
     }
     return null;
 }
@@ -696,6 +722,14 @@ fn writeCodepointBlocking(out: *std.Io.Writer, cp: u21) !void {
         return writeByteBlocking(out, '?');
     };
     try writeAllBlocking(out, scratch[0..n]);
+}
+
+fn encodeCodepoint(dst: []u8, cp: u21) usize {
+    var scratch: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(cp, &scratch) catch return 0;
+    if (dst.len < n) return 0;
+    @memcpy(dst[0..n], scratch[0..n]);
+    return n;
 }
 
 fn writeFmtBlocking(out: *std.Io.Writer, comptime fmt: []const u8, args: anytype) !void {

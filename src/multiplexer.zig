@@ -8,6 +8,12 @@ const popup_mod = @import("popup.zig");
 const scrollback_mod = @import("scrollback.zig");
 
 pub const Multiplexer = struct {
+    const DaParseState = enum(u2) {
+        idle,
+        esc,
+        csi,
+    };
+
     const DragState = struct {
         resizing_master: bool = false,
     };
@@ -19,6 +25,7 @@ pub const Multiplexer = struct {
     stdout_buffers: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u8)) = .{},
     scrollbacks: std.AutoHashMapUnmanaged(u32, scrollback_mod.ScrollbackBuffer) = .{},
     dirty_windows: std.AutoHashMapUnmanaged(u32, void) = .{},
+    da_parse_states: std.AutoHashMapUnmanaged(u32, DaParseState) = .{},
     input_router: input_mod.Router = .{},
     detach_requested: bool = false,
     last_mouse_event: ?input_mod.MouseEvent = null,
@@ -68,6 +75,7 @@ pub const Multiplexer = struct {
         }
         self.scrollbacks.deinit(self.allocator);
         self.dirty_windows.deinit(self.allocator);
+        self.da_parse_states.deinit(self.allocator);
 
         self.popup_mgr.deinit();
         self.workspace_mgr.deinit();
@@ -90,6 +98,7 @@ pub const Multiplexer = struct {
         try self.ptys.put(self.allocator, id, p);
         try self.stdout_buffers.put(self.allocator, id, .{});
         try self.scrollbacks.put(self.allocator, id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 10_000));
+        try self.da_parse_states.put(self.allocator, id, .idle);
         return id;
     }
 
@@ -101,6 +110,7 @@ pub const Multiplexer = struct {
         try self.ptys.put(self.allocator, id, p);
         try self.stdout_buffers.put(self.allocator, id, .{});
         try self.scrollbacks.put(self.allocator, id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 10_000));
+        try self.da_parse_states.put(self.allocator, id, .idle);
         return id;
     }
 
@@ -292,6 +302,14 @@ pub const Multiplexer = struct {
             if (self.scrollbacks.getPtr(w_id)) |sb| {
                 try sb.append(tmp[0..n]);
             }
+            if (self.da_parse_states.getPtr(w_id)) |state| {
+                const da_queries = countPrimaryDaQueries(state, tmp[0..n]);
+                var q: usize = 0;
+                while (q < da_queries) : (q += 1) {
+                    // Respond to primary DA query for fish compatibility checks.
+                    try p.write("\x1b[?62;c");
+                }
+            }
             try self.markWindowDirty(w_id);
             reads += 1;
         }
@@ -450,12 +468,14 @@ pub const Multiplexer = struct {
             p.deinit();
         }
         self.ptys.clearRetainingCapacity();
+        self.da_parse_states.clearRetainingCapacity();
     }
 
     pub fn closeFocusedWindow(self: *Multiplexer) !u32 {
         const id = try self.workspace_mgr.closeFocusedWindowActive();
         if (self.ptys.getPtr(id)) |p| p.deinit();
         _ = self.ptys.fetchRemove(id);
+        _ = self.da_parse_states.fetchRemove(id);
 
         if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);
         _ = self.stdout_buffers.fetchRemove(id);
@@ -484,6 +504,7 @@ pub const Multiplexer = struct {
         try self.ptys.put(self.allocator, popup_window_id, p);
         try self.stdout_buffers.put(self.allocator, popup_window_id, .{});
         try self.scrollbacks.put(self.allocator, popup_window_id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 2_000));
+        try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
 
         const popup_id = try self.popup_mgr.create(.{
             .window_id = popup_window_id,
@@ -522,6 +543,7 @@ pub const Multiplexer = struct {
         for (removed_ids) |id| {
             if (self.ptys.getPtr(id)) |p| p.deinit();
             _ = self.ptys.fetchRemove(id);
+            _ = self.da_parse_states.fetchRemove(id);
             if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);
             _ = self.stdout_buffers.fetchRemove(id);
             if (self.scrollbacks.getPtr(id)) |sb| sb.deinit();
@@ -628,6 +650,37 @@ pub const Multiplexer = struct {
         _ = try self.resizeActiveWindowsToLayout(screen);
     }
 
+    fn countPrimaryDaQueries(state: *DaParseState, bytes: []const u8) usize {
+        var count: usize = 0;
+        for (bytes) |b| {
+            switch (state.*) {
+                .idle => {
+                    if (b == 0x1b) state.* = .esc;
+                },
+                .esc => {
+                    if (b == '[') {
+                        state.* = .csi;
+                    } else if (b == 0x1b) {
+                        state.* = .esc;
+                    } else {
+                        state.* = .idle;
+                    }
+                },
+                .csi => {
+                    if (b == 'c') {
+                        count += 1;
+                        state.* = .idle;
+                    } else if (b >= 0x40 and b <= 0x7e) {
+                        state.* = .idle;
+                    } else {
+                        // Parameter/intermediate bytes (0x20-0x3f); keep parsing.
+                    }
+                },
+            }
+        }
+        return count;
+    }
+
     fn posixPollFd() type {
         return std.posix.pollfd;
     }
@@ -679,6 +732,7 @@ pub const Multiplexer = struct {
         if (removed.window_id) |window_id| {
             if (self.ptys.getPtr(window_id)) |p| p.deinit();
             _ = self.ptys.fetchRemove(window_id);
+            _ = self.da_parse_states.fetchRemove(window_id);
             if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
             _ = self.stdout_buffers.fetchRemove(window_id);
             if (self.scrollbacks.getPtr(window_id)) |sb| sb.deinit();

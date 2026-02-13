@@ -21,7 +21,7 @@ pub const Pty = struct {
         defer if (shell_owned) |s| allocator.free(s);
 
         const shell = if (shell_owned) |s| s else "/bin/sh";
-        const argv = [_][]const u8{ shell, "-i" };
+        const argv = [_][]const u8{ shell, "-il" };
         return spawnCommand(allocator, &argv);
     }
 
