@@ -28,6 +28,12 @@ pub const Multiplexer = struct {
         detach_requested: bool,
     };
 
+    pub const ReattachResult = struct {
+        resized: usize,
+        marked_dirty: usize,
+        redraw: bool,
+    };
+
     pub fn init(allocator: std.mem.Allocator, layout_engine: layout.LayoutEngine) Multiplexer {
         return .{
             .allocator = allocator,
@@ -297,6 +303,16 @@ pub const Multiplexer = struct {
         };
     }
 
+    pub fn handleReattach(self: *Multiplexer, screen: layout.Rect) !ReattachResult {
+        const resized = try self.resizeActiveWindowsToLayout(screen);
+        const marked_dirty = try self.markActiveWindowsDirty();
+        return .{
+            .resized = resized,
+            .marked_dirty = marked_dirty,
+            .redraw = true,
+        };
+    }
+
     pub fn gracefulShutdown(self: *Multiplexer) !void {
         var it = self.ptys.iterator();
         while (it.next()) |entry| {
@@ -322,6 +338,16 @@ pub const Multiplexer = struct {
 
     fn markWindowDirty(self: *Multiplexer, window_id: u32) !void {
         try self.dirty_windows.put(self.allocator, window_id, {});
+    }
+
+    fn markActiveWindowsDirty(self: *Multiplexer) !usize {
+        const tab = try self.workspace_mgr.activeTab();
+        var marked: usize = 0;
+        for (tab.windows.items) |w| {
+            try self.markWindowDirty(w.id);
+            marked += 1;
+        }
+        return marked;
     }
 
     fn handleMouseFromEvent(
@@ -655,4 +681,27 @@ test "multiplexer drag-resize updates master ratio for vertical stack" {
     const after = try mux.workspace_mgr.activeMasterRatioPermille();
     try testing.expect(after != before);
     try testing.expect(after > before);
+}
+
+test "multiplexer reattach path marks active windows dirty and requests redraw" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    mux.clearAllDirty();
+    const result = try mux.handleReattach(.{ .x = 0, .y = 0, .width = 80, .height = 24 });
+
+    try testing.expect(result.redraw);
+    try testing.expectEqual(@as(usize, 2), result.resized);
+    try testing.expectEqual(@as(usize, 2), result.marked_dirty);
+
+    const dirty = try mux.dirtyWindowIds(testing.allocator);
+    defer testing.allocator.free(dirty);
+    try testing.expectEqual(@as(usize, 2), dirty.len);
 }

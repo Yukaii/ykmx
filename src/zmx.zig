@@ -34,6 +34,21 @@ pub const Env = struct {
     }
 };
 
+pub fn buildAttachArgv(
+    allocator: std.mem.Allocator,
+    session: []const u8,
+    program: []const u8,
+    args: []const []const u8,
+) ![][]const u8 {
+    var out = try allocator.alloc([]const u8, 4 + args.len);
+    out[0] = "zmx";
+    out[1] = "attach";
+    out[2] = session;
+    out[3] = program;
+    for (args, 0..) |arg, i| out[4 + i] = arg;
+    return out;
+}
+
 pub fn detect(allocator: std.mem.Allocator) !Env {
     const session_name = std.process.getEnvVarOwned(allocator, "ZMX_SESSION") catch null;
     const zmx_dir = std.process.getEnvVarOwned(allocator, "ZMX_DIR") catch null;
@@ -80,4 +95,18 @@ test "zmx detach helper returns false when not in session" {
 
     const detached = try env.detachCurrentSession(testing.allocator);
     try testing.expect(!detached);
+}
+
+test "zmx attach argv builder includes session and program args" {
+    const testing = std.testing;
+    const argv = try buildAttachArgv(testing.allocator, "dev", "ykwm", &.{ "--config", "foo" });
+    defer testing.allocator.free(argv);
+
+    try testing.expectEqual(@as(usize, 6), argv.len);
+    try testing.expectEqualStrings("zmx", argv[0]);
+    try testing.expectEqualStrings("attach", argv[1]);
+    try testing.expectEqualStrings("dev", argv[2]);
+    try testing.expectEqualStrings("ykwm", argv[3]);
+    try testing.expectEqualStrings("--config", argv[4]);
+    try testing.expectEqualStrings("foo", argv[5]);
 }

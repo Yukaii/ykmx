@@ -501,6 +501,7 @@ Implemented in repository:
 - `src/input.zig`: prefix router + ESC/CSI sequence parser + SGR mouse metadata extraction
 - `src/zmx.zig`: ZMX environment/session detection (`$ZMX_SESSION`, `$ZMX_DIR`, `$XDG_RUNTIME_DIR/zmx`)
 - `src/zmx.zig`: ZMX environment/session detection + detach command execution helper (`zmx detach <session>`)
+- `src/zmx.zig`: ZMX attach command argv harness helper for attach flow validation
 - `src/signal.zig`: signal handler scaffold for `SIGWINCH`, `SIGHUP`, `SIGTERM` with drainable atomic flags
 - Multiplexer runtime tick behavior: `SIGWINCH` => resize + redraw hint, `SIGHUP`/`SIGTERM` => graceful PTY shutdown path
 - Dirty-window tracking and focused-window query APIs for renderer integration
@@ -508,6 +509,7 @@ Implemented in repository:
 - Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
 - Mouse coordinate path wired for click-to-focus (layout rect hit-test -> focused window update)
 - Basic drag-to-resize support for vertical stack (divider hit-test + master ratio update + PTY resize propagation)
+- Reattach path explicitly implemented and tested (`handleReattach`: resize + mark active windows dirty + redraw=true)
 - `build.zig`: `run` and `test` steps wired
 
 Validated locally:
@@ -516,7 +518,6 @@ Validated locally:
 
 Next implementation focus:
 - Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
-- Add attach/reattach validation harness and explicit redraw-on-reattach path tests.
 
 ### Phase 2: Core Features (Weeks 3-4)
 

@@ -119,6 +119,7 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator, zmx_env
     _ = try mux.createTab("dev");
     const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
     const resized = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
+    const reattach = try mux.handleReattach(.{ .x = 0, .y = 0, .width = 72, .height = 12 });
     try mux.handleInputBytes("hello-from-input-layer\n");
     var detach_invoked = false;
     var detach_ok = false;
@@ -147,6 +148,11 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator, zmx_env
     try writer.writeAll("multiplexer(poll-route):\n");
     try writer.print("  win {} bytes={}\n", .{ win_id, out.len });
     try writer.print("  resized_windows={}\n", .{resized});
+    try writer.print("  reattach(resized={}, dirty={}, redraw={})\n", .{
+        reattach.resized,
+        reattach.marked_dirty,
+        reattach.redraw,
+    });
     try writer.print("  focused_window={}\n", .{focused});
     try writer.print("  dirty_windows={}\n", .{dirty.len});
     try writer.print("  detach_invoked={} detach_ok={}\n", .{ detach_invoked, detach_ok });
