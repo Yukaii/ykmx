@@ -67,7 +67,7 @@ pub const Multiplexer = struct {
         var it_ptys = self.ptys.iterator();
         while (it_ptys.next()) |entry| {
             var p = entry.value_ptr.*;
-            p.deinit();
+            p.deinitNoWait();
         }
         self.ptys.deinit(self.allocator);
 
@@ -594,9 +594,7 @@ pub const Multiplexer = struct {
         var it = self.ptys.iterator();
         while (it.next()) |entry| {
             var p = entry.value_ptr.*;
-            _ = p.terminate() catch {};
-            _ = p.wait() catch {};
-            p.deinit();
+            p.deinitNoWait();
         }
         self.ptys.clearRetainingCapacity();
         self.da_parse_states.clearRetainingCapacity();
@@ -728,7 +726,7 @@ pub const Multiplexer = struct {
         defer self.allocator.free(removed_ids);
 
         for (removed_ids) |id| {
-            if (self.ptys.getPtr(id)) |p| p.deinit();
+            if (self.ptys.getPtr(id)) |p| p.deinitNoWait();
             _ = self.ptys.fetchRemove(id);
             _ = self.da_parse_states.fetchRemove(id);
             if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);

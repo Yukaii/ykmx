@@ -531,13 +531,18 @@ Implemented in repository:
 - Live runtime now uses diff-based frame flushing with a cached frame model (changed cells only; no full-screen clear each redraw)
 - Popup overlay rendering now respects z-order and topmost precedence during composition (base panes no longer mask popup cells)
 - Popup focus now raises z-index (`cycle popup` + mouse click on popup), and modal popups capture click focus from underlying panes
+- Popup toggle/close behavior is stable (`MOD+p` toggle, `MOD+Escape` immediate close)
+- Child process exit is isolated: exiting pane/popup process now closes only that pane/popup, not the whole `ykwm` runtime
+- Focus switch redraw is immediate (cursor/focus updates without waiting for next PTY output)
+- Mouse support is now compositor-driven: click-to-focus + drag-to-resize work, mouse CSI is consumed by compositor and no longer injected into pane PTYs
+- New-tab flow is now interactive by default: `MOD+t` creates/switches tab and spawns a shell immediately, with resize + redraw hooks
 
 Validated locally:
 - `zig build test` passes
 - `zig build run` passes
 
 Next implementation focus:
-- Complete runtime smoke matrix (popup layering/focus, reattach, resize, mouse interactions) in `docs/compatibility.md`.
+- Complete runtime smoke matrix (popup layering/focus, reattach, resize, mouse interactions, process-exit isolation) in `docs/compatibility.md`.
 - Then start Phase 6 synchronized scrolling and experimental interaction models.
 
 ### Next Milestone (Immediate)
@@ -547,7 +552,7 @@ Next implementation focus:
   - [x] Per-cell color/style output from `ghostty-vt` attributes
   - [x] Cursor placement for focused pane
   - [x] Diff-based frame flush (no full-screen clear each frame)
-  - [ ] Runtime smoke test: two shells, colored prompt/output, cursor/focus updates, popup layering/focus, resize + reattach preserved
+  - [ ] Runtime smoke test: two shells, colored prompt/output, cursor/focus updates, popup layering/focus, resize + reattach preserved, and child-exit isolation
 - **Exit Criteria:**
   - Colored shell prompts/output render correctly in both panes
   - No raw ANSI/control-sequence artifacts in pane content
@@ -629,7 +634,7 @@ Next implementation focus:
 - [x] Verify `zmx attach <session> ykwm` works correctly
 - [x] Handle zmx detach/reattach (SIGWINCH, re-render)
 - [x] Handle zmx kill (SIGHUP/SIGTERM graceful shutdown)
-- [x] Mouse event handling (click to focus, click to position cursor)
+- [x] Mouse event handling (click to focus + drag to resize; compositor-consumed mouse CSI)
 - [x] Performance benchmarks (<16ms frame time)
 - [x] User documentation
 - [x] Example configurations (including zmx workflow)
