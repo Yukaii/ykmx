@@ -123,16 +123,26 @@ fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
 
     var tries: usize = 0;
     while (tries < 20) : (tries += 1) {
-        _ = try mux.pollOnce(30);
+        const tick_result = try mux.tick(30, .{ .x = 0, .y = 0, .width = 72, .height = 12 }, .{
+            .sigwinch = false,
+            .sighup = false,
+            .sigterm = false,
+        });
         const out = try mux.windowOutput(win_id);
         if (std.mem.indexOf(u8, out, "hello-from-input-layer") != null) break;
+        if (tick_result.should_shutdown) break;
         std.Thread.sleep(20 * std.time.ns_per_ms);
     }
 
     const out = try mux.windowOutput(win_id);
+    const focused = try mux.focusedWindowId();
+    const dirty = try mux.dirtyWindowIds(alloc);
+    defer alloc.free(dirty);
     try writer.writeAll("multiplexer(poll-route):\n");
     try writer.print("  win {} bytes={}\n", .{ win_id, out.len });
     try writer.print("  resized_windows={}\n", .{resized});
+    try writer.print("  focused_window={}\n", .{focused});
+    try writer.print("  dirty_windows={}\n", .{dirty.len});
     if (out.len > 0) {
         try writer.print("  sample: {s}", .{out});
     }

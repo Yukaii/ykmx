@@ -148,6 +148,26 @@ pub const WorkspaceManager = struct {
         const current = tab.focused_index orelse 0;
         tab.focused_index = if (current == 0) tab.windows.items.len - 1 else current - 1;
     }
+
+    pub fn closeFocusedWindowActive(self: *WorkspaceManager) !u32 {
+        const tab = try self.activeTab();
+        const focus = tab.focused_index orelse return error.NoFocusedWindow;
+        if (focus >= tab.windows.items.len) return error.NoFocusedWindow;
+
+        var w = tab.windows.orderedRemove(focus);
+        const id = w.id;
+        w.deinit(self.allocator);
+
+        if (tab.windows.items.len == 0) {
+            tab.focused_index = null;
+        } else if (focus >= tab.windows.items.len) {
+            tab.focused_index = tab.windows.items.len - 1;
+        } else {
+            tab.focused_index = focus;
+        }
+
+        return id;
+    }
 };
 
 test "workspace manager supports tabs and window movement" {

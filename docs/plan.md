@@ -500,6 +500,9 @@ Implemented in repository:
 - `src/input.zig`: prefix-key router (`Ctrl+G`) for command-vs-forwarded input decisions
 - `src/zmx.zig`: ZMX environment/session detection (`$ZMX_SESSION`, `$ZMX_DIR`, `$XDG_RUNTIME_DIR/zmx`)
 - `src/signal.zig`: signal handler scaffold for `SIGWINCH`, `SIGHUP`, `SIGTERM` with drainable atomic flags
+- Multiplexer runtime tick behavior: `SIGWINCH` => resize + redraw hint, `SIGHUP`/`SIGTERM` => graceful PTY shutdown path
+- Dirty-window tracking and focused-window query APIs for renderer integration
+- Input command actions wired: create window, close focused window, next/prev tab, next/prev focused window, detach request flag
 - `build.zig`: `run` and `test` steps wired
 
 Validated locally:
@@ -509,7 +512,7 @@ Validated locally:
 Next implementation focus:
 - Expand input routing from byte-level to full key/mouse event parsing (including escape sequence handling and mouse coordinates).
 - Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
-- Wire signal events into runtime loop behavior: `SIGWINCH` => recompute layout + resize PTYs + full redraw, `SIGHUP`/`SIGTERM` => graceful shutdown path.
+- Add detach behavior integration with actual zmx detach command path (currently detach is an internal request flag).
 
 ### Phase 2: Core Features (Weeks 3-4)
 

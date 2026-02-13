@@ -3,13 +3,23 @@ const layout = @import("layout.zig");
 const workspace = @import("workspace.zig");
 const pty_mod = @import("pty.zig");
 const input_mod = @import("input.zig");
+const signal_mod = @import("signal.zig");
 
 pub const Multiplexer = struct {
     allocator: std.mem.Allocator,
     workspace_mgr: workspace.WorkspaceManager,
     ptys: std.AutoHashMapUnmanaged(u32, pty_mod.Pty) = .{},
     stdout_buffers: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u8)) = .{},
+    dirty_windows: std.AutoHashMapUnmanaged(u32, void) = .{},
     input_router: input_mod.Router = .{},
+    detach_requested: bool = false,
+
+    pub const TickResult = struct {
+        reads: usize,
+        resized: usize,
+        redraw: bool,
+        should_shutdown: bool,
+    };
 
     pub fn init(allocator: std.mem.Allocator, layout_engine: layout.LayoutEngine) Multiplexer {
         return .{
@@ -31,6 +41,7 @@ pub const Multiplexer = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.stdout_buffers.deinit(self.allocator);
+        self.dirty_windows.deinit(self.allocator);
 
         self.workspace_mgr.deinit();
         self.* = undefined;
@@ -86,6 +97,9 @@ pub const Multiplexer = struct {
                     .create_window => {
                         _ = try self.createShellWindow("shell");
                     },
+                    .close_window => {
+                        _ = try self.closeFocusedWindow();
+                    },
                     .next_tab => {
                         const n = self.workspace_mgr.tabCount();
                         if (n > 0) {
@@ -103,7 +117,9 @@ pub const Multiplexer = struct {
                     },
                     .next_window => try self.workspace_mgr.focusNextWindowActive(),
                     .prev_window => try self.workspace_mgr.focusPrevWindowActive(),
-                    .close_window, .detach => {},
+                    .detach => {
+                        self.detach_requested = true;
+                    },
                 },
                 .noop => {},
             }
@@ -124,6 +140,7 @@ pub const Multiplexer = struct {
             const p = self.ptys.getPtr(w.id) orelse continue;
             const r = rects[i];
             try p.resize(r.height, r.width);
+            try self.markWindowDirty(w.id);
             resized += 1;
         }
 
@@ -169,6 +186,7 @@ pub const Multiplexer = struct {
 
             const out_buf = self.stdout_buffers.getPtr(w_id) orelse return error.MissingOutputBuffer;
             try out_buf.appendSlice(self.allocator, tmp[0..n]);
+            try self.markWindowDirty(w_id);
             reads += 1;
         }
 
@@ -183,6 +201,95 @@ pub const Multiplexer = struct {
     pub fn clearWindowOutput(self: *Multiplexer, window_id: u32) !void {
         const list = self.stdout_buffers.getPtr(window_id) orelse return error.UnknownWindow;
         list.clearRetainingCapacity();
+    }
+
+    pub fn focusedWindowId(self: *Multiplexer) !u32 {
+        return self.workspace_mgr.focusedWindowIdActive();
+    }
+
+    pub fn dirtyWindowIds(self: *Multiplexer, allocator: std.mem.Allocator) ![]u32 {
+        var ids = try allocator.alloc(u32, self.dirty_windows.count());
+        errdefer allocator.free(ids);
+
+        var i: usize = 0;
+        var it = self.dirty_windows.iterator();
+        while (it.next()) |entry| : (i += 1) ids[i] = entry.key_ptr.*;
+        return ids;
+    }
+
+    pub fn clearDirtyWindow(self: *Multiplexer, window_id: u32) void {
+        _ = self.dirty_windows.swapRemove(window_id);
+    }
+
+    pub fn clearAllDirty(self: *Multiplexer) void {
+        self.dirty_windows.clearRetainingCapacity();
+    }
+
+    pub fn consumeDetachRequested(self: *Multiplexer) bool {
+        const value = self.detach_requested;
+        self.detach_requested = false;
+        return value;
+    }
+
+    pub fn tick(
+        self: *Multiplexer,
+        timeout_ms: i32,
+        screen: layout.Rect,
+        signals: signal_mod.Snapshot,
+    ) !TickResult {
+        if (signals.sighup or signals.sigterm) {
+            try self.gracefulShutdown();
+            return .{
+                .reads = 0,
+                .resized = 0,
+                .redraw = false,
+                .should_shutdown = true,
+            };
+        }
+
+        var resized: usize = 0;
+        var redraw = false;
+        if (signals.sigwinch) {
+            resized = try self.resizeActiveWindowsToLayout(screen);
+            redraw = true;
+        }
+
+        const reads = try self.pollOnce(timeout_ms);
+        if (reads > 0) redraw = true;
+
+        return .{
+            .reads = reads,
+            .resized = resized,
+            .redraw = redraw,
+            .should_shutdown = false,
+        };
+    }
+
+    pub fn gracefulShutdown(self: *Multiplexer) !void {
+        var it = self.ptys.iterator();
+        while (it.next()) |entry| {
+            var p = entry.value_ptr.*;
+            _ = p.terminate() catch {};
+            _ = p.wait() catch {};
+            p.deinit();
+        }
+        self.ptys.clearRetainingCapacity();
+    }
+
+    pub fn closeFocusedWindow(self: *Multiplexer) !u32 {
+        const id = try self.workspace_mgr.closeFocusedWindowActive();
+        if (self.ptys.getPtr(id)) |p| p.deinit();
+        _ = self.ptys.fetchRemove(id);
+
+        if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);
+        _ = self.stdout_buffers.fetchRemove(id);
+        _ = self.dirty_windows.fetchRemove(id);
+
+        return id;
+    }
+
+    fn markWindowDirty(self: *Multiplexer, window_id: u32) !void {
+        try self.dirty_windows.put(self.allocator, window_id, {});
     }
 
     fn posixPollFd() type {
@@ -264,4 +371,78 @@ test "multiplexer handles prefix create-window command" {
     const after = try mux.workspace_mgr.activeWindowCount();
 
     try testing.expectEqual(before + 1, after);
+}
+
+test "multiplexer tick handles sigwinch and reports redraw" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const result = try mux.tick(0, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+        .sigwinch = true,
+        .sighup = false,
+        .sigterm = false,
+    });
+
+    try testing.expectEqual(@as(usize, 1), result.resized);
+    try testing.expect(result.redraw);
+    try testing.expect(!result.should_shutdown);
+}
+
+test "multiplexer tick handles sigterm shutdown" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const result = try mux.tick(0, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+        .sigwinch = false,
+        .sighup = false,
+        .sigterm = true,
+    });
+
+    try testing.expect(result.should_shutdown);
+    try testing.expectEqual(@as(usize, 0), mux.ptys.count());
+}
+
+test "multiplexer close focused window command cleans up maps" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const before = try mux.workspace_mgr.activeWindowCount();
+    const closed = try mux.closeFocusedWindow();
+    const after = try mux.workspace_mgr.activeWindowCount();
+
+    try testing.expectEqual(before - 1, after);
+    try testing.expect(!mux.ptys.contains(closed));
+    try testing.expect(!mux.stdout_buffers.contains(closed));
+}
+
+test "multiplexer detach command toggles detach request flag" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    try mux.handleInputBytes(&.{ 0x07, '\\' });
+    try testing.expect(mux.consumeDetachRequested());
+    try testing.expect(!mux.consumeDetachRequested());
 }
