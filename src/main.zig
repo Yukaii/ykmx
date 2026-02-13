@@ -182,6 +182,17 @@ fn printMultiplexerPOC(
     const focused = try mux.focusedWindowId();
     const dirty = try mux.dirtyWindowIds(alloc);
     defer alloc.free(dirty);
+
+    _ = try mux.openFzfPopup(.{ .x = 0, .y = 0, .width = 72, .height = 12 }, true);
+    var popup_ticks: usize = 0;
+    while (popup_ticks < 20 and mux.popup_mgr.count() > 0) : (popup_ticks += 1) {
+        _ = try mux.tick(10, .{ .x = 0, .y = 0, .width = 72, .height = 12 }, .{
+            .sigwinch = false,
+            .sighup = false,
+            .sigterm = false,
+        });
+    }
+
     try writer.writeAll("multiplexer(poll-route):\n");
     try writer.print("  win {} bytes={}\n", .{ win_id, out.len });
     try writer.print("  resized_windows={}\n", .{resized});
@@ -193,6 +204,7 @@ fn printMultiplexerPOC(
     try writer.print("  focused_window={}\n", .{focused});
     try writer.print("  dirty_windows={}\n", .{dirty.len});
     try writer.print("  detach_invoked={} detach_ok={}\n", .{ detach_invoked, detach_ok });
+    try writer.print("  popup_fzf_remaining={}\n", .{mux.popup_mgr.count()});
     if (out.len > 0) {
         try writer.print("  sample: {s}", .{out});
     }

@@ -26,6 +26,7 @@ pub const Multiplexer = struct {
     pub const TickResult = struct {
         reads: usize,
         resized: usize,
+        popup_updates: usize,
         redraw: bool,
         should_shutdown: bool,
         detach_requested: bool,
@@ -149,7 +150,7 @@ pub const Multiplexer = struct {
                     },
                     .open_popup => {
                         const s = screen orelse layout.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
-                        _ = try self.openCommandPopup("popup", &.{"/bin/cat"}, s, true);
+                        _ = try self.openFzfPopup(s, true);
                     },
                     .close_popup => {
                         try self.closeFocusedPopup();
@@ -338,6 +339,7 @@ pub const Multiplexer = struct {
             return .{
                 .reads = 0,
                 .resized = 0,
+                .popup_updates = 0,
                 .redraw = false,
                 .should_shutdown = true,
                 .detach_requested = detach_requested,
@@ -353,10 +355,13 @@ pub const Multiplexer = struct {
 
         const reads = try self.pollOnce(timeout_ms);
         if (reads > 0) redraw = true;
+        const popup_updates = try self.processPopupTick();
+        if (popup_updates > 0) redraw = true;
 
         return .{
             .reads = reads,
             .resized = resized,
+            .popup_updates = popup_updates,
             .redraw = redraw,
             .should_shutdown = false,
             .detach_requested = detach_requested,
@@ -402,6 +407,7 @@ pub const Multiplexer = struct {
         argv: []const []const u8,
         screen: layout.Rect,
         modal: bool,
+        auto_close: bool,
     ) !u32 {
         const popup_window_id = self.next_popup_window_id;
         self.next_popup_window_id += 1;
@@ -418,23 +424,29 @@ pub const Multiplexer = struct {
             .title = title,
             .rect = rect,
             .modal = modal,
+            .auto_close = auto_close,
             .kind = .command,
+            .animate = true,
         });
         try self.markWindowDirty(popup_window_id);
         return popup_id;
     }
 
-    pub fn closeFocusedPopup(self: *Multiplexer) !void {
-        const removed = self.popup_mgr.closeFocused() orelse return;
-        defer self.allocator.free(removed.title);
+    pub fn openFzfPopup(self: *Multiplexer, screen: layout.Rect, modal: bool) !u32 {
+        const script =
+            \\if command -v fzf >/dev/null 2>&1; then
+            \\  printf 'one\ntwo\nthree\n' | fzf --height=100% --layout=reverse --prompt='ykwm> ' --filter='one' --select-1 --exit-0
+            \\else
+            \\  printf 'fzf not found on PATH\n'
+            \\fi
+        ;
+        return self.openCommandPopup("fzf", &.{ "/bin/sh", "-c", script }, screen, modal, true);
+    }
 
-        if (removed.window_id) |window_id| {
-            if (self.ptys.getPtr(window_id)) |p| p.deinit();
-            _ = self.ptys.fetchRemove(window_id);
-            if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
-            _ = self.stdout_buffers.fetchRemove(window_id);
-            _ = self.dirty_windows.fetchRemove(window_id);
-        }
+    pub fn closeFocusedPopup(self: *Multiplexer) !void {
+        if (self.popup_mgr.startCloseAnimationFocused()) return;
+        const removed = self.popup_mgr.closeFocused() orelse return;
+        self.cleanupClosedPopup(removed);
     }
 
     pub fn closeActiveTab(self: *Multiplexer) !void {
@@ -560,6 +572,49 @@ pub const Multiplexer = struct {
         const x: u16 = screen.x + (screen.width - w) / 2;
         const y: u16 = screen.y + (screen.height - h) / 2;
         return .{ .x = x, .y = y, .width = w, .height = h };
+    }
+
+    fn processPopupTick(self: *Multiplexer) !usize {
+        var changed: usize = 0;
+        changed += try self.reapExitedAutoClosePopups();
+
+        const animated_closures = try self.popup_mgr.advanceAnimations(self.allocator);
+        defer self.allocator.free(animated_closures);
+        if (animated_closures.len > 0) changed += animated_closures.len;
+        for (animated_closures) |removed| self.cleanupClosedPopup(removed);
+
+        return changed;
+    }
+
+    fn reapExitedAutoClosePopups(self: *Multiplexer) !usize {
+        var closing_ids = std.ArrayList(u32).empty;
+        defer closing_ids.deinit(self.allocator);
+
+        for (self.popup_mgr.popups.items) |p| {
+            if (!p.auto_close) continue;
+            const window_id = p.window_id orelse continue;
+            const proc = self.ptys.getPtr(window_id) orelse continue;
+            if (try proc.reapIfExited()) {
+                try closing_ids.append(self.allocator, p.id);
+            }
+        }
+
+        for (closing_ids.items) |popup_id| {
+            _ = self.popup_mgr.startCloseAnimation(popup_id);
+        }
+        return closing_ids.items.len;
+    }
+
+    fn cleanupClosedPopup(self: *Multiplexer, removed: popup_mod.Popup) void {
+        defer self.allocator.free(removed.title);
+
+        if (removed.window_id) |window_id| {
+            if (self.ptys.getPtr(window_id)) |p| p.deinit();
+            _ = self.ptys.fetchRemove(window_id);
+            if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
+            _ = self.stdout_buffers.fetchRemove(window_id);
+            _ = self.dirty_windows.fetchRemove(window_id);
+        }
     }
 };
 
@@ -882,6 +937,7 @@ test "multiplexer opens and closes command popup" {
         &.{"/bin/cat"},
         .{ .x = 0, .y = 0, .width = 100, .height = 30 },
         true,
+        false,
     );
     _ = popup_id;
 
@@ -890,6 +946,14 @@ test "multiplexer opens and closes command popup" {
     try testing.expect(mux.ptys.contains(popup_window_id));
 
     try mux.closeFocusedPopup();
+    var tries: usize = 0;
+    while (tries < 8 and mux.popup_mgr.count() > 0) : (tries += 1) {
+        _ = try mux.tick(0, .{ .x = 0, .y = 0, .width = 100, .height = 30 }, .{
+            .sigwinch = false,
+            .sighup = false,
+            .sigterm = false,
+        });
+    }
     try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
     try testing.expect(!mux.ptys.contains(popup_window_id));
 }
@@ -908,6 +972,7 @@ test "multiplexer modal popup captures forwarded input" {
         &.{"/bin/cat"},
         .{ .x = 0, .y = 0, .width = 100, .height = 30 },
         true,
+        false,
     );
     const popup_win = mux.focusedPopupWindowId() orelse return error.TestUnexpectedResult;
 
@@ -926,4 +991,31 @@ test "multiplexer modal popup captures forwarded input" {
 
     try testing.expect(std.mem.indexOf(u8, popup_out, "to-popup") != null);
     try testing.expect(std.mem.indexOf(u8, base_out, "to-popup") == null);
+}
+
+test "multiplexer fzf popup auto-close path cleans up exited popup window" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+
+    _ = try mux.openFzfPopup(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, true);
+    const popup_win = mux.focusedPopupWindowId() orelse return error.TestUnexpectedResult;
+    try testing.expect(mux.ptys.contains(popup_win));
+
+    var tries: usize = 0;
+    while (tries < 50 and mux.popup_mgr.count() > 0) : (tries += 1) {
+        _ = try mux.tick(20, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+            .sigwinch = false,
+            .sighup = false,
+            .sigterm = false,
+        });
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+
+    try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
+    try testing.expect(!mux.ptys.contains(popup_win));
 }

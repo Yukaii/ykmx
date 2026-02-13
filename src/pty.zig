@@ -7,6 +7,7 @@ const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("signal.h");
     @cInclude("sys/ioctl.h");
+    @cInclude("sys/wait.h");
 });
 
 pub const Pty = struct {
@@ -120,6 +121,18 @@ pub const Pty = struct {
         return result.status;
     }
 
+    pub fn reapIfExited(self: *Pty) !bool {
+        if (self.exited) return true;
+
+        var status: c_int = 0;
+        const pid = c.waitpid(self.pid, &status, c.WNOHANG);
+        if (pid == 0) return false;
+        if (pid < 0) return error.WaitPidFailed;
+
+        self.exited = true;
+        return true;
+    }
+
     pub fn deinit(self: *Pty) void {
         if (!self.exited) {
             _ = posix.kill(self.pid, posix.SIG.TERM) catch {};
@@ -164,4 +177,21 @@ test "pty resize ioctl path succeeds" {
     defer p.deinit();
 
     try p.resize(30, 100);
+}
+
+test "pty reapIfExited returns true after command exits" {
+    const testing = std.testing;
+
+    var p = try Pty.spawnCommand(testing.allocator, &.{ "/bin/sh", "-c", "exit 0" });
+    defer p.deinit();
+
+    var exited = false;
+    var tries: usize = 0;
+    while (tries < 40) : (tries += 1) {
+        exited = try p.reapIfExited();
+        if (exited) break;
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+
+    try testing.expect(exited);
 }

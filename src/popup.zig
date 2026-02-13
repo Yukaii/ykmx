@@ -7,6 +7,19 @@ pub const PopupKind = enum {
     persistent,
 };
 
+pub const AnimationPhase = enum {
+    none,
+    fade_in,
+    fade_out,
+};
+
+pub const AnimationState = struct {
+    phase: AnimationPhase = .none,
+    // 0..=1000 opacity-like progress.
+    progress_permille: u16 = 1000,
+    step_permille: u16 = 250,
+};
+
 pub const Popup = struct {
     id: u32,
     window_id: ?u32 = null,
@@ -17,6 +30,7 @@ pub const Popup = struct {
     parent_id: ?u32 = null,
     auto_close: bool = false,
     kind: PopupKind = .command,
+    animation: AnimationState = .{},
 };
 
 pub const CreateParams = struct {
@@ -27,6 +41,7 @@ pub const CreateParams = struct {
     parent_id: ?u32 = null,
     auto_close: bool = false,
     kind: PopupKind = .command,
+    animate: bool = true,
 };
 
 pub const PopupManager = struct {
@@ -59,6 +74,10 @@ pub const PopupManager = struct {
             .parent_id = params.parent_id,
             .auto_close = params.auto_close,
             .kind = params.kind,
+            .animation = if (params.animate)
+                .{ .phase = .fade_in, .progress_permille = 0, .step_permille = 250 }
+            else
+                .{},
         };
 
         try self.popups.append(self.allocator, popup);
@@ -121,6 +140,62 @@ pub const PopupManager = struct {
 
     pub fn count(self: *const PopupManager) usize {
         return self.popups.items.len;
+    }
+
+    pub fn startCloseAnimation(self: *PopupManager, popup_id: u32) bool {
+        const p = self.getById(popup_id) orelse return false;
+        p.animation.phase = .fade_out;
+        if (p.animation.progress_permille == 0) p.animation.progress_permille = 1000;
+        return true;
+    }
+
+    pub fn startCloseAnimationFocused(self: *PopupManager) bool {
+        const popup_id = self.focused_popup_id orelse return false;
+        return self.startCloseAnimation(popup_id);
+    }
+
+    pub fn advanceAnimations(self: *PopupManager, allocator: std.mem.Allocator) ![]Popup {
+        var closed = std.ArrayList(Popup).empty;
+        errdefer closed.deinit(allocator);
+
+        var i: usize = 0;
+        while (i < self.popups.items.len) {
+            var should_remove = false;
+            {
+                const p = &self.popups.items[i];
+                switch (p.animation.phase) {
+                    .none => {},
+                    .fade_in => {
+                        const next = @as(u32, p.animation.progress_permille) + p.animation.step_permille;
+                        if (next >= 1000) {
+                            p.animation.progress_permille = 1000;
+                            p.animation.phase = .none;
+                        } else {
+                            p.animation.progress_permille = @intCast(next);
+                        }
+                    },
+                    .fade_out => {
+                        if (p.animation.progress_permille <= p.animation.step_permille) {
+                            p.animation.progress_permille = 0;
+                            should_remove = true;
+                        } else {
+                            p.animation.progress_permille -= p.animation.step_permille;
+                        }
+                    },
+                }
+            }
+
+            if (should_remove) {
+                const removed = self.popups.orderedRemove(i);
+                try closed.append(allocator, removed);
+                self.recomputeFocusAfterRemove(removed.id);
+                continue;
+            }
+
+            i += 1;
+        }
+
+        return try closed.toOwnedSlice(allocator);
     }
 
     fn getById(self: *PopupManager, popup_id: u32) ?*Popup {
@@ -192,5 +267,35 @@ test "popup manager modal detection and close focused" {
 
     const closed = pm.closeFocused() orelse return error.TestUnexpectedResult;
     defer testing.allocator.free(closed.title);
+    try testing.expectEqual(@as(usize, 0), pm.count());
+}
+
+test "popup manager animation tick removes fade-out popup" {
+    const testing = std.testing;
+    var pm = PopupManager.init(testing.allocator);
+    defer pm.deinit();
+
+    const popup_id = try pm.create(.{
+        .title = "anim",
+        .rect = .{ .x = 0, .y = 0, .width = 10, .height = 4 },
+        .animate = true,
+    });
+    try testing.expect(pm.startCloseAnimation(popup_id));
+
+    var closed_any = false;
+    var tick: usize = 0;
+    while (tick < 8) : (tick += 1) {
+        const closed = try pm.advanceAnimations(testing.allocator);
+        defer {
+            for (closed) |p| testing.allocator.free(p.title);
+            testing.allocator.free(closed);
+        }
+        if (closed.len > 0) {
+            closed_any = true;
+            break;
+        }
+    }
+
+    try testing.expect(closed_any);
     try testing.expectEqual(@as(usize, 0), pm.count());
 }
