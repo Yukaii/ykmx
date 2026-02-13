@@ -222,6 +222,32 @@ pub const Multiplexer = struct {
                         }
                         _ = try self.markActiveWindowsDirty();
                     },
+                    .resize_master_shrink => {
+                        const current = try self.workspace_mgr.activeMasterRatioPermille();
+                        const next = if (current <= 100) 100 else current - 50;
+                        try self.workspace_mgr.setActiveMasterRatioPermille(next);
+                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                        _ = try self.markActiveWindowsDirty();
+                    },
+                    .resize_master_grow => {
+                        const current = try self.workspace_mgr.activeMasterRatioPermille();
+                        const next = if (current >= 900) 900 else current + 50;
+                        try self.workspace_mgr.setActiveMasterRatioPermille(next);
+                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                        _ = try self.markActiveWindowsDirty();
+                    },
+                    .master_count_increase => {
+                        const current = try self.workspace_mgr.activeMasterCount();
+                        try self.workspace_mgr.setActiveMasterCount(current + 1);
+                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                        _ = try self.markActiveWindowsDirty();
+                    },
+                    .master_count_decrease => {
+                        const current = try self.workspace_mgr.activeMasterCount();
+                        try self.workspace_mgr.setActiveMasterCount(if (current <= 1) 1 else current - 1);
+                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                        _ = try self.markActiveWindowsDirty();
+                    },
                     .scroll_page_up => {
                         const lines: usize = if (screen) |s| s.height else 24;
                         self.scrollPageUpFocused(lines);

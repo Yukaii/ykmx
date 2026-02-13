@@ -14,6 +14,10 @@ pub const Command = enum {
     next_window,
     prev_window,
     cycle_layout,
+    resize_master_shrink,
+    resize_master_grow,
+    master_count_increase,
+    master_count_decrease,
     scroll_page_up,
     scroll_page_down,
     detach,
@@ -77,6 +81,10 @@ pub const Router = struct {
                 'j' => .{ .command = .next_window },
                 'k' => .{ .command = .prev_window },
                 ' ' => .{ .command = .cycle_layout },
+                'h' => .{ .command = .resize_master_shrink },
+                'l' => .{ .command = .resize_master_grow },
+                'i' => .{ .command = .master_count_increase },
+                'o' => .{ .command = .master_count_decrease },
                 'u' => .{ .command = .scroll_page_up },
                 'd' => .{ .command = .scroll_page_down },
                 '\\' => .{ .command = .detach },
@@ -194,6 +202,23 @@ test "input router parses layout cycle command" {
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .cycle_layout }, r.feedByte(' '));
+}
+
+test "input router parses master resize and count commands" {
+    const testing = std.testing;
+    var r = Router{};
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .resize_master_shrink }, r.feedByte('h'));
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .resize_master_grow }, r.feedByte('l'));
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .master_count_increase }, r.feedByte('i'));
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .master_count_decrease }, r.feedByte('o'));
 }
 
 test "input router parses popup commands" {

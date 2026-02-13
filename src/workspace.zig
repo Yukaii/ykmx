@@ -231,6 +231,16 @@ pub const WorkspaceManager = struct {
         tab.master_ratio_permille = ratio;
     }
 
+    pub fn activeMasterCount(self: *WorkspaceManager) !u16 {
+        const tab = try self.activeTab();
+        return tab.master_count;
+    }
+
+    pub fn setActiveMasterCount(self: *WorkspaceManager, count: u16) !void {
+        const tab = try self.activeTab();
+        tab.master_count = if (count == 0) 1 else count;
+    }
+
     pub fn closeActiveTab(self: *WorkspaceManager, allocator: std.mem.Allocator) ![]u32 {
         const idx = self.active_tab_index orelse return error.NoActiveTab;
         if (self.tabs.items.len <= 1) return error.CannotCloseLastTab;
