@@ -14,6 +14,8 @@ pub const Command = enum {
     next_window,
     prev_window,
     cycle_layout,
+    scroll_page_up,
+    scroll_page_down,
     detach,
 };
 
@@ -75,6 +77,8 @@ pub const Router = struct {
                 'j' => .{ .command = .next_window },
                 'k' => .{ .command = .prev_window },
                 ' ' => .{ .command = .cycle_layout },
+                'u' => .{ .command = .scroll_page_up },
+                'd' => .{ .command = .scroll_page_down },
                 '\\' => .{ .command = .detach },
                 else => .noop,
             };
@@ -204,6 +208,17 @@ test "input router parses popup commands" {
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .cycle_popup }, r.feedByte('\t'));
+}
+
+test "input router parses scroll commands" {
+    const testing = std.testing;
+    var r = Router{};
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .scroll_page_up }, r.feedByte('u'));
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .scroll_page_down }, r.feedByte('d'));
 }
 
 test "input router emits csi sequence as one event" {

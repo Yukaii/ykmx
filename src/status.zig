@@ -15,7 +15,7 @@ pub const RenderedStatus = struct {
 pub fn render(allocator: std.mem.Allocator, wm: *workspace_mod.WorkspaceManager) !RenderedStatus {
     return .{
         .tab_bar = try renderTabBar(allocator, wm),
-        .status_bar = try renderStatusBar(allocator, wm),
+        .status_bar = try renderStatusBarWithScroll(allocator, wm, 0),
     };
 }
 
@@ -40,6 +40,14 @@ pub fn renderTabBar(allocator: std.mem.Allocator, wm: *workspace_mod.WorkspaceMa
 }
 
 pub fn renderStatusBar(allocator: std.mem.Allocator, wm: *workspace_mod.WorkspaceManager) ![]u8 {
+    return renderStatusBarWithScroll(allocator, wm, 0);
+}
+
+pub fn renderStatusBarWithScroll(
+    allocator: std.mem.Allocator,
+    wm: *workspace_mod.WorkspaceManager,
+    scroll_offset: usize,
+) ![]u8 {
     var list = std.ArrayList(u8).empty;
     errdefer list.deinit(allocator);
     const writer = list.writer(allocator);
@@ -57,6 +65,7 @@ pub fn renderStatusBar(allocator: std.mem.Allocator, wm: *workspace_mod.Workspac
         tab.windows.items.len,
         focus_title,
     });
+    try writer.print(" scroll=+{d}", .{scroll_offset});
 
     return try list.toOwnedSlice(allocator);
 }
@@ -81,4 +90,5 @@ test "status renders tab and status lines" {
     defer testing.allocator.free(status_bar);
     try testing.expect(std.mem.indexOf(u8, status_bar, "layout=vertical_stack") != null);
     try testing.expect(std.mem.indexOf(u8, status_bar, "focused=shell-1") != null);
+    try testing.expect(std.mem.indexOf(u8, status_bar, "scroll=+0") != null);
 }

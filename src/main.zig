@@ -182,6 +182,12 @@ fn printMultiplexerPOC(
     const focused = try mux.focusedWindowId();
     const dirty = try mux.dirtyWindowIds(alloc);
     defer alloc.free(dirty);
+    mux.scrollPageUpFocused(10);
+    mux.scrollHalfPageDownFocused(10);
+    const found = mux.searchFocusedScrollback("hello-from-input-layer", .backward) != null;
+    const focused_scroll = mux.focusedScrollOffset();
+    const status_line = try status.renderStatusBarWithScroll(alloc, &mux.workspace_mgr, focused_scroll);
+    defer alloc.free(status_line);
 
     _ = try mux.openFzfPopup(.{ .x = 0, .y = 0, .width = 72, .height = 12 }, true);
     var popup_ticks: usize = 0;
@@ -203,6 +209,8 @@ fn printMultiplexerPOC(
     });
     try writer.print("  focused_window={}\n", .{focused});
     try writer.print("  dirty_windows={}\n", .{dirty.len});
+    try writer.print("  scroll_search_found={}\n", .{found});
+    try writer.print("  status_with_scroll: {s}\n", .{status_line});
     try writer.print("  detach_invoked={} detach_ok={}\n", .{ detach_invoked, detach_ok });
     try writer.print("  popup_fzf_remaining={}\n", .{mux.popup_mgr.count()});
     if (out.len > 0) {

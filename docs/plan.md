@@ -502,6 +502,7 @@ Implemented in repository:
 - `src/input.zig`: prefix router + ESC/CSI sequence parser + SGR mouse metadata extraction
 - `src/config.zig`: startup config loading + parser (`$XDG_CONFIG_HOME/ykwm/config[.zig]`, fallback `$HOME/.config/ykwm/config[.zig]`)
 - `src/status.zig`: tab bar + status line formatters (active-tab marker, layout/window/focus summary)
+- `src/scrollback.zig`: per-window scrollback buffer (line retention, page/half-page navigation, forward/backward search)
 - `src/zmx.zig`: ZMX environment/session detection (`$ZMX_SESSION`, `$ZMX_DIR`, `$XDG_RUNTIME_DIR/zmx`)
 - `src/zmx.zig`: ZMX environment/session detection + detach command execution helper (`zmx detach <session>`)
 - `src/zmx.zig`: ZMX attach command argv harness helper for attach flow validation
@@ -510,6 +511,8 @@ Implemented in repository:
 - Dirty-window tracking and focused-window query APIs for renderer integration
 - Input command actions wired: create/close window, create/close/switch tab, move focused window to next tab, layout cycle, next/prev focused window, detach request flag
 - Popup command actions wired: open popup, close focused popup, cycle popup focus; modal popup input capture routes forwarded bytes to focused popup PTY
+- Scrollback actions wired: `MOD+u` page-up and `MOD+d` page-down on focused window scrollback
+- Multiplexer search API wired: forward/backward query over focused scrollback with jump-to-match behavior
 - Popup animation hooks implemented (fade-in/fade-out state + animation tick processing in runtime loop)
 - FZF popup integration example implemented (`openFzfPopup` with auto-close semantics and fallback if `fzf` is unavailable)
 - Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
@@ -524,7 +527,7 @@ Validated locally:
 
 Next implementation focus:
 - Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
-- Start Phase 4 scrollback buffer model and navigation/search scaffolding.
+- Start Phase 5 zmx integration hardening and benchmark/documentation passes.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
@@ -581,10 +584,10 @@ Next implementation focus:
 - Search
 
 **Deliverables:**
-- [ ] Scrollback buffer implementation (per-window, backed by ghostty-vt's scrollback)
-- [ ] Scroll navigation (page up/down, half-page)
-- [ ] Search functionality (forward/backward search within scrollback)
-- [ ] Scroll position indicators (status bar shows scroll offset)
+- [x] Scrollback buffer implementation (per-window, currently PTY-fed; ghostty-vt-backed integration planned)
+- [x] Scroll navigation (page up/down, half-page)
+- [x] Search functionality (forward/backward search within scrollback)
+- [x] Scroll position indicators (status bar shows scroll offset)
 
 **Testing:**
 - Scroll through history in a window

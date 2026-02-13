@@ -5,6 +5,7 @@ const pty_mod = @import("pty.zig");
 const input_mod = @import("input.zig");
 const signal_mod = @import("signal.zig");
 const popup_mod = @import("popup.zig");
+const scrollback_mod = @import("scrollback.zig");
 
 pub const Multiplexer = struct {
     const DragState = struct {
@@ -16,6 +17,7 @@ pub const Multiplexer = struct {
     popup_mgr: popup_mod.PopupManager,
     ptys: std.AutoHashMapUnmanaged(u32, pty_mod.Pty) = .{},
     stdout_buffers: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u8)) = .{},
+    scrollbacks: std.AutoHashMapUnmanaged(u32, scrollback_mod.ScrollbackBuffer) = .{},
     dirty_windows: std.AutoHashMapUnmanaged(u32, void) = .{},
     input_router: input_mod.Router = .{},
     detach_requested: bool = false,
@@ -59,6 +61,12 @@ pub const Multiplexer = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.stdout_buffers.deinit(self.allocator);
+
+        var it_sb = self.scrollbacks.iterator();
+        while (it_sb.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        self.scrollbacks.deinit(self.allocator);
         self.dirty_windows.deinit(self.allocator);
 
         self.popup_mgr.deinit();
@@ -81,6 +89,7 @@ pub const Multiplexer = struct {
 
         try self.ptys.put(self.allocator, id, p);
         try self.stdout_buffers.put(self.allocator, id, .{});
+        try self.scrollbacks.put(self.allocator, id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 10_000));
         return id;
     }
 
@@ -91,6 +100,7 @@ pub const Multiplexer = struct {
 
         try self.ptys.put(self.allocator, id, p);
         try self.stdout_buffers.put(self.allocator, id, .{});
+        try self.scrollbacks.put(self.allocator, id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 10_000));
         return id;
     }
 
@@ -202,6 +212,14 @@ pub const Multiplexer = struct {
                         }
                         _ = try self.markActiveWindowsDirty();
                     },
+                    .scroll_page_up => {
+                        const lines: usize = if (screen) |s| s.height else 24;
+                        self.scrollPageUpFocused(lines);
+                    },
+                    .scroll_page_down => {
+                        const lines: usize = if (screen) |s| s.height else 24;
+                        self.scrollPageDownFocused(lines);
+                    },
                     .detach => {
                         self.detach_requested = true;
                     },
@@ -271,6 +289,9 @@ pub const Multiplexer = struct {
 
             const out_buf = self.stdout_buffers.getPtr(w_id) orelse return error.MissingOutputBuffer;
             try out_buf.appendSlice(self.allocator, tmp[0..n]);
+            if (self.scrollbacks.getPtr(w_id)) |sb| {
+                try sb.append(tmp[0..n]);
+            }
             try self.markWindowDirty(w_id);
             reads += 1;
         }
@@ -294,6 +315,48 @@ pub const Multiplexer = struct {
 
     pub fn focusedPopupWindowId(self: *Multiplexer) ?u32 {
         return self.popup_mgr.focusedWindowId();
+    }
+
+    pub fn focusedScrollOffset(self: *Multiplexer) usize {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return 0;
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return 0;
+        return sb.scroll_offset;
+    }
+
+    pub fn scrollPageUpFocused(self: *Multiplexer, lines: usize) void {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return;
+        sb.scrollPageUp(lines);
+    }
+
+    pub fn scrollPageDownFocused(self: *Multiplexer, lines: usize) void {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return;
+        sb.scrollPageDown(lines);
+    }
+
+    pub fn scrollHalfPageUpFocused(self: *Multiplexer, lines: usize) void {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return;
+        sb.scrollHalfPageUp(lines);
+    }
+
+    pub fn scrollHalfPageDownFocused(self: *Multiplexer, lines: usize) void {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return;
+        sb.scrollHalfPageDown(lines);
+    }
+
+    pub fn searchFocusedScrollback(
+        self: *Multiplexer,
+        query: []const u8,
+        direction: scrollback_mod.SearchDirection,
+    ) ?scrollback_mod.SearchResult {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return null;
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return null;
+        const found = sb.search(query, direction) orelse return null;
+        sb.jumpToLine(found.line_index);
+        return found;
     }
 
     pub fn dirtyWindowIds(self: *Multiplexer, allocator: std.mem.Allocator) ![]u32 {
@@ -396,6 +459,8 @@ pub const Multiplexer = struct {
 
         if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);
         _ = self.stdout_buffers.fetchRemove(id);
+        if (self.scrollbacks.getPtr(id)) |sb| sb.deinit();
+        _ = self.scrollbacks.fetchRemove(id);
         _ = self.dirty_windows.fetchRemove(id);
 
         return id;
@@ -418,6 +483,7 @@ pub const Multiplexer = struct {
 
         try self.ptys.put(self.allocator, popup_window_id, p);
         try self.stdout_buffers.put(self.allocator, popup_window_id, .{});
+        try self.scrollbacks.put(self.allocator, popup_window_id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 2_000));
 
         const popup_id = try self.popup_mgr.create(.{
             .window_id = popup_window_id,
@@ -458,6 +524,8 @@ pub const Multiplexer = struct {
             _ = self.ptys.fetchRemove(id);
             if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);
             _ = self.stdout_buffers.fetchRemove(id);
+            if (self.scrollbacks.getPtr(id)) |sb| sb.deinit();
+            _ = self.scrollbacks.fetchRemove(id);
             _ = self.dirty_windows.fetchRemove(id);
         }
     }
@@ -613,6 +681,8 @@ pub const Multiplexer = struct {
             _ = self.ptys.fetchRemove(window_id);
             if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
             _ = self.stdout_buffers.fetchRemove(window_id);
+            if (self.scrollbacks.getPtr(window_id)) |sb| sb.deinit();
+            _ = self.scrollbacks.fetchRemove(window_id);
             _ = self.dirty_windows.fetchRemove(window_id);
         }
     }
@@ -1018,4 +1088,52 @@ test "multiplexer fzf popup auto-close path cleans up exited popup window" {
 
     try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
     try testing.expect(!mux.ptys.contains(popup_win));
+}
+
+test "multiplexer scroll commands adjust focused window scroll offset" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("echo-lines", &.{ "/bin/sh", "-c", "printf 'a\\nb\\nc\\nd\\n'" });
+
+    var tries: usize = 0;
+    while (tries < 30) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        if (mux.focusedScrollOffset() > 0 or tries > 5) break;
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 12 }, &.{ 0x07, 'u' });
+    try testing.expect(mux.focusedScrollOffset() > 0);
+
+    const before_down = mux.focusedScrollOffset();
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 12 }, &.{ 0x07, 'd' });
+    try testing.expect(mux.focusedScrollOffset() <= before_down);
+}
+
+test "multiplexer search jumps scroll offset to matched line" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("echo-search", &.{ "/bin/sh", "-c", "printf 'alpha\\nbeta\\ngamma\\n'" });
+
+    var tries: usize = 0;
+    while (tries < 30) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        const out = try mux.windowOutput(win_id);
+        if (std.mem.indexOf(u8, out, "gamma") != null) break;
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+
+    const found = mux.searchFocusedScrollback("beta", .backward) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 1), found.line_index);
+    try testing.expect(mux.focusedScrollOffset() > 0);
 }
