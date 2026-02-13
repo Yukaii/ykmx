@@ -218,17 +218,27 @@ pub const Multiplexer = struct {
                         const name = try std.fmt.bufPrint(&name_buf, "tab-{d}", .{n + 1});
                         const idx = try self.createTab(name);
                         try self.switchTab(idx);
+                        _ = try self.createShellWindow("shell");
+                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                        _ = try self.markActiveWindowsDirty();
+                        self.requestRedraw();
                     },
                     .close_tab => {
                         self.closeActiveTab() catch |err| {
                             if (err != error.CannotCloseLastTab) return err;
                         };
+                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                        _ = try self.markActiveWindowsDirty();
+                        self.requestRedraw();
                     },
                     .next_tab => {
                         const n = self.workspace_mgr.tabCount();
                         if (n > 0) {
                             const current = self.workspace_mgr.activeTabIndex() orelse 0;
                             try self.switchTab((current + 1) % n);
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
                         }
                     },
                     .prev_tab => {
@@ -237,6 +247,9 @@ pub const Multiplexer = struct {
                             const current = self.workspace_mgr.activeTabIndex() orelse 0;
                             const prev = if (current == 0) n - 1 else current - 1;
                             try self.switchTab(prev);
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
                         }
                     },
                     .move_window_next_tab => {
@@ -245,6 +258,9 @@ pub const Multiplexer = struct {
                             const current = self.workspace_mgr.activeTabIndex() orelse 0;
                             const dst = (current + 1) % n;
                             try self.workspace_mgr.moveFocusedWindowToTab(dst);
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
                         }
                     },
                     .next_window => {
@@ -1476,6 +1492,29 @@ test "multiplexer layout cycle command updates active layout" {
 
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, ' ' });
     try testing.expectEqual(layout.LayoutType.horizontal_stack, try mux.workspace_mgr.activeLayoutType());
+}
+
+test "multiplexer new tab creates shell and redraws" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("main");
+    _ = try mux.createCommandWindow("base", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, 't' });
+
+    try testing.expectEqual(@as(usize, 2), mux.workspace_mgr.tabCount());
+    try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.activeWindowCount());
+
+    const t = try mux.tick(0, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+        .sigwinch = false,
+        .sighup = false,
+        .sigterm = false,
+    });
+    try testing.expect(t.redraw);
 }
 
 test "multiplexer resize handles fullscreen hidden panes without crashing" {
