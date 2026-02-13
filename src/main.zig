@@ -1,6 +1,7 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const layout_native = @import("layout_native.zig");
+const multiplexer = @import("multiplexer.zig");
 const workspace = @import("workspace.zig");
 
 const Terminal = ghostty_vt.Terminal;
@@ -54,6 +55,7 @@ pub fn main() !void {
     try out.print("right cursor: x={} y={}\n\n", .{ right.screens.active.cursor.x, right.screens.active.cursor.y });
 
     try printWorkspacePOC(out, alloc);
+    try printMultiplexerPOC(out, alloc);
     try renderSideBySide(out, &left, &right);
     try out.flush();
 }
@@ -87,6 +89,31 @@ fn printWorkspacePOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
     for (ops_rects, 0..) |r, i| {
         try writer.print("  pane {}: x={} y={} w={} h={}\n", .{ i, r.x, r.y, r.width, r.height });
     }
+    try writer.writeByte('\n');
+}
+
+fn printMultiplexerPOC(writer: *std.Io.Writer, alloc: std.mem.Allocator) !void {
+    var mux = multiplexer.Multiplexer.init(alloc, layout_native.NativeLayoutEngine.init());
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cmd", &.{ "/bin/sh", "-c", "printf 'hello-from-multiplexer\\n'" });
+
+    var tries: usize = 0;
+    while (tries < 20) : (tries += 1) {
+        _ = try mux.pollOnce(30);
+        const out = try mux.windowOutput(win_id);
+        if (std.mem.indexOf(u8, out, "hello-from-multiplexer") != null) break;
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+
+    const out = try mux.windowOutput(win_id);
+    try writer.writeAll("multiplexer(poll-route):\n");
+    try writer.print("  win {} bytes={}\n", .{ win_id, out.len });
+    if (out.len > 0) {
+        try writer.print("  sample: {s}", .{out});
+    }
+    try writer.writeByte('\n');
     try writer.writeByte('\n');
 }
 

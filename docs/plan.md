@@ -474,7 +474,7 @@ Study dvtm's (~4000 lines of C):
 
 **Deliverables:**
 - [x] Project structure and build system
-- [ ] PTY management (create, read, write)
+- [x] PTY management (create, read, write) — initial child-process pipe backend in place
 - [x] Window data structure
 - [x] Basic rendering loop
 - [ ] Input handling framework
@@ -495,6 +495,8 @@ Implemented in repository:
 - `src/layout_opentui.zig`: OpenTUI adapter placeholder for backend wiring
 - `src/window.zig`: window model
 - `src/workspace.zig`: tab/workspace manager with window move between tabs
+- `src/pty.zig`: process-backed PTY facade (spawn/write/read/terminate) with stdout test
+- `src/multiplexer.zig`: window->process routing, poll loop, output buffer per window, routing test
 - `build.zig`: `run` and `test` steps wired
 
 Validated locally:
@@ -502,7 +504,8 @@ Validated locally:
 - `zig build run` passes
 
 Next implementation focus:
-- `src/pty.zig` + `src/multiplexer.zig` to replace title-only windows with live PTY-backed windows and event loop routing.
+- Upgrade `src/pty.zig` from child-process pipe backend to true PTY (`openpty`/winsize/ioctl path) and connect resize propagation from layout changes.
+- Implement input routing layer (`src/input.zig`) to forward keyboard/mouse to focused window process.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
