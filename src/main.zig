@@ -23,6 +23,11 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
+    var run_poc = false;
+    if (args.len == 1) {
+        try runRuntimeLoop(alloc);
+        return;
+    }
     if (args.len > 1) {
         if (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h")) {
             try printHelp();
@@ -59,6 +64,17 @@ pub fn main() !void {
             try out.flush();
             return;
         }
+        if (std.mem.eql(u8, args[1], "--poc")) {
+            run_poc = true;
+        } else {
+            try printHelp();
+            return;
+        }
+    }
+
+    if (!run_poc) {
+        try runRuntimeLoop(alloc);
+        return;
     }
 
     var cfg = try config.load(alloc);
@@ -124,7 +140,8 @@ fn printHelp() !void {
         \\ykwm - experimental terminal multiplexer
         \\
         \\Usage:
-        \\  ykwm                 Run the current POC flow
+        \\  ykwm                 Run runtime scaffold (quiet mode)
+        \\  ykwm --poc           Run verbose development POC output
         \\  ykwm --benchmark [N] Run frame benchmark (default N=200)
         \\  ykwm --smoke-zmx [session]
         \\  ykwm --version
@@ -132,6 +149,27 @@ fn printHelp() !void {
         \\
     );
     try out.flush();
+}
+
+fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
+    signal_mod.installHandlers();
+    var env = try zmx.detect(allocator);
+    defer env.deinit(allocator);
+
+    var buf: [256]u8 = undefined;
+    var w = std.fs.File.stdout().writer(&buf);
+    const out = &w.interface;
+    try out.print(
+        "ykwm runtime loop started (session={s})\n",
+        .{env.session_name orelse "(none)"},
+    );
+    try out.flush();
+
+    while (true) {
+        const snap = signal_mod.drain();
+        if (snap.sighup or snap.sigterm) break;
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+    }
 }
 
 fn pickLayoutEngine(backend: config.LayoutBackend) layout.LayoutEngine {

@@ -28,6 +28,24 @@ ykwm --smoke-zmx my-session
 
 ## zmx Workflow
 
+Build binary first:
+
+```bash
+zig build
+```
+
+Run from local binary path (works even if `ykwm` is not on your PATH yet):
+
+```bash
+zmx attach dev ./zig-out/bin/ykwm
+```
+
+Or, after adding to PATH / installing:
+
+```bash
+zmx attach dev ykwm
+```
+
 Create or attach to a persistent session running ykwm:
 
 ```bash
@@ -68,4 +86,3 @@ Prefix is `Ctrl+G`.
 
 - Left click focuses a pane.
 - Click coordinates are forwarded to the focused pane PTY for terminal apps that support mouse-position actions.
-
