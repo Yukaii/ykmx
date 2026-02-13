@@ -536,13 +536,17 @@ Implemented in repository:
 - Focus switch redraw is immediate (cursor/focus updates without waiting for next PTY output)
 - Mouse support is now compositor-driven: click-to-focus + drag-to-resize work, mouse CSI is consumed by compositor and no longer injected into pane PTYs
 - New-tab flow is now interactive by default: `MOD+t` creates/switches tab and spawns a shell immediately, with resize + redraw hooks
+- Close/teardown paths are non-blocking across window/popup/tab/runtime shutdown paths (`deinitNoWait`), eliminating intermittent UI freezes on close
+- Topology-change relayout is immediate: when a pane/popup process exits, surviving panes are resized/redrawn without requiring manual layout cycle
+- Runtime VT ingest now has chunk-boundary guards (incomplete UTF-8/CSI tails are carried across reads) to reduce sequence-fragment artifacts in TUI apps
+- Terminal-query compatibility expanded: DA (`CSI c`) and CPR (`CSI 6n`) replies are handled in multiplexer path, improving startup/render readiness for fish/zoxide/fzf-style flows
 
 Validated locally:
 - `zig build test` passes
 - `zig build run` passes
 
 Next implementation focus:
-- Complete runtime smoke matrix (popup layering/focus, reattach, resize, mouse interactions, process-exit isolation) in `docs/compatibility.md`.
+- Close out runtime compatibility soak for TUI-heavy apps (fzf/zoxide/fish) and keep targeted parser/query fixes small and test-backed.
 - Then start Phase 6 synchronized scrolling and experimental interaction models.
 
 ### Next Milestone (Immediate)
@@ -552,7 +556,7 @@ Next implementation focus:
   - [x] Per-cell color/style output from `ghostty-vt` attributes
   - [x] Cursor placement for focused pane
   - [x] Diff-based frame flush (no full-screen clear each frame)
-  - [ ] Runtime smoke test: two shells, colored prompt/output, cursor/focus updates, popup layering/focus, resize + reattach preserved, and child-exit isolation
+  - [x] Runtime smoke test: two shells, colored prompt/output, cursor/focus updates, popup layering/focus, resize + reattach preserved, and child-exit isolation
 - **Exit Criteria:**
   - Colored shell prompts/output render correctly in both panes
   - No raw ANSI/control-sequence artifacts in pane content
