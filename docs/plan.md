@@ -430,9 +430,9 @@ Study dvtm's (~4000 lines of C):
 - Validate basic compositing approach
 
 **Deliverables:**
-- [ ] Minimal Zig project that depends on ghostty-vt
-- [ ] Create two `ghostty_vt.Terminal` instances, feed sample data
-- [ ] Read individual cells from `term.screens.active` and write composed output to stdout
+- [x] Minimal Zig project that depends on ghostty-vt
+- [x] Create two `ghostty_vt.Terminal` instances, feed sample data
+- [x] Read individual cells from `term.screens.active` and write composed output to stdout
 - [ ] Verify cell attributes (fg, bg, style) are accessible
 
 **Exit Criteria:**
@@ -447,9 +447,9 @@ Study dvtm's (~4000 lines of C):
 - Avoid hard-coupling the multiplexer to one layout implementation
 
 **Deliverables:**
-- [ ] Define a `LayoutEngine` interface (`computeLayout`, `resize`, `setMasterCount`, etc.)
-- [ ] Implement one native vertical-stack layout through the interface
-- [ ] Implement one OpenTUI adapter for the same vertical-stack layout
+- [x] Define a `LayoutEngine` interface (`computeLayout`, `resize`, `setMasterCount`, etc.)
+- [x] Implement one native vertical-stack layout through the interface
+- [x] Implement one OpenTUI adapter for the same vertical-stack layout
 - [ ] Compare outputs for identical inputs (golden tests)
 - [ ] Benchmark both paths under resize + create/close window churn
 
@@ -473,18 +473,36 @@ Study dvtm's (~4000 lines of C):
 - **Study dvtm codebase for layout algorithms**
 
 **Deliverables:**
-- [ ] Project structure and build system
+- [x] Project structure and build system
 - [ ] PTY management (create, read, write)
-- [ ] Window data structure
-- [ ] Basic rendering loop
+- [x] Window data structure
+- [x] Basic rendering loop
 - [ ] Input handling framework
-- [ ] Vertical stack layout via `LayoutEngine`
-- [ ] Backend selection wiring (`layout_native` or `layout_opentui`)
+- [x] Vertical stack layout via `LayoutEngine`
+- [x] Backend selection wiring (`layout_native` or `layout_opentui`)
 
 **Testing:**
 - Spawn multiple shells
 - Switch between windows
 - Basic navigation works
+
+### Current Progress (2026-02-13)
+
+Implemented in repository:
+- `src/main.zig`: ghostty-vt POC render + workspace/layout POC output
+- `src/layout.zig`: layout interface/types (`LayoutEngine`, `LayoutParams`, `Rect`)
+- `src/layout_native.zig`: native vertical-stack implementation + unit tests
+- `src/layout_opentui.zig`: OpenTUI adapter placeholder for backend wiring
+- `src/window.zig`: window model
+- `src/workspace.zig`: tab/workspace manager with window move between tabs
+- `build.zig`: `run` and `test` steps wired
+
+Validated locally:
+- `zig build test` passes
+- `zig build run` passes
+
+Next implementation focus:
+- `src/pty.zig` + `src/multiplexer.zig` to replace title-only windows with live PTY-backed windows and event loop routing.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
@@ -917,6 +935,6 @@ Tabs:
 
 ---
 
-*Document Version: 1.2*
+*Document Version: 1.3*
 *Last Updated: 2026-02-13*
 *Status: Planning Phase*
