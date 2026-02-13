@@ -174,6 +174,8 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
     var term = try RuntimeTerminal.enter();
     defer term.leave();
+    var vt_state = RuntimeVtState.init(allocator);
+    defer vt_state.deinit();
 
     var last_size = getTerminalSize();
     var last_content = contentRect(last_size);
@@ -221,7 +223,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
         if (snap.sigwinch) force_redraw = true;
         if (force_redraw or tick_result.redraw) {
-            try renderRuntimeFrame(out, allocator, &mux, size, content);
+            try renderRuntimeFrame(out, allocator, &mux, &vt_state, size, content);
             try out.flush();
             force_redraw = false;
         }
@@ -276,6 +278,97 @@ const RuntimeSize = struct {
     rows: u16,
 };
 
+const RuntimeVtState = struct {
+    const WindowVt = struct {
+        term: Terminal,
+        consumed_bytes: usize = 0,
+        cols: u16,
+        rows: u16,
+    };
+
+    allocator: std.mem.Allocator,
+    windows: std.AutoHashMapUnmanaged(u32, WindowVt) = .{},
+
+    fn init(allocator: std.mem.Allocator) RuntimeVtState {
+        return .{ .allocator = allocator };
+    }
+
+    fn deinit(self: *RuntimeVtState) void {
+        var it = self.windows.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.term.deinit(self.allocator);
+        }
+        self.windows.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn syncWindow(
+        self: *RuntimeVtState,
+        window_id: u32,
+        cols: u16,
+        rows: u16,
+        output: []const u8,
+    ) !*WindowVt {
+        const safe_cols: u16 = @max(@as(u16, 1), cols);
+        const safe_rows: u16 = @max(@as(u16, 1), rows);
+
+        const gop = try self.windows.getOrPut(self.allocator, window_id);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{
+                .term = try Terminal.init(self.allocator, .{
+                    .rows = safe_rows,
+                    .cols = safe_cols,
+                    .max_scrollback = 5000,
+                }),
+                .consumed_bytes = 0,
+                .cols = safe_cols,
+                .rows = safe_rows,
+            };
+        }
+
+        var wv = gop.value_ptr;
+        if (wv.cols != safe_cols or wv.rows != safe_rows) {
+            try wv.term.resize(self.allocator, safe_cols, safe_rows);
+            wv.cols = safe_cols;
+            wv.rows = safe_rows;
+        }
+
+        if (wv.consumed_bytes > output.len) wv.consumed_bytes = 0;
+        if (output.len > wv.consumed_bytes) {
+            var stream = wv.term.vtStream();
+            try stream.nextSlice(output[wv.consumed_bytes..]);
+            wv.consumed_bytes = output.len;
+        }
+
+        return wv;
+    }
+
+    fn prune(self: *RuntimeVtState, active_ids: []const u32) !void {
+        var to_remove = std.ArrayList(u32).empty;
+        defer to_remove.deinit(self.allocator);
+
+        var it = self.windows.iterator();
+        while (it.next()) |entry| {
+            const id = entry.key_ptr.*;
+            var keep = false;
+            for (active_ids) |aid| {
+                if (aid == id) {
+                    keep = true;
+                    break;
+                }
+            }
+            if (!keep) try to_remove.append(self.allocator, id);
+        }
+
+        for (to_remove.items) |id| {
+            if (self.windows.getPtr(id)) |wv| {
+                wv.term.deinit(self.allocator);
+            }
+            _ = self.windows.fetchRemove(id);
+        }
+    }
+};
+
 fn getTerminalSize() RuntimeSize {
     var ws: c.struct_winsize = undefined;
     if (c.ioctl(c.STDOUT_FILENO, c.TIOCGWINSZ, &ws) == 0) {
@@ -300,6 +393,7 @@ fn renderRuntimeFrame(
     out: *std.Io.Writer,
     allocator: std.mem.Allocator,
     mux: *multiplexer.Multiplexer,
+    vt_state: *RuntimeVtState,
     size: RuntimeSize,
     content: layout.Rect,
 ) !void {
@@ -314,8 +408,11 @@ fn renderRuntimeFrame(
     defer allocator.free(rects);
     const tab = try mux.workspace_mgr.activeTab();
     const n = @min(rects.len, tab.windows.items.len);
+    var active_ids = try allocator.alloc(u32, n);
+    defer allocator.free(active_ids);
 
     for (rects[0..n], 0..) |r, i| {
+        active_ids[i] = tab.windows.items[i].id;
         if (r.width < 2 or r.height < 2) continue;
         drawBorder(canvas, total_cols, content_rows, r, if (tab.focused_index == i) '*' else ' ');
         const inner_w = r.width - 2;
@@ -325,9 +422,12 @@ fn renderRuntimeFrame(
         const title = tab.windows.items[i].title;
         drawText(canvas, total_cols, content_rows, r.x + 1, r.y, title, inner_w);
 
-        const output = mux.windowOutput(tab.windows.items[i].id) catch "";
-        try drawPaneOutput(allocator, canvas, total_cols, content_rows, r, output);
+        const window_id = tab.windows.items[i].id;
+        const output = mux.windowOutput(window_id) catch "";
+        const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
+        drawPaneOutputFromVt(canvas, total_cols, content_rows, r, &wv.term);
     }
+    try vt_state.prune(active_ids);
 
     const tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
     defer allocator.free(tab_line);
@@ -373,49 +473,34 @@ fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, marker: u8
     if (x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, marker);
 }
 
-fn drawPaneOutput(
-    allocator: std.mem.Allocator,
+fn drawPaneOutputFromVt(
     canvas: []u8,
     cols: usize,
-    rows: usize,
+    _: usize,
     r: layout.Rect,
-    bytes: []const u8,
-) !void {
+    term: *Terminal,
+) void {
     const inner_x: usize = r.x + 1;
     const inner_y: usize = r.y + 1;
     const inner_w: usize = r.width - 2;
     const inner_h: usize = r.height - 2;
     if (inner_w == 0 or inner_h == 0) return;
 
-    const filtered = try filterPrintable(allocator, bytes);
-    defer allocator.free(filtered);
-
-    var total_lines: usize = 0;
-    var count_it = std.mem.splitScalar(u8, filtered, '\n');
-    while (count_it.next()) |_| total_lines += 1;
-    const skip = total_lines -| inner_h;
-
-    var line_idx: usize = 0;
-    var draw_idx: usize = 0;
-    var it = std.mem.splitScalar(u8, filtered, '\n');
-    while (it.next()) |line| : (line_idx += 1) {
-        if (line_idx < skip) continue;
-        if (draw_idx >= inner_h) break;
-        drawText(canvas, cols, rows, @intCast(inner_x), @intCast(inner_y + draw_idx), line, @intCast(inner_w));
-        draw_idx += 1;
-    }
-}
-
-fn filterPrintable(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
-
-    for (bytes) |b| {
-        if (b == '\n' or b == '\t' or (b >= 32 and b < 127)) {
-            try out.append(allocator, b);
+    var y: usize = 0;
+    while (y < inner_h) : (y += 1) {
+        var x: usize = 0;
+        while (x < inner_w) : (x += 1) {
+            const maybe_cell = term.screens.active.pages.getCell(.{
+                .active = .{
+                    .x = @intCast(x),
+                    .y = @intCast(y),
+                },
+            }) orelse continue;
+            const cp = maybe_cell.cell.codepoint();
+            const ch: u8 = if (cp >= 32 and cp < 127) @intCast(cp) else ' ';
+            putCell(canvas, cols, inner_x + x, inner_y + y, ch);
         }
     }
-    return try out.toOwnedSlice(allocator);
 }
 
 fn drawText(
