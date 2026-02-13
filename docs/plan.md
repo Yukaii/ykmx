@@ -493,11 +493,12 @@ Implemented in repository:
 - `src/layout.zig`: layout interface/types (`LayoutEngine`, `LayoutParams`, `Rect`)
 - `src/layout_native.zig`: native layout implementations (vertical/horizontal/grid/fullscreen) + unit tests
 - `src/layout_opentui.zig`: OpenTUI adapter placeholder for backend wiring
+- `src/popup.zig`: popup manager (floating rects, z-index ordering, modal focus state, close/cycle operations)
 - `src/window.zig`: window model
 - `src/workspace.zig`: tab/workspace manager with tab close/switch, window move between tabs, per-tab layout cycling
 - `src/pty.zig`: true PTY backend (`forkpty`), nonblocking master I/O, resize via `TIOCSWINSZ`, PTY tests
 - `src/multiplexer.zig`: window->PTY routing, poll loop, output buffer per window, layout-cycle + tab/window command handling, routing + resize propagation tests
-- `src/input.zig`: prefix-key router (`Ctrl+G`) for command-vs-forwarded input decisions, layout/tab command parsing
+- `src/input.zig`: prefix-key router (`Ctrl+G`) for command-vs-forwarded input decisions, layout/tab/popup command parsing
 - `src/input.zig`: prefix router + ESC/CSI sequence parser + SGR mouse metadata extraction
 - `src/config.zig`: startup config loading + parser (`$XDG_CONFIG_HOME/ykwm/config[.zig]`, fallback `$HOME/.config/ykwm/config[.zig]`)
 - `src/status.zig`: tab bar + status line formatters (active-tab marker, layout/window/focus summary)
@@ -508,6 +509,7 @@ Implemented in repository:
 - Multiplexer runtime tick behavior: `SIGWINCH` => resize + redraw hint, `SIGHUP`/`SIGTERM` => graceful PTY shutdown path
 - Dirty-window tracking and focused-window query APIs for renderer integration
 - Input command actions wired: create/close window, create/close/switch tab, move focused window to next tab, layout cycle, next/prev focused window, detach request flag
+- Popup command actions wired: open popup, close focused popup, cycle popup focus; modal popup input capture routes forwarded bytes to focused popup PTY
 - Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
 - Mouse coordinate path wired for click-to-focus (layout rect hit-test -> focused window update)
 - Basic drag-to-resize support for vertical stack (divider hit-test + master ratio update + PTY resize propagation)
@@ -520,7 +522,7 @@ Validated locally:
 
 Next implementation focus:
 - Integrate multiplexer read loop with renderer dirty-window updates and focus-aware cursor placement.
-- Build popup/floating window data model and input routing for modal overlays.
+- Add popup animation hooks and an fzf-backed popup integration example.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
@@ -557,10 +559,10 @@ Next implementation focus:
 - Modal/non-modal modes
 
 **Deliverables:**
-- [ ] Floating window support
-- [ ] Popup spawning API
-- [ ] Z-index management
-- [ ] Modal input capture
+- [x] Floating window support
+- [x] Popup spawning API
+- [x] Z-index management
+- [x] Modal input capture
 - [ ] Popup animations
 - [ ] Fzf integration example
 

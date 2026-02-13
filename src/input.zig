@@ -3,6 +3,9 @@ const std = @import("std");
 pub const Command = enum {
     create_window,
     close_window,
+    open_popup,
+    close_popup,
+    cycle_popup,
     new_tab,
     close_tab,
     next_tab,
@@ -61,6 +64,9 @@ pub const Router = struct {
             return switch (b) {
                 'c' => .{ .command = .create_window },
                 'x' => .{ .command = .close_window },
+                'p' => .{ .command = .open_popup },
+                0x1b => .{ .command = .close_popup },
+                '\t' => .{ .command = .cycle_popup },
                 't' => .{ .command = .new_tab },
                 'w' => .{ .command = .close_tab },
                 ']' => .{ .command = .next_tab },
@@ -184,6 +190,20 @@ test "input router parses layout cycle command" {
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .cycle_layout }, r.feedByte(' '));
+}
+
+test "input router parses popup commands" {
+    const testing = std.testing;
+    var r = Router{};
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .open_popup }, r.feedByte('p'));
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .close_popup }, r.feedByte(0x1b));
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .cycle_popup }, r.feedByte('\t'));
 }
 
 test "input router emits csi sequence as one event" {

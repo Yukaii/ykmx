@@ -4,6 +4,7 @@ const workspace = @import("workspace.zig");
 const pty_mod = @import("pty.zig");
 const input_mod = @import("input.zig");
 const signal_mod = @import("signal.zig");
+const popup_mod = @import("popup.zig");
 
 pub const Multiplexer = struct {
     const DragState = struct {
@@ -12,6 +13,7 @@ pub const Multiplexer = struct {
 
     allocator: std.mem.Allocator,
     workspace_mgr: workspace.WorkspaceManager,
+    popup_mgr: popup_mod.PopupManager,
     ptys: std.AutoHashMapUnmanaged(u32, pty_mod.Pty) = .{},
     stdout_buffers: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u8)) = .{},
     dirty_windows: std.AutoHashMapUnmanaged(u32, void) = .{},
@@ -19,6 +21,7 @@ pub const Multiplexer = struct {
     detach_requested: bool = false,
     last_mouse_event: ?input_mod.MouseEvent = null,
     drag_state: DragState = .{},
+    next_popup_window_id: u32 = 1_000_000,
 
     pub const TickResult = struct {
         reads: usize,
@@ -38,6 +41,7 @@ pub const Multiplexer = struct {
         return .{
             .allocator = allocator,
             .workspace_mgr = workspace.WorkspaceManager.init(allocator, layout_engine),
+            .popup_mgr = popup_mod.PopupManager.init(allocator),
         };
     }
 
@@ -56,6 +60,7 @@ pub const Multiplexer = struct {
         self.stdout_buffers.deinit(self.allocator);
         self.dirty_windows.deinit(self.allocator);
 
+        self.popup_mgr.deinit();
         self.workspace_mgr.deinit();
         self.* = undefined;
     }
@@ -98,6 +103,12 @@ pub const Multiplexer = struct {
         try p.write(bytes);
     }
 
+    fn sendInputToFocusedPopup(self: *Multiplexer, bytes: []const u8) !void {
+        const focused_id = self.popup_mgr.focusedWindowId() orelse return error.NoFocusedPopup;
+        const p = self.ptys.getPtr(focused_id) orelse return error.UnknownWindow;
+        try p.write(bytes);
+    }
+
     pub fn handleInputBytes(self: *Multiplexer, bytes: []const u8) !void {
         return self.handleInputBytesWithScreen(null, bytes);
     }
@@ -112,13 +123,21 @@ pub const Multiplexer = struct {
             switch (ev) {
                 .forward => |c| {
                     var tmp = [_]u8{c};
-                    try self.sendInputToFocused(&tmp);
+                    if (self.popup_mgr.hasModalOpen()) {
+                        try self.sendInputToFocusedPopup(&tmp);
+                    } else {
+                        try self.sendInputToFocused(&tmp);
+                    }
                 },
                 .forward_sequence => |seq| {
                     if (screen) |s| {
                         try self.handleMouseFromEvent(s, seq.mouse);
                     }
-                    try self.sendInputToFocused(seq.slice());
+                    if (self.popup_mgr.hasModalOpen()) {
+                        try self.sendInputToFocusedPopup(seq.slice());
+                    } else {
+                        try self.sendInputToFocused(seq.slice());
+                    }
                     if (seq.mouse) |mouse| self.last_mouse_event = mouse;
                 },
                 .command => |cmd| switch (cmd) {
@@ -127,6 +146,16 @@ pub const Multiplexer = struct {
                     },
                     .close_window => {
                         _ = try self.closeFocusedWindow();
+                    },
+                    .open_popup => {
+                        const s = screen orelse layout.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
+                        _ = try self.openCommandPopup("popup", &.{"/bin/cat"}, s, true);
+                    },
+                    .close_popup => {
+                        try self.closeFocusedPopup();
+                    },
+                    .cycle_popup => {
+                        self.popup_mgr.cycleFocus();
                     },
                     .new_tab => {
                         const n = self.workspace_mgr.tabCount();
@@ -262,6 +291,10 @@ pub const Multiplexer = struct {
         return self.workspace_mgr.focusedWindowIdActive();
     }
 
+    pub fn focusedPopupWindowId(self: *Multiplexer) ?u32 {
+        return self.popup_mgr.focusedWindowId();
+    }
+
     pub fn dirtyWindowIds(self: *Multiplexer, allocator: std.mem.Allocator) ![]u32 {
         var ids = try allocator.alloc(u32, self.dirty_windows.count());
         errdefer allocator.free(ids);
@@ -361,6 +394,47 @@ pub const Multiplexer = struct {
         _ = self.dirty_windows.fetchRemove(id);
 
         return id;
+    }
+
+    pub fn openCommandPopup(
+        self: *Multiplexer,
+        title: []const u8,
+        argv: []const []const u8,
+        screen: layout.Rect,
+        modal: bool,
+    ) !u32 {
+        const popup_window_id = self.next_popup_window_id;
+        self.next_popup_window_id += 1;
+
+        const rect = centeredPopupRect(screen, 70, 60);
+        var p = try pty_mod.Pty.spawnCommand(self.allocator, argv);
+        errdefer p.deinit();
+
+        try self.ptys.put(self.allocator, popup_window_id, p);
+        try self.stdout_buffers.put(self.allocator, popup_window_id, .{});
+
+        const popup_id = try self.popup_mgr.create(.{
+            .window_id = popup_window_id,
+            .title = title,
+            .rect = rect,
+            .modal = modal,
+            .kind = .command,
+        });
+        try self.markWindowDirty(popup_window_id);
+        return popup_id;
+    }
+
+    pub fn closeFocusedPopup(self: *Multiplexer) !void {
+        const removed = self.popup_mgr.closeFocused() orelse return;
+        defer self.allocator.free(removed.title);
+
+        if (removed.window_id) |window_id| {
+            if (self.ptys.getPtr(window_id)) |p| p.deinit();
+            _ = self.ptys.fetchRemove(window_id);
+            if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
+            _ = self.stdout_buffers.fetchRemove(window_id);
+            _ = self.dirty_windows.fetchRemove(window_id);
+        }
     }
 
     pub fn closeActiveTab(self: *Multiplexer) !void {
@@ -476,6 +550,16 @@ pub const Multiplexer = struct {
 
     fn posixPollFd() type {
         return std.posix.pollfd;
+    }
+
+    fn centeredPopupRect(screen: layout.Rect, width_percent: u8, height_percent: u8) layout.Rect {
+        const w_u32 = (@as(u32, screen.width) * width_percent) / 100;
+        const h_u32 = (@as(u32, screen.height) * height_percent) / 100;
+        const w: u16 = @intCast(@max(@as(u32, 1), w_u32));
+        const h: u16 = @intCast(@max(@as(u32, 1), h_u32));
+        const x: u16 = screen.x + (screen.width - w) / 2;
+        const y: u16 = screen.y + (screen.height - h) / 2;
+        return .{ .x = x, .y = y, .width = w, .height = h };
     }
 };
 
@@ -783,4 +867,63 @@ test "multiplexer close active tab removes tab windows from pty maps" {
     try testing.expect(mux.ptys.contains(win_b));
     try testing.expect(!mux.ptys.contains(win_c));
     try testing.expect(!mux.stdout_buffers.contains(win_c));
+}
+
+test "multiplexer opens and closes command popup" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const popup_id = try mux.openCommandPopup(
+        "popup-cat",
+        &.{"/bin/cat"},
+        .{ .x = 0, .y = 0, .width = 100, .height = 30 },
+        true,
+    );
+    _ = popup_id;
+
+    try testing.expectEqual(@as(usize, 1), mux.popup_mgr.count());
+    const popup_window_id = mux.focusedPopupWindowId() orelse return error.TestUnexpectedResult;
+    try testing.expect(mux.ptys.contains(popup_window_id));
+
+    try mux.closeFocusedPopup();
+    try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
+    try testing.expect(!mux.ptys.contains(popup_window_id));
+}
+
+test "multiplexer modal popup captures forwarded input" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const base_win = try mux.createCommandWindow("base-cat", &.{"/bin/cat"});
+    _ = try mux.openCommandPopup(
+        "popup-cat",
+        &.{"/bin/cat"},
+        .{ .x = 0, .y = 0, .width = 100, .height = 30 },
+        true,
+    );
+    const popup_win = mux.focusedPopupWindowId() orelse return error.TestUnexpectedResult;
+
+    try mux.handleInputBytes("to-popup\n");
+
+    var tries: usize = 0;
+    while (tries < 40) : (tries += 1) {
+        _ = try mux.pollOnce(30);
+        const out = try mux.windowOutput(popup_win);
+        if (std.mem.indexOf(u8, out, "to-popup") != null) break;
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+
+    const popup_out = try mux.windowOutput(popup_win);
+    const base_out = try mux.windowOutput(base_win);
+
+    try testing.expect(std.mem.indexOf(u8, popup_out, "to-popup") != null);
+    try testing.expect(std.mem.indexOf(u8, base_out, "to-popup") == null);
 }
