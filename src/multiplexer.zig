@@ -6,6 +6,10 @@ const input_mod = @import("input.zig");
 const signal_mod = @import("signal.zig");
 
 pub const Multiplexer = struct {
+    const DragState = struct {
+        resizing_master: bool = false,
+    };
+
     allocator: std.mem.Allocator,
     workspace_mgr: workspace.WorkspaceManager,
     ptys: std.AutoHashMapUnmanaged(u32, pty_mod.Pty) = .{},
@@ -14,6 +18,7 @@ pub const Multiplexer = struct {
     input_router: input_mod.Router = .{},
     detach_requested: bool = false,
     last_mouse_event: ?input_mod.MouseEvent = null,
+    drag_state: DragState = .{},
 
     pub const TickResult = struct {
         reads: usize,
@@ -105,7 +110,7 @@ pub const Multiplexer = struct {
                 },
                 .forward_sequence => |seq| {
                     if (screen) |s| {
-                        try self.applyMouseFocusFromEvent(s, seq.mouse);
+                        try self.handleMouseFromEvent(s, seq.mouse);
                     }
                     try self.sendInputToFocused(seq.slice());
                     if (seq.mouse) |mouse| self.last_mouse_event = mouse;
@@ -319,17 +324,44 @@ pub const Multiplexer = struct {
         try self.dirty_windows.put(self.allocator, window_id, {});
     }
 
-    fn applyMouseFocusFromEvent(
+    fn handleMouseFromEvent(
         self: *Multiplexer,
         screen: layout.Rect,
         maybe_mouse: ?input_mod.MouseEvent,
     ) !void {
         const mouse = maybe_mouse orelse return;
-        if (!mouse.pressed or mouse.button != 0) return;
-
         const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
         const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
 
+        if (!mouse.pressed) {
+            self.drag_state.resizing_master = false;
+            return;
+        }
+
+        const motion = (mouse.button & 32) != 0;
+        if (self.drag_state.resizing_master and motion) {
+            try self.applyDragResize(screen, px);
+            return;
+        }
+
+        if (mouse.button != 0) return;
+
+        // Start divider drag for vertical stack if click is on divider.
+        if (try self.hitDividerForVerticalStack(screen, px, py)) {
+            self.drag_state.resizing_master = true;
+            return;
+        }
+
+        // Otherwise it's a focus click.
+        try self.applyClickFocus(screen, px, py);
+    }
+
+    fn applyClickFocus(
+        self: *Multiplexer,
+        screen: layout.Rect,
+        px: u16,
+        py: u16,
+    ) !void {
         const rects = try self.computeActiveLayout(screen);
         defer self.allocator.free(rects);
 
@@ -347,6 +379,33 @@ pub const Multiplexer = struct {
             try self.markWindowDirty(tab.windows.items[i].id);
             return;
         }
+    }
+
+    fn hitDividerForVerticalStack(self: *Multiplexer, screen: layout.Rect, px: u16, py: u16) !bool {
+        if (try self.workspace_mgr.activeLayoutType() != .vertical_stack) return false;
+
+        const rects = try self.computeActiveLayout(screen);
+        defer self.allocator.free(rects);
+        if (rects.len < 2) return false;
+
+        // For vertical stack, master divider is at the right edge of pane 0.
+        const divider_x = rects[0].x + rects[0].width;
+        const in_y = py >= rects[0].y and py < (rects[0].y + rects[0].height);
+        if (!in_y) return false;
+
+        const lo = if (divider_x > 0) divider_x - 1 else divider_x;
+        const hi = divider_x + 1;
+        return px >= lo and px <= hi;
+    }
+
+    fn applyDragResize(self: *Multiplexer, screen: layout.Rect, px: u16) !void {
+        if (screen.width == 0) return;
+
+        const local_x = if (px > screen.x) px - screen.x else 0;
+        const ratio_u32 = (@as(u32, local_x) * 1000) / @as(u32, screen.width);
+        const clamped: u16 = @intCast(@max(@as(u32, 100), @min(@as(u32, 900), ratio_u32)));
+        try self.workspace_mgr.setActiveMasterRatioPermille(clamped);
+        _ = try self.resizeActiveWindowsToLayout(screen);
     }
 
     fn posixPollFd() type {
@@ -571,4 +630,29 @@ test "multiplexer click-to-focus selects pane by mouse coordinates" {
     // Click near the right side in a 2-pane vertical layout.
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;70;5M");
     try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
+}
+
+test "multiplexer drag-resize updates master ratio for vertical stack" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("left", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("right", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const before = try mux.workspace_mgr.activeMasterRatioPermille();
+
+    // 1) Press on divider (near x ~ master split in 80 cols).
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;49;5M");
+    // 2) Drag motion to the right (button 32 indicates motion).
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<32;70;5M");
+    // 3) Release.
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;70;5m");
+
+    const after = try mux.workspace_mgr.activeMasterRatioPermille();
+    try testing.expect(after != before);
+    try testing.expect(after > before);
 }

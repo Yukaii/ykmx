@@ -181,6 +181,22 @@ pub const WorkspaceManager = struct {
 
         return id;
     }
+
+    pub fn activeLayoutType(self: *WorkspaceManager) !layout.LayoutType {
+        const tab = try self.activeTab();
+        return tab.layout_type;
+    }
+
+    pub fn activeMasterRatioPermille(self: *WorkspaceManager) !u16 {
+        const tab = try self.activeTab();
+        return tab.master_ratio_permille;
+    }
+
+    pub fn setActiveMasterRatioPermille(self: *WorkspaceManager, ratio: u16) !void {
+        if (ratio > 1000) return error.InvalidMasterRatio;
+        const tab = try self.activeTab();
+        tab.master_ratio_permille = ratio;
+    }
 };
 
 test "workspace manager supports tabs and window movement" {
@@ -223,4 +239,19 @@ test "workspace manager can set focused window by index" {
 
     try wm.setFocusedWindowIndexActive(1);
     try testing.expectEqual(@as(usize, 1), try wm.focusedWindowIndexActive());
+}
+
+test "workspace manager can set active master ratio" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var wm = WorkspaceManager.init(testing.allocator, engine);
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    _ = try wm.addWindowToActive("a");
+    _ = try wm.addWindowToActive("b");
+
+    try wm.setActiveMasterRatioPermille(700);
+    try testing.expectEqual(@as(u16, 700), try wm.activeMasterRatioPermille());
 }
