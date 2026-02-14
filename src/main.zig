@@ -251,6 +251,10 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
         const snap = signal_mod.drain();
         const tick_result = try mux.tick(30, content, snap);
 
+        // Keep known VT instances warm even when their tab is inactive.
+        // This amortizes parse work and reduces tab-switch spikes for long buffers.
+        try warmKnownDirtyWindowVtState(allocator, &mux, &vt_state);
+
         if (tick_result.detach_requested) {
             _ = env.detachCurrentSession(allocator) catch {};
         }
@@ -485,6 +489,14 @@ const RuntimeVtState = struct {
             _ = self.windows.fetchRemove(id);
         }
     }
+
+    fn syncKnownWindow(self: *RuntimeVtState, window_id: u32, output: []const u8) !bool {
+        const wv = self.windows.getPtr(window_id) orelse return false;
+        const cols = wv.cols;
+        const rows = wv.rows;
+        _ = try self.syncWindow(window_id, cols, rows, output);
+        return true;
+    }
 };
 
 fn utf8SafePrefixLen(bytes: []const u8) usize {
@@ -572,6 +584,24 @@ fn readStdinNonBlocking(buf: []u8) !usize {
     return std.posix.read(c.STDIN_FILENO, buf);
 }
 
+fn warmKnownDirtyWindowVtState(
+    allocator: std.mem.Allocator,
+    mux: *multiplexer.Multiplexer,
+    vt_state: *RuntimeVtState,
+) !void {
+    const dirty = try mux.dirtyWindowIds(allocator);
+    defer allocator.free(dirty);
+
+    for (dirty) |window_id| {
+        const output = mux.windowOutput(window_id) catch {
+            mux.clearDirtyWindow(window_id);
+            continue;
+        };
+        _ = try vt_state.syncKnownWindow(window_id, output);
+        mux.clearDirtyWindow(window_id);
+    }
+}
+
 fn renderRuntimeFrame(
     out: *std.Io.Writer,
     allocator: std.mem.Allocator,
@@ -597,17 +627,12 @@ fn renderRuntimeFrame(
     const tab = try mux.workspace_mgr.activeTab();
     const n = @min(rects.len, tab.windows.items.len);
     const popup_count = mux.popup_mgr.count();
-    var active_ids = try allocator.alloc(u32, n + popup_count);
-    defer allocator.free(active_ids);
     var panes = try allocator.alloc(PaneRenderRef, n + popup_count);
     defer allocator.free(panes);
     var pane_count: usize = 0;
-    var active_id_count: usize = 0;
     var focused_cursor_abs: ?struct { row: usize, col: usize } = null;
 
     for (rects[0..n], 0..) |r, i| {
-        active_ids[active_id_count] = tab.windows.items[i].id;
-        active_id_count += 1;
         if (r.width < 2 or r.height < 2) continue;
         const border = computeBorderMask(rects[0..n], i, r, content);
         const insets = computeContentInsets(rects[0..n], i, r, border);
@@ -664,9 +689,6 @@ fn renderRuntimeFrame(
         if (window_id == 0) continue;
         if (p.rect.width < 2 or p.rect.height < 2) continue;
 
-        active_ids[active_id_count] = window_id;
-        active_id_count += 1;
-
         const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
         drawBorder(canvas, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) '*' else ' ');
 
@@ -700,7 +722,9 @@ fn renderRuntimeFrame(
             };
         }
     }
-    try vt_state.prune(active_ids[0..active_id_count]);
+    const live_ids = try mux.liveWindowIds(allocator);
+    defer allocator.free(live_ids);
+    try vt_state.prune(live_ids);
 
     const tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
     defer allocator.free(tab_line);
@@ -765,29 +789,64 @@ fn renderRuntimeFrame(
     var active_style: ?ghostty_vt.Style = null;
     var idx: usize = 0;
     while (idx < curr.len) : (idx += 1) {
-        const old = frame_cache.cells[idx];
-        const new = curr[idx];
-        if (!resized and renderCellEqual(old, new)) continue;
+        if (!resized and renderCellEqual(frame_cache.cells[idx], curr[idx])) continue;
 
-        const y = idx / total_cols;
-        const x = idx % total_cols;
-        try writeFmtBlocking(out, "\x1b[{};{}H", .{ y + 1, x + 1 });
-
-        if (!new.styled) {
-            if (active_style != null) {
-                try writeAllBlocking(out, "\x1b[0m");
-                active_style = null;
-            }
-        } else if (active_style) |s| {
-            if (!s.eql(new.style)) {
+        if (!isSafeRunCell(curr[idx])) {
+            const y = idx / total_cols;
+            const x = idx % total_cols;
+            try writeFmtBlocking(out, "\x1b[{};{}H", .{ y + 1, x + 1 });
+            const new = curr[idx];
+            if (!new.styled) {
+                if (active_style != null) {
+                    try writeAllBlocking(out, "\x1b[0m");
+                    active_style = null;
+                }
+            } else if (active_style) |s| {
+                if (!s.eql(new.style)) {
+                    try writeStyle(out, new.style);
+                    active_style = new.style;
+                }
+            } else {
                 try writeStyle(out, new.style);
                 active_style = new.style;
             }
-        } else {
-            try writeStyle(out, new.style);
-            active_style = new.style;
+            try writeAllBlocking(out, new.text[0..new.text_len]);
+            continue;
         }
-        try writeAllBlocking(out, new.text[0..new.text_len]);
+
+        const y_row = idx / total_cols;
+        const row_end = (y_row + 1) * total_cols;
+        const run_start = idx;
+        var run_end = idx + 1;
+        while (run_end < row_end) : (run_end += 1) {
+            if (!isSafeRunCell(curr[run_end])) break;
+            if (!resized and renderCellEqual(frame_cache.cells[run_end], curr[run_end])) break;
+        }
+
+        const x0 = run_start % total_cols;
+        try writeFmtBlocking(out, "\x1b[{};{}H", .{ y_row + 1, x0 + 1 });
+
+        var j = run_start;
+        while (j < run_end) : (j += 1) {
+            const new = curr[j];
+            if (!new.styled) {
+                if (active_style != null) {
+                    try writeAllBlocking(out, "\x1b[0m");
+                    active_style = null;
+                }
+            } else if (active_style) |s| {
+                if (!s.eql(new.style)) {
+                    try writeStyle(out, new.style);
+                    active_style = new.style;
+                }
+            } else {
+                try writeStyle(out, new.style);
+                active_style = new.style;
+            }
+            try writeAllBlocking(out, new.text[0..new.text_len]);
+        }
+
+        idx = run_end - 1;
     }
     if (active_style != null) try writeAllBlocking(out, "\x1b[0m");
     @memcpy(frame_cache.cells, curr);
@@ -984,6 +1043,12 @@ fn renderCellEqual(a: RuntimeRenderCell, b: RuntimeRenderCell) bool {
     if (a.styled != b.styled) return false;
     if (a.styled and !a.style.eql(b.style)) return false;
     return std.mem.eql(u8, a.text[0..a.text_len], b.text[0..b.text_len]);
+}
+
+fn isSafeRunCell(cell: RuntimeRenderCell) bool {
+    if (cell.text_len != 1) return false;
+    const ch = cell.text[0];
+    return ch >= 0x20 and ch <= 0x7e;
 }
 
 fn writeStyle(out: *std.Io.Writer, style: ghostty_vt.Style) !void {

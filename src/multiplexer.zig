@@ -194,9 +194,15 @@ pub const Multiplexer = struct {
                 .command => |cmd| switch (cmd) {
                     .create_window => {
                         _ = try self.createShellWindow("shell");
+                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                        _ = try self.markActiveWindowsDirty();
+                        self.requestRedraw();
                     },
                     .close_window => {
                         _ = try self.closeFocusedWindow();
+                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                        _ = try self.markActiveWindowsDirty();
+                        self.requestRedraw();
                     },
                     .open_popup => {
                         if (self.popup_mgr.count() > 0) {
@@ -521,8 +527,18 @@ pub const Multiplexer = struct {
         return ids;
     }
 
+    pub fn liveWindowIds(self: *Multiplexer, allocator: std.mem.Allocator) ![]u32 {
+        var ids = try allocator.alloc(u32, self.ptys.count());
+        errdefer allocator.free(ids);
+
+        var i: usize = 0;
+        var it = self.ptys.iterator();
+        while (it.next()) |entry| : (i += 1) ids[i] = entry.key_ptr.*;
+        return ids;
+    }
+
     pub fn clearDirtyWindow(self: *Multiplexer, window_id: u32) void {
-        _ = self.dirty_windows.swapRemove(window_id);
+        _ = self.dirty_windows.fetchRemove(window_id);
     }
 
     pub fn clearAllDirty(self: *Multiplexer) void {
@@ -573,7 +589,10 @@ pub const Multiplexer = struct {
         const exited_windows = try self.reapExitedWindows();
         if (exited_windows > 0) redraw = true;
 
-        const reads = try self.pollOnce(timeout_ms);
+        // UI commands (tab/focus/layout changes) request redraw synchronously.
+        // Avoid waiting on PTY poll timeout before presenting those updates.
+        const poll_timeout_ms: i32 = if (self.redraw_requested) 0 else timeout_ms;
+        const reads = try self.pollOnce(poll_timeout_ms);
         if (reads > 0) redraw = true;
         const popup_updates = try self.processPopupTick();
         if (popup_updates > 0) redraw = true;
@@ -1387,6 +1406,32 @@ test "multiplexer captures mouse metadata without forwarding to pane" {
     try testing.expect(mouse.pressed);
 }
 
+test "multiplexer liveWindowIds includes windows from multiple tabs" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("a");
+    const a_id = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createTab("b");
+    const b_id = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const live = try mux.liveWindowIds(testing.allocator);
+    defer testing.allocator.free(live);
+
+    try testing.expect(live.len >= 2);
+    var found_a = false;
+    var found_b = false;
+    for (live) |id| {
+        if (id == a_id) found_a = true;
+        if (id == b_id) found_b = true;
+    }
+    try testing.expect(found_a);
+    try testing.expect(found_b);
+}
+
 test "multiplexer click-to-focus selects pane by mouse coordinates" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
@@ -1490,6 +1535,36 @@ test "multiplexer focus command requests redraw immediately" {
         .sigterm = false,
     });
     try testing.expect(t.redraw);
+}
+
+test "multiplexer tick does not block on poll after tab switch redraw request" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("a");
+    _ = try mux.createCommandWindow("a-win", &.{ "/bin/sh", "-c", "sleep 0.5" });
+    _ = try mux.createTab("b");
+    _ = try mux.createCommandWindow("b-win", &.{ "/bin/sh", "-c", "sleep 0.5" });
+    try mux.switchTab(0);
+
+    // Trigger next-tab command, which requests immediate redraw.
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, ']' });
+
+    const start = std.time.nanoTimestamp();
+    const t = try mux.tick(200, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+        .sigwinch = false,
+        .sighup = false,
+        .sigterm = false,
+    });
+    const elapsed_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - start)) /
+        @as(f64, @floatFromInt(std.time.ns_per_ms));
+
+    try testing.expect(t.redraw);
+    // Old behavior waited for poll timeout (~200ms). New behavior should be near-immediate.
+    try testing.expect(elapsed_ms < 100.0);
 }
 
 test "multiplexer reattach path marks active windows dirty and requests redraw" {
