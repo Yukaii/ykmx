@@ -6,6 +6,12 @@ pub const LayoutBackend = enum {
     opentui,
 };
 
+pub const MouseMode = enum {
+    hybrid,
+    passthrough,
+    compositor,
+};
+
 pub const Config = struct {
     source_path: ?[]u8 = null,
     layout_backend: LayoutBackend = .native,
@@ -15,6 +21,7 @@ pub const Config = struct {
     gap: u16 = 0,
     show_tab_bar: bool = true,
     show_status_bar: bool = true,
+    mouse_mode: MouseMode = .hybrid,
     plugins_enabled: bool = false,
     plugin_dir: ?[]u8 = null,
 
@@ -120,6 +127,15 @@ fn applyKeyValue(cfg: *Config, key: []const u8, value: []const u8) !void {
         cfg.show_status_bar = try parseBool(value);
         return;
     }
+    if (std.mem.eql(u8, key, "mouse_mode")) {
+        cfg.mouse_mode = try parseMouseMode(value);
+        return;
+    }
+    // Backward compatibility: legacy boolean knob.
+    if (std.mem.eql(u8, key, "mouse_passthrough")) {
+        cfg.mouse_mode = if (try parseBool(value)) .passthrough else .compositor;
+        return;
+    }
     if (std.mem.eql(u8, key, "plugins_enabled")) {
         cfg.plugins_enabled = try parseBool(value);
         return;
@@ -141,6 +157,13 @@ fn parseBool(value: []const u8) !bool {
     return error.InvalidBool;
 }
 
+fn parseMouseMode(value: []const u8) !MouseMode {
+    if (std.mem.eql(u8, value, "hybrid")) return .hybrid;
+    if (std.mem.eql(u8, value, "passthrough")) return .passthrough;
+    if (std.mem.eql(u8, value, "compositor")) return .compositor;
+    return error.InvalidMouseMode;
+}
+
 fn trimQuotes(value: []const u8) []const u8 {
     if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
         return value[1 .. value.len - 1];
@@ -160,6 +183,7 @@ test "config parser applies known keys" {
         \\gap=1
         \\show_tab_bar=false
         \\show_status_bar=true
+        \\mouse_mode=compositor
         \\plugins_enabled=1
     );
 
@@ -170,5 +194,6 @@ test "config parser applies known keys" {
     try testing.expectEqual(@as(u16, 1), cfg.gap);
     try testing.expect(!cfg.show_tab_bar);
     try testing.expect(cfg.show_status_bar);
+    try testing.expectEqual(MouseMode.compositor, cfg.mouse_mode);
     try testing.expect(cfg.plugins_enabled);
 }

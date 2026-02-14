@@ -8,6 +8,12 @@ const popup_mod = @import("popup.zig");
 const scrollback_mod = @import("scrollback.zig");
 
 pub const Multiplexer = struct {
+    pub const MouseMode = enum {
+        hybrid,
+        passthrough,
+        compositor,
+    };
+
     const FocusDirection = enum {
         left,
         right,
@@ -38,6 +44,7 @@ pub const Multiplexer = struct {
     detach_requested: bool = false,
     last_mouse_event: ?input_mod.MouseEvent = null,
     drag_state: DragState = .{},
+    mouse_mode: MouseMode = .hybrid,
     next_popup_window_id: u32 = 1_000_000,
     redraw_requested: bool = false,
     last_screen: ?layout.Rect = null,
@@ -98,6 +105,22 @@ pub const Multiplexer = struct {
 
     pub fn switchTab(self: *Multiplexer, index: usize) !void {
         try self.workspace_mgr.switchTab(index);
+    }
+
+    pub fn setMouseMode(self: *Multiplexer, mode: MouseMode) void {
+        self.mouse_mode = mode;
+    }
+
+    pub fn mouseMode(self: *const Multiplexer) MouseMode {
+        return self.mouse_mode;
+    }
+
+    pub fn setMousePassthrough(self: *Multiplexer, enabled: bool) void {
+        self.mouse_mode = if (enabled) .passthrough else .compositor;
+    }
+
+    pub fn mousePassthrough(self: *const Multiplexer) bool {
+        return self.mouse_mode == .passthrough;
     }
 
     pub fn createShellWindow(self: *Multiplexer, title: []const u8) !u32 {
@@ -168,12 +191,23 @@ pub const Multiplexer = struct {
                 .forward_sequence => |seq| {
                     var consumed_mouse = false;
                     if (screen) |s| {
-                        if (seq.mouse != null) {
-                            consumed_mouse = true;
-                            self.handleMouseFromEvent(s, seq.mouse) catch |err| switch (err) {
-                                error.OutOfMemory => return err,
-                                else => {},
-                            };
+                        if (seq.mouse) |mouse| {
+                            switch (self.mouse_mode) {
+                                .compositor => {
+                                    consumed_mouse = true;
+                                    self.handleMouseFromEvent(s, mouse) catch |err| switch (err) {
+                                        error.OutOfMemory => return err,
+                                        else => {},
+                                    };
+                                },
+                                .hybrid => {
+                                    consumed_mouse = self.handleMouseHybrid(s, mouse) catch |err| switch (err) {
+                                        error.OutOfMemory => return err,
+                                        else => false,
+                                    };
+                                },
+                                .passthrough => {},
+                            }
                         }
                     }
                     if (!consumed_mouse) {
@@ -358,6 +392,14 @@ pub const Multiplexer = struct {
                     .scroll_page_down => {
                         const lines: usize = if (screen) |s| s.height else 24;
                         self.scrollPageDownFocused(lines);
+                    },
+                    .toggle_mouse_passthrough => {
+                        self.mouse_mode = switch (self.mouse_mode) {
+                            .hybrid => .passthrough,
+                            .passthrough => .compositor,
+                            .compositor => .hybrid,
+                        };
+                        self.requestRedraw();
                     },
                     .detach => {
                         self.detach_requested = true;
@@ -827,6 +869,74 @@ pub const Multiplexer = struct {
 
         // Otherwise it's a focus click.
         try self.applyClickFocus(screen, px, py);
+    }
+
+    fn handleMouseHybrid(
+        self: *Multiplexer,
+        screen: layout.Rect,
+        mouse: input_mod.MouseEvent,
+    ) !bool {
+        const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
+        const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
+
+        if (!mouse.pressed) {
+            if (self.drag_state.resizing_master) {
+                self.drag_state.resizing_master = false;
+                return true;
+            }
+            return false;
+        }
+
+        const motion = (mouse.button & 32) != 0;
+        if (self.drag_state.resizing_master and (motion or mouse.button == 0)) {
+            try self.applyDragResize(screen, px);
+            return true;
+        }
+        if (motion) return false;
+        if (mouse.button != 0) return false;
+
+        if (!pointInRect(px, py, screen)) return true;
+
+        if (try self.hitDividerForVerticalStack(screen, px, py)) {
+            self.drag_state.resizing_master = true;
+            return true;
+        }
+
+        const pane_hit = try self.paneHitAt(screen, px, py);
+        if (pane_hit) |hit| {
+            try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
+            try self.markWindowDirty((try self.workspace_mgr.activeTab()).windows.items[hit.idx].id);
+            self.requestRedraw();
+            return hit.on_border;
+        }
+
+        return false;
+    }
+
+    const PaneHit = struct {
+        idx: usize,
+        on_border: bool,
+    };
+
+    fn paneHitAt(self: *Multiplexer, screen: layout.Rect, px: u16, py: u16) !?PaneHit {
+        const rects = try self.computeActiveLayout(screen);
+        defer self.allocator.free(rects);
+
+        const tab = try self.workspace_mgr.activeTab();
+        const n = @min(rects.len, tab.windows.items.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const r = rects[i];
+            if (!pointInRect(px, py, r)) continue;
+            const on_border = px == r.x or py == r.y or
+                px + 1 == r.x + r.width or py + 1 == r.y + r.height;
+            return PaneHit{ .idx = i, .on_border = on_border };
+        }
+        return null;
+    }
+
+    fn pointInRect(px: u16, py: u16, r: layout.Rect) bool {
+        return px >= r.x and px < (r.x + r.width) and py >= r.y and py < (r.y + r.height);
     }
 
     fn applyClickFocus(
@@ -1390,6 +1500,7 @@ test "multiplexer captures mouse metadata without forwarding to pane" {
 
     var mux = Multiplexer.init(testing.allocator, engine);
     defer mux.deinit();
+    mux.setMousePassthrough(false);
 
     _ = try mux.createTab("dev");
     const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
@@ -1438,6 +1549,7 @@ test "multiplexer click-to-focus selects pane by mouse coordinates" {
 
     var mux = Multiplexer.init(testing.allocator, engine);
     defer mux.deinit();
+    mux.setMousePassthrough(false);
 
     _ = try mux.createTab("dev");
     _ = try mux.createCommandWindow("left", &.{ "/bin/sh", "-c", "sleep 0.2" });
@@ -1456,6 +1568,7 @@ test "multiplexer click focuses pane without forwarding mouse sequence" {
 
     var mux = Multiplexer.init(testing.allocator, engine);
     defer mux.deinit();
+    mux.setMousePassthrough(false);
 
     _ = try mux.createTab("dev");
     const left_id = try mux.createCommandWindow("left", &.{"/bin/cat"});
@@ -1477,6 +1590,7 @@ test "multiplexer drag-resize updates master ratio for vertical stack" {
 
     var mux = Multiplexer.init(testing.allocator, engine);
     defer mux.deinit();
+    mux.setMousePassthrough(false);
 
     _ = try mux.createTab("dev");
     _ = try mux.createCommandWindow("left", &.{ "/bin/sh", "-c", "sleep 0.2" });
@@ -1502,6 +1616,7 @@ test "multiplexer drag-resize burst does not error" {
 
     var mux = Multiplexer.init(testing.allocator, engine);
     defer mux.deinit();
+    mux.setMousePassthrough(false);
 
     _ = try mux.createTab("dev");
     _ = try mux.createCommandWindow("left", &.{ "/bin/sh", "-c", "sleep 0.2" });
@@ -1535,6 +1650,85 @@ test "multiplexer focus command requests redraw immediately" {
         .sigterm = false,
     });
     try testing.expect(t.redraw);
+}
+
+test "multiplexer mouse passthrough forwards sgr sequence to focused pane" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+    mux.setMousePassthrough(true);
+
+    const seq = "\x1b[<0;7;9M";
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
+
+    // Read loop to allow PTY echo to land.
+    var tries: usize = 0;
+    while (tries < 20) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        const out = try mux.windowOutput(win_id);
+        if (std.mem.indexOf(u8, out, seq) != null) break;
+    }
+
+    const out = try mux.windowOutput(win_id);
+    try testing.expect(std.mem.indexOf(u8, out, seq) != null);
+}
+
+test "multiplexer hybrid mode forwards content click to clicked pane" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const left_id = try mux.createCommandWindow("left", &.{"/bin/cat"});
+    const right_id = try mux.createCommandWindow("right", &.{"/bin/cat"});
+    mux.setMouseMode(.hybrid);
+
+    // Click interior of right pane in a 2-pane vertical split.
+    const seq = "\x1b[<0;70;5M";
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
+
+    var tries: usize = 0;
+    while (tries < 20) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        const right_out_now = try mux.windowOutput(right_id);
+        if (std.mem.indexOf(u8, right_out_now, seq) != null) break;
+    }
+
+    try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
+    const left_out = try mux.windowOutput(left_id);
+    const right_out = try mux.windowOutput(right_id);
+    try testing.expect(std.mem.indexOf(u8, left_out, seq) == null);
+    try testing.expect(std.mem.indexOf(u8, right_out, seq) != null);
+}
+
+test "multiplexer hybrid mode keeps divider click in compositor path" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const left_id = try mux.createCommandWindow("left", &.{"/bin/cat"});
+    const right_id = try mux.createCommandWindow("right", &.{"/bin/cat"});
+    mux.setMouseMode(.hybrid);
+
+    // Divider press in 80-col default split (~x=49).
+    const seq = "\x1b[<0;49;5M";
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
+    _ = try mux.pollOnce(20);
+
+    const left_out = try mux.windowOutput(left_id);
+    const right_out = try mux.windowOutput(right_id);
+    try testing.expect(std.mem.indexOf(u8, left_out, seq) == null);
+    try testing.expect(std.mem.indexOf(u8, right_out, seq) == null);
 }
 
 test "multiplexer tick does not block on poll after tab switch redraw request" {

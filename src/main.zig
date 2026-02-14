@@ -199,6 +199,11 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
     var mux = multiplexer.Multiplexer.init(allocator, pickLayoutEngine(cfg.layout_backend));
     defer mux.deinit();
+    mux.setMouseMode(switch (cfg.mouse_mode) {
+        .hybrid => .hybrid,
+        .passthrough => .passthrough,
+        .compositor => .compositor,
+    });
 
     _ = try mux.createTab("main");
     try mux.workspace_mgr.setActiveLayoutDefaults(cfg.default_layout, cfg.master_count, cfg.master_ratio_permille, cfg.gap);

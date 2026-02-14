@@ -24,6 +24,7 @@ pub const Command = enum {
     master_count_decrease,
     scroll_page_up,
     scroll_page_down,
+    toggle_mouse_passthrough,
     detach,
 };
 
@@ -95,6 +96,7 @@ pub const Router = struct {
                 'O' => .{ .command = .master_count_decrease },
                 'u' => .{ .command = .scroll_page_up },
                 'd' => .{ .command = .scroll_page_down },
+                'M' => .{ .command = .toggle_mouse_passthrough },
                 '\\' => .{ .command = .detach },
                 else => .{ .forward = b },
             };
@@ -273,6 +275,14 @@ test "input router parses scroll commands" {
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .scroll_page_down }, r.feedByte('d'));
+}
+
+test "input router parses mouse passthrough toggle command" {
+    const testing = std.testing;
+    var r = Router{};
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .toggle_mouse_passthrough }, r.feedByte('M'));
 }
 
 test "input router emits csi sequence as one event" {

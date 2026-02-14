@@ -83,9 +83,15 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G Escape` close focused popup immediately
 - `Ctrl+G Tab` cycle popup focus
 - `Ctrl+G u` / `Ctrl+G d` page up/down scrollback
+- `Ctrl+G M` cycle mouse mode (`hybrid` -> `passthrough` -> `compositor`)
 - `Ctrl+G \` detach request
 
 ## Mouse
 
-- Left click focuses a pane.
-- Click coordinates are forwarded to the focused pane PTY for terminal apps that support mouse-position actions.
+- Default mode is `hybrid`.
+  - pane content clicks: forwarded to app PTY (with focus update by click position)
+  - pane borders/dividers: handled by compositor (focus + drag resize)
+- `Ctrl+G M` cycles modes:
+  - `hybrid`: coordinate-based split behavior
+  - `passthrough`: always forward mouse to app
+  - `compositor`: always consume mouse for ykwm interactions
