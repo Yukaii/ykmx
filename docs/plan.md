@@ -450,10 +450,10 @@ Study dvtm's (~4000 lines of C):
 - [x] Define a `LayoutEngine` interface (`computeLayout`, `resize`, `setMasterCount`, etc.)
 - [x] Implement one native vertical-stack layout through the interface
 - [x] Implement one OpenTUI adapter for the same vertical-stack layout
-- [ ] Compare outputs for identical inputs (golden tests)
-- [ ] Benchmark both paths under resize + create/close window churn
+- [x] Compare outputs for identical inputs (golden tests)
+- [x] Benchmark both paths under resize + create/close window churn
 
-**Status (2026-02-13):**
+**Status (2026-02-14):**
 - Golden parity harness added in `src/layout_opentui.zig` for vertical-stack cases (single window, many windows, tiny sizes, non-zero gaps, master-count variation); currently `SkipZigTest` until OpenTUI adapter is fully integrated (`error.OpenTUINotIntegratedYet`).
 - Layout churn benchmark added via `ykwm --benchmark-layout [N]` with resize + window-count churn simulation and avg/p95/max reporting.
 - Sample run (`N=500`): `native avg=0.014ms p95=0.019ms max=0.043ms`; `opentui=unavailable`.
