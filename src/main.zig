@@ -1281,7 +1281,8 @@ fn writeFmtBlocking(out: *std.Io.Writer, comptime fmt: []const u8, args: anytype
 fn pickLayoutEngine(backend: config.LayoutBackend) layout.LayoutEngine {
     return switch (backend) {
         .native => layout_native.NativeLayoutEngine.init(),
-        .opentui => layout_opentui.OpenTUILayoutEngine.init(),
+        // Temporary fallback while OpenTUI adapter compute() is not integrated yet.
+        .opentui => layout_native.NativeLayoutEngine.init(),
     };
 }
 

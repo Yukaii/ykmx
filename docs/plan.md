@@ -585,18 +585,9 @@ Next implementation focus:
    - [ ] Keep parser/query compatibility fixes narrow and add regression tests per fix.
    - Done when no reproducible raw-sequence/render corruption remains in those scenarios.
 
-4. **Phase 6 start (incremental slice)**
-   - [ ] Implement synchronized scroll mode toggle (`MOD+s`) for visible tiled windows only.
-   - [ ] Define clear state model (global sync-scroll flag + per-window offset source-of-truth).
-   - [ ] Add tests for scroll propagation, focus changes, and tab boundaries.
-   - Done when sync-scroll is stable enough to mark the first Phase 6 deliverable complete.
-
-5. **Phase 6 follow-ons**
-   - [ ] Inline fold/unfold output sections.
-   - [ ] Cursor-following contextual popups.
-   - [ ] Hover preview panes.
-   - [ ] Tile/fullscreen zoom transitions.
-   - Order these by implementation risk and testability after sync-scroll lands.
+4. **Phase 6 implementation**
+   - [ ] Execute the canonical Phase 6 checklist in the `Phase 6: Experimental UX` section below (sync scroll first, then follow-ons).
+   - Done when the first sync-scroll deliverable is stable and test-backed.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
