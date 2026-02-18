@@ -24,7 +24,8 @@ pub const Multiplexer = struct {
     const DaParseState = enum(u3) {
         idle,
         esc,
-        csi,
+        csi_entry,
+        csi_other,
         csi_6,
     };
 
@@ -1175,14 +1176,14 @@ pub const Multiplexer = struct {
                 },
                 .esc => {
                     if (b == '[') {
-                        state.* = .csi;
+                        state.* = .csi_entry;
                     } else if (b == 0x1b) {
                         state.* = .esc;
                     } else {
                         state.* = .idle;
                     }
                 },
-                .csi => {
+                .csi_entry => {
                     if (b == 'c') {
                         counts.da += 1;
                         state.* = .idle;
@@ -1190,8 +1191,18 @@ pub const Multiplexer = struct {
                         state.* = .csi_6;
                     } else if (b >= 0x40 and b <= 0x7e) {
                         state.* = .idle;
+                    } else if (b >= 0x20 and b <= 0x3f) {
+                        // Any intermediate/parameter byte means this isn't plain CSI c / CSI 6n.
+                        state.* = .csi_other;
                     } else {
-                        // Parameter/intermediate bytes (0x20-0x3f); keep parsing.
+                        state.* = .idle;
+                    }
+                },
+                .csi_other => {
+                    if (b >= 0x40 and b <= 0x7e) {
+                        state.* = .idle;
+                    } else {
+                        // Keep consuming until we hit a final byte.
                     }
                 },
                 .csi_6 => {
@@ -1202,7 +1213,7 @@ pub const Multiplexer = struct {
                         state.* = .idle;
                     } else if (b >= 0x20 and b <= 0x3f) {
                         // Additional params/intermediates => not plain "CSI 6n".
-                        state.* = .csi;
+                        state.* = .csi_other;
                     } else {
                         state.* = .idle;
                     }
@@ -2249,4 +2260,46 @@ test "multiplexer search jumps scroll offset to matched line" {
     const found = mux.searchFocusedScrollback("beta", .backward) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(usize, 1), found.line_index);
     try testing.expect(mux.focusedScrollOffset() > 0);
+}
+
+test "terminal query parser counts plain DA and CPR across chunk boundaries" {
+    const testing = std.testing;
+    var state: Multiplexer.DaParseState = .idle;
+
+    var counts = Multiplexer.countTerminalQueries(&state, "\x1b[");
+    try testing.expectEqual(@as(usize, 0), counts.da);
+    try testing.expectEqual(@as(usize, 0), counts.cpr);
+    try testing.expectEqual(Multiplexer.DaParseState.csi_entry, state);
+
+    counts = Multiplexer.countTerminalQueries(&state, "c");
+    try testing.expectEqual(@as(usize, 1), counts.da);
+    try testing.expectEqual(@as(usize, 0), counts.cpr);
+    try testing.expectEqual(Multiplexer.DaParseState.idle, state);
+
+    counts = Multiplexer.countTerminalQueries(&state, "\x1b[6");
+    try testing.expectEqual(@as(usize, 0), counts.da);
+    try testing.expectEqual(@as(usize, 0), counts.cpr);
+    try testing.expectEqual(Multiplexer.DaParseState.csi_6, state);
+
+    counts = Multiplexer.countTerminalQueries(&state, "n");
+    try testing.expectEqual(@as(usize, 0), counts.da);
+    try testing.expectEqual(@as(usize, 1), counts.cpr);
+    try testing.expectEqual(Multiplexer.DaParseState.idle, state);
+}
+
+test "terminal query parser ignores parameterized CSI c and non-plain CPR variants" {
+    const testing = std.testing;
+    var state: Multiplexer.DaParseState = .idle;
+
+    // DA response-style sequence should not be counted as a new DA query.
+    var counts = Multiplexer.countTerminalQueries(&state, "\x1b[?62;c");
+    try testing.expectEqual(@as(usize, 0), counts.da);
+    try testing.expectEqual(@as(usize, 0), counts.cpr);
+    try testing.expectEqual(Multiplexer.DaParseState.idle, state);
+
+    // Parameterized CPR forms should not be counted as plain "CSI 6n" query.
+    counts = Multiplexer.countTerminalQueries(&state, "\x1b[16n\x1b[?6n");
+    try testing.expectEqual(@as(usize, 0), counts.da);
+    try testing.expectEqual(@as(usize, 0), counts.cpr);
+    try testing.expectEqual(Multiplexer.DaParseState.idle, state);
 }

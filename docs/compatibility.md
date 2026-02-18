@@ -46,10 +46,19 @@ milestones and compatibility details do not get mixed.
 
 ## Active TODOs
 
-1. Add regression test for fish startup warning (or parser unit test for DA request/reply path).
-2. Add a reproducible Starship prompt smoke script and capture pass/fail criteria.
-3. Add Unicode/Nerd Font rendering smoke test with a known glyph set.
-4. Promote manual smoke checklist below into automated CI checks.
+1. Run full interactive soak for `fish` / `fzf` / `zoxide` after major renderer/protocol changes.
+2. Keep the Nerd Font rendering check in Ghostty manual validation loop (font-dependent behavior).
+3. Expand CI smoke coverage to include optional installed tool assertions in a controlled environment image.
+
+## Automated Checks
+
+- CI smoke script: `scripts/compat/ci-smoke.sh`
+  - runs `zig build test`
+  - verifies core CLI probes (`--version`, `--benchmark`, `--benchmark-layout`)
+  - validates Unicode/Nerd Font fixture byte path
+  - probes optional tools (`fish`, `fzf`, `zoxide`, `starship`) when installed
+- GitHub Actions workflow: `.github/workflows/compatibility.yml`
+- Manual soak helper: `scripts/compat/manual-soak.sh`
 
 ## Runtime Smoke Checklist
 

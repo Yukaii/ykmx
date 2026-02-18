@@ -12,6 +12,7 @@ Run tests:
 
 ```bash
 zig build test
+scripts/compat/ci-smoke.sh
 ```
 
 ## CLI
@@ -25,6 +26,11 @@ ykwm --smoke-zmx my-session
 
 - `--benchmark [N]` runs a lightweight frame timing benchmark and prints avg/p95/max.
 - `--smoke-zmx [session]` performs a temporary `zmx attach` round-trip smoke check.
+
+Compatibility helpers:
+
+- `scripts/compat/ci-smoke.sh` runs CI-friendly compatibility checks.
+- `scripts/compat/manual-soak.sh` prints the interactive Ghostty/zmx soak checklist.
 
 ## zmx Workflow
 

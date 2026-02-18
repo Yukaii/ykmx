@@ -1,0 +1,19 @@
+name: Compatibility
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compat-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: master
+
+      - name: Run compatibility smoke
+        run: scripts/compat/ci-smoke.sh
