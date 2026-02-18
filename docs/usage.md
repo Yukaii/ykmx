@@ -89,7 +89,9 @@ Prefix is `Ctrl+G`.
 ## Mouse
 
 - Default mode is `hybrid`.
-  - pane content clicks: forwarded to app PTY (with focus update by click position)
+  - first click in a non-focused pane: switch focus only
+  - click in already-focused pane content: forwarded to app PTY (for fish click-to-move and similar)
+  - motion / non-left events: forwarded only if that pane enabled mouse reporting (`CSI ?1000/1002/1003/1006 h`)
   - pane borders/dividers: handled by compositor (focus + drag resize)
 - `Ctrl+G M` cycles modes:
   - `hybrid`: coordinate-based split behavior

@@ -366,6 +366,7 @@ const RuntimeFrameCache = struct {
         for (self.cells) |*cell| cell.* = .{};
         return true;
     }
+
 };
 
 const PaneRenderRef = struct {
@@ -620,9 +621,12 @@ fn renderRuntimeFrame(
     const content_rows: usize = content.height;
     const total_rows: usize = content_rows + 2;
     const canvas_len = total_cols * content_rows;
-    const canvas = try allocator.alloc(u8, canvas_len);
+    const canvas = try allocator.alloc(u21, canvas_len);
     defer allocator.free(canvas);
     @memset(canvas, ' ');
+    const border_conn = try allocator.alloc(u8, canvas_len);
+    defer allocator.free(border_conn);
+    @memset(border_conn, 0);
     const popup_overlay = try allocator.alloc(bool, canvas_len);
     defer allocator.free(popup_overlay);
     @memset(popup_overlay, false);
@@ -641,7 +645,7 @@ fn renderRuntimeFrame(
         if (r.width < 2 or r.height < 2) continue;
         const border = computeBorderMask(rects[0..n], i, r, content);
         const insets = computeContentInsets(rects[0..n], i, r, border);
-        drawBorder(canvas, total_cols, content_rows, r, border, if (tab.focused_index == i) '*' else ' ');
+        drawBorder(canvas, border_conn, total_cols, content_rows, r, border, if (tab.focused_index == i) '*' else ' ');
         const inner_x = r.x + insets.left;
         const inner_y = r.y + insets.top;
         const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
@@ -695,7 +699,7 @@ fn renderRuntimeFrame(
         if (p.rect.width < 2 or p.rect.height < 2) continue;
 
         const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
-        drawBorder(canvas, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) '*' else ' ');
+        drawBorder(canvas, border_conn, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) '*' else ' ');
 
         const inner_x = p.rect.x + 1;
         const inner_y = p.rect.y + 1;
@@ -727,6 +731,7 @@ fn renderRuntimeFrame(
             };
         }
     }
+    applyBorderGlyphs(canvas, border_conn, total_cols, content_rows);
     const live_ids = try mux.liveWindowIds(allocator);
     defer allocator.free(live_ids);
     try vt_state.prune(live_ids);
@@ -750,12 +755,7 @@ fn renderRuntimeFrame(
         var x: usize = 0;
         while (x < total_cols) : (x += 1) {
             if (popup_overlay[row_off + x]) {
-                curr[row_off + x] = .{
-                    .text = [_]u8{ canvas[start + x] } ++ ([_]u8{0} ** 31),
-                    .text_len = 1,
-                    .style = .{},
-                    .styled = false,
-                };
+                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
                 continue;
             }
             const pane_cell = paneCellAt(panes[0..pane_count], x, row);
@@ -778,12 +778,7 @@ fn renderRuntimeFrame(
                     };
                 }
             } else {
-                curr[row_off + x] = .{
-                    .text = [_]u8{ canvas[start + x] } ++ ([_]u8{0} ** 31),
-                    .text_len = 1,
-                    .style = .{},
-                    .styled = false,
-                };
+                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
             }
         }
     }
@@ -878,6 +873,13 @@ const ContentInsets = struct {
     bottom: u16,
 };
 
+const BorderConn = struct {
+    const U: u8 = 1 << 0;
+    const D: u8 = 1 << 1;
+    const L: u8 = 1 << 2;
+    const R: u8 = 1 << 3;
+};
+
 fn hasNeighborOnRight(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
     for (rects, 0..) |other, j| {
         if (j == idx) continue;
@@ -930,35 +932,70 @@ fn computeBorderMask(rects: []const layout.Rect, idx: usize, r: layout.Rect, con
     };
 }
 
-fn drawBorder(canvas: []u8, cols: usize, rows: usize, r: layout.Rect, border: BorderMask, marker: u8) void {
+fn drawBorder(canvas: []u21, border_conn: []u8, cols: usize, rows: usize, r: layout.Rect, border: BorderMask, marker: u8) void {
     const x0: usize = r.x;
     const y0: usize = r.y;
     const x1: usize = x0 + r.width - 1;
     const y1: usize = y0 + r.height - 1;
     if (x1 >= cols or y1 >= rows) return;
 
-    if (border.left and border.top) putCell(canvas, cols, x0, y0, '+');
-    if (border.right and border.top) putCell(canvas, cols, x1, y0, '+');
-    if (border.left and border.bottom) putCell(canvas, cols, x0, y1, '+');
-    if (border.right and border.bottom) putCell(canvas, cols, x1, y1, '+');
+    if (border.left and border.top) addBorderConn(border_conn, cols, rows, x0, y0, BorderConn.D | BorderConn.R);
+    if (border.right and border.top) addBorderConn(border_conn, cols, rows, x1, y0, BorderConn.D | BorderConn.L);
+    if (border.left and border.bottom) addBorderConn(border_conn, cols, rows, x0, y1, BorderConn.U | BorderConn.R);
+    if (border.right and border.bottom) addBorderConn(border_conn, cols, rows, x1, y1, BorderConn.U | BorderConn.L);
 
     if (border.top) {
         var x = x0 + 1;
-        while (x < x1) : (x += 1) putCell(canvas, cols, x, y0, '-');
+        while (x < x1) : (x += 1) addBorderConn(border_conn, cols, rows, x, y0, BorderConn.L | BorderConn.R);
     }
     if (border.bottom) {
         var x = x0 + 1;
-        while (x < x1) : (x += 1) putCell(canvas, cols, x, y1, '-');
+        while (x < x1) : (x += 1) addBorderConn(border_conn, cols, rows, x, y1, BorderConn.L | BorderConn.R);
     }
     if (border.left) {
         var y = y0 + 1;
-        while (y < y1) : (y += 1) putCell(canvas, cols, x0, y, '|');
+        while (y < y1) : (y += 1) addBorderConn(border_conn, cols, rows, x0, y, BorderConn.U | BorderConn.D);
     }
     if (border.right) {
         var y = y0 + 1;
-        while (y < y1) : (y += 1) putCell(canvas, cols, x1, y, '|');
+        while (y < y1) : (y += 1) addBorderConn(border_conn, cols, rows, x1, y, BorderConn.U | BorderConn.D);
     }
     if (border.top and x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, marker);
+}
+
+fn addBorderConn(conn: []u8, cols: usize, rows: usize, x: usize, y: usize, bits: u8) void {
+    if (x >= cols or y >= rows) return;
+    conn[y * cols + x] |= bits;
+}
+
+fn glyphFromConn(bits: u8) u21 {
+    return switch (bits) {
+        BorderConn.L | BorderConn.R => '─',
+        BorderConn.U | BorderConn.D => '│',
+        BorderConn.D | BorderConn.R => '┌',
+        BorderConn.D | BorderConn.L => '┐',
+        BorderConn.U | BorderConn.R => '└',
+        BorderConn.U | BorderConn.L => '┘',
+        BorderConn.L | BorderConn.R | BorderConn.D => '┬',
+        BorderConn.L | BorderConn.R | BorderConn.U => '┴',
+        BorderConn.U | BorderConn.D | BorderConn.R => '├',
+        BorderConn.U | BorderConn.D | BorderConn.L => '┤',
+        BorderConn.U | BorderConn.D | BorderConn.L | BorderConn.R => '┼',
+        else => ' ',
+    };
+}
+
+fn applyBorderGlyphs(canvas: []u21, conn: []const u8, cols: usize, rows: usize) void {
+    _ = rows;
+    var i: usize = 0;
+    while (i < conn.len) : (i += 1) {
+        const bits = conn[i];
+        if (bits == 0) continue;
+        // Keep focus marker on top border.
+        if (canvas[i] == '*') continue;
+        canvas[i] = glyphFromConn(bits);
+    }
+    _ = cols;
 }
 
 fn markPopupOverlay(
@@ -1043,6 +1080,19 @@ fn fillPlainLine(dst: []RuntimeRenderCell, line: []const u8) void {
     }
 }
 
+fn plainCellFromCodepoint(cp: u21) RuntimeRenderCell {
+    var cell: RuntimeRenderCell = .{
+        .style = .{},
+        .styled = false,
+    };
+    cell.text_len = @intCast(encodeCodepoint(cell.text[0..], cp));
+    if (cell.text_len == 0) {
+        cell.text[0] = '?';
+        cell.text_len = 1;
+    }
+    return cell;
+}
+
 fn renderCellEqual(a: RuntimeRenderCell, b: RuntimeRenderCell) bool {
     if (a.text_len != b.text_len) return false;
     if (a.styled != b.styled) return false;
@@ -1051,9 +1101,20 @@ fn renderCellEqual(a: RuntimeRenderCell, b: RuntimeRenderCell) bool {
 }
 
 fn isSafeRunCell(cell: RuntimeRenderCell) bool {
-    if (cell.text_len != 1) return false;
-    const ch = cell.text[0];
-    return ch >= 0x20 and ch <= 0x7e;
+    if (cell.text_len == 1) {
+        const ch = cell.text[0];
+        return ch >= 0x20 and ch <= 0x7e;
+    }
+    if (cell.text_len == 3) {
+        const bytes = cell.text[0..3];
+        return std.mem.eql(u8, bytes, "│") or
+            std.mem.eql(u8, bytes, "─") or
+            std.mem.eql(u8, bytes, "┌") or
+            std.mem.eql(u8, bytes, "┐") or
+            std.mem.eql(u8, bytes, "└") or
+            std.mem.eql(u8, bytes, "┘");
+    }
+    return false;
 }
 
 fn writeStyle(out: *std.Io.Writer, style: ghostty_vt.Style) !void {
@@ -1141,7 +1202,7 @@ fn paneCellAt(
 }
 
 fn drawText(
-    canvas: []u8,
+    canvas: []u21,
     cols: usize,
     rows: usize,
     x_start: u16,
@@ -1159,7 +1220,7 @@ fn drawText(
     }
 }
 
-fn putCell(canvas: []u8, cols: usize, x: usize, y: usize, ch: u8) void {
+fn putCell(canvas: []u21, cols: usize, x: usize, y: usize, ch: u21) void {
     canvas[y * cols + x] = ch;
 }
 

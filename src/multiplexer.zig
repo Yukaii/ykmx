@@ -40,10 +40,12 @@ pub const Multiplexer = struct {
     scrollbacks: std.AutoHashMapUnmanaged(u32, scrollback_mod.ScrollbackBuffer) = .{},
     dirty_windows: std.AutoHashMapUnmanaged(u32, void) = .{},
     da_parse_states: std.AutoHashMapUnmanaged(u32, DaParseState) = .{},
+    mouse_tracking_enabled: std.AutoHashMapUnmanaged(u32, void) = .{},
     input_router: input_mod.Router = .{},
     detach_requested: bool = false,
     last_mouse_event: ?input_mod.MouseEvent = null,
     drag_state: DragState = .{},
+    hybrid_forward_click_active: bool = false,
     mouse_mode: MouseMode = .hybrid,
     next_popup_window_id: u32 = 1_000_000,
     redraw_requested: bool = false,
@@ -93,6 +95,7 @@ pub const Multiplexer = struct {
         self.scrollbacks.deinit(self.allocator);
         self.dirty_windows.deinit(self.allocator);
         self.da_parse_states.deinit(self.allocator);
+        self.mouse_tracking_enabled.deinit(self.allocator);
 
         self.popup_mgr.deinit();
         self.workspace_mgr.deinit();
@@ -132,6 +135,7 @@ pub const Multiplexer = struct {
         try self.stdout_buffers.put(self.allocator, id, .{});
         try self.scrollbacks.put(self.allocator, id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 10_000));
         try self.da_parse_states.put(self.allocator, id, .idle);
+        _ = self.mouse_tracking_enabled.fetchRemove(id);
         return id;
     }
 
@@ -144,6 +148,7 @@ pub const Multiplexer = struct {
         try self.stdout_buffers.put(self.allocator, id, .{});
         try self.scrollbacks.put(self.allocator, id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 10_000));
         try self.da_parse_states.put(self.allocator, id, .idle);
+        _ = self.mouse_tracking_enabled.fetchRemove(id);
         return id;
     }
 
@@ -492,6 +497,7 @@ pub const Multiplexer = struct {
                     try p.write("\x1b[1;1R");
                 }
             }
+            self.updateWindowMouseTrackingFromOutput(w_id, tmp[0..n]) catch {};
             try self.markWindowDirty(w_id);
             reads += 1;
         }
@@ -668,6 +674,7 @@ pub const Multiplexer = struct {
         }
         self.ptys.clearRetainingCapacity();
         self.da_parse_states.clearRetainingCapacity();
+        self.mouse_tracking_enabled.clearRetainingCapacity();
     }
 
     pub fn closeFocusedWindow(self: *Multiplexer) !u32 {
@@ -675,6 +682,7 @@ pub const Multiplexer = struct {
         if (self.ptys.getPtr(id)) |p| p.deinitNoWait();
         _ = self.ptys.fetchRemove(id);
         _ = self.da_parse_states.fetchRemove(id);
+        _ = self.mouse_tracking_enabled.fetchRemove(id);
 
         if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);
         _ = self.stdout_buffers.fetchRemove(id);
@@ -799,6 +807,7 @@ pub const Multiplexer = struct {
             if (self.ptys.getPtr(id)) |p| p.deinitNoWait();
             _ = self.ptys.fetchRemove(id);
             _ = self.da_parse_states.fetchRemove(id);
+            _ = self.mouse_tracking_enabled.fetchRemove(id);
             if (self.stdout_buffers.getPtr(id)) |list| list.deinit(self.allocator);
             _ = self.stdout_buffers.fetchRemove(id);
             if (self.scrollbacks.getPtr(id)) |sb| sb.deinit();
@@ -837,6 +846,54 @@ pub const Multiplexer = struct {
             marked += 1;
         }
         return marked;
+    }
+
+    fn windowHasMouseTracking(self: *const Multiplexer, window_id: u32) bool {
+        return self.mouse_tracking_enabled.contains(window_id);
+    }
+
+    fn updateWindowMouseTrackingFromOutput(self: *Multiplexer, window_id: u32, bytes: []const u8) !void {
+        var last_enable: ?usize = null;
+        var last_disable: ?usize = null;
+
+        const enable_tokens = [_][]const u8{
+            "\x1b[?1000h",
+            "\x1b[?1002h",
+            "\x1b[?1003h",
+            "\x1b[?1006h",
+        };
+        const disable_tokens = [_][]const u8{
+            "\x1b[?1000l",
+            "\x1b[?1002l",
+            "\x1b[?1003l",
+            "\x1b[?1006l",
+        };
+
+        for (enable_tokens) |tok| {
+            if (std.mem.lastIndexOf(u8, bytes, tok)) |idx| {
+                if (last_enable == null or idx > last_enable.?) last_enable = idx;
+            }
+        }
+        for (disable_tokens) |tok| {
+            if (std.mem.lastIndexOf(u8, bytes, tok)) |idx| {
+                if (last_disable == null or idx > last_disable.?) last_disable = idx;
+            }
+        }
+
+        const enabled_now = switch (last_enable != null or last_disable != null) {
+            false => return,
+            true => blk: {
+                if (last_enable == null) break :blk false;
+                if (last_disable == null) break :blk true;
+                break :blk last_enable.? > last_disable.?;
+            },
+        };
+
+        if (enabled_now) {
+            try self.mouse_tracking_enabled.put(self.allocator, window_id, {});
+        } else {
+            _ = self.mouse_tracking_enabled.fetchRemove(window_id);
+        }
     }
 
     fn handleMouseFromEvent(
@@ -878,13 +935,18 @@ pub const Multiplexer = struct {
     ) !bool {
         const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
         const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
+        const target_has_tracking = self.currentMouseForwardTargetHasTracking();
 
         if (!mouse.pressed) {
             if (self.drag_state.resizing_master) {
                 self.drag_state.resizing_master = false;
                 return true;
             }
-            return false;
+            if (self.hybrid_forward_click_active) {
+                self.hybrid_forward_click_active = false;
+                return false;
+            }
+            return !target_has_tracking;
         }
 
         const motion = (mouse.button & 32) != 0;
@@ -892,8 +954,8 @@ pub const Multiplexer = struct {
             try self.applyDragResize(screen, px);
             return true;
         }
-        if (motion) return false;
-        if (mouse.button != 0) return false;
+        if (motion) return !target_has_tracking;
+        if (mouse.button != 0) return !target_has_tracking;
 
         if (!pointInRect(px, py, screen)) return true;
 
@@ -904,13 +966,36 @@ pub const Multiplexer = struct {
 
         const pane_hit = try self.paneHitAt(screen, px, py);
         if (pane_hit) |hit| {
+            const tab = try self.workspace_mgr.activeTab();
+            const current_focus = tab.focused_index orelse 0;
+            const target_id = tab.windows.items[hit.idx].id;
             try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
-            try self.markWindowDirty((try self.workspace_mgr.activeTab()).windows.items[hit.idx].id);
+            try self.markWindowDirty(target_id);
             self.requestRedraw();
-            return hit.on_border;
+            if (hit.on_border) {
+                self.hybrid_forward_click_active = false;
+                return true;
+            }
+            if (hit.idx != current_focus) {
+                // First click into another pane switches focus only.
+                self.hybrid_forward_click_active = false;
+                return true;
+            }
+            // Content clicks are forwarded (for shell click-to-move), while
+            // motion/non-left events remain gated by mouse-tracking capability.
+            self.hybrid_forward_click_active = true;
+            return false;
         }
 
         return false;
+    }
+
+    fn currentMouseForwardTargetHasTracking(self: *Multiplexer) bool {
+        const target_id = if (self.popup_mgr.hasModalOpen())
+            (self.popup_mgr.focusedWindowId() orelse return false)
+        else
+            (self.workspace_mgr.focusedWindowIdActive() catch return false);
+        return self.windowHasMouseTracking(target_id);
     }
 
     const PaneHit = struct {
@@ -1223,6 +1308,7 @@ pub const Multiplexer = struct {
             if (self.ptys.getPtr(window_id)) |p| p.deinitNoWait();
             _ = self.ptys.fetchRemove(window_id);
             _ = self.da_parse_states.fetchRemove(window_id);
+            _ = self.mouse_tracking_enabled.fetchRemove(window_id);
             if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
             _ = self.stdout_buffers.fetchRemove(window_id);
             if (self.scrollbacks.getPtr(window_id)) |sb| sb.deinit();
@@ -1235,6 +1321,7 @@ pub const Multiplexer = struct {
         if (self.ptys.getPtr(window_id)) |p| p.deinitNoWait();
         _ = self.ptys.fetchRemove(window_id);
         _ = self.da_parse_states.fetchRemove(window_id);
+        _ = self.mouse_tracking_enabled.fetchRemove(window_id);
         if (self.stdout_buffers.getPtr(window_id)) |list| list.deinit(self.allocator);
         _ = self.stdout_buffers.fetchRemove(window_id);
         if (self.scrollbacks.getPtr(window_id)) |sb| sb.deinit();
@@ -1678,7 +1765,7 @@ test "multiplexer mouse passthrough forwards sgr sequence to focused pane" {
     try testing.expect(std.mem.indexOf(u8, out, seq) != null);
 }
 
-test "multiplexer hybrid mode forwards content click to clicked pane" {
+test "multiplexer hybrid mode first click switches focus without forwarding" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
 
@@ -1694,18 +1781,91 @@ test "multiplexer hybrid mode forwards content click to clicked pane" {
     const seq = "\x1b[<0;70;5M";
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
 
-    var tries: usize = 0;
-    while (tries < 20) : (tries += 1) {
-        _ = try mux.pollOnce(20);
-        const right_out_now = try mux.windowOutput(right_id);
-        if (std.mem.indexOf(u8, right_out_now, seq) != null) break;
-    }
-
     try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
     const left_out = try mux.windowOutput(left_id);
     const right_out = try mux.windowOutput(right_id);
     try testing.expect(std.mem.indexOf(u8, left_out, seq) == null);
+    try testing.expect(std.mem.indexOf(u8, right_out, seq) == null);
+}
+
+test "multiplexer hybrid mode forwards click in already focused pane" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const right_id = try mux.createCommandWindow("right", &.{"/bin/cat"});
+    mux.setMouseMode(.hybrid);
+
+    // Single pane is focused by definition; click should be forwarded.
+    const seq = "\x1b[<0;20;5M";
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
+
+    var tries: usize = 0;
+    while (tries < 20) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        const out_now = try mux.windowOutput(right_id);
+        if (std.mem.indexOf(u8, out_now, seq) != null) break;
+    }
+
+    const out = try mux.windowOutput(right_id);
+    try testing.expect(std.mem.indexOf(u8, out, seq) != null);
+}
+
+test "multiplexer hybrid mode forwards click when target enabled mouse tracking" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("left", &.{"/bin/cat"});
+    const right_id = try mux.createCommandWindow("right", &.{ "/bin/sh", "-c", "printf '\\x1b[?1000h'; exec cat" });
+    mux.setMouseMode(.hybrid);
+
+    // Allow startup output to be read so mouse-enable sequence is detected.
+    var tries: usize = 0;
+    while (tries < 20) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        const out = try mux.windowOutput(right_id);
+        if (std.mem.indexOf(u8, out, "\x1b[?1000h") != null) break;
+    }
+
+    const seq = "\x1b[<0;70;5M";
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
+
+    tries = 0;
+    while (tries < 20) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        const out = try mux.windowOutput(right_id);
+        if (std.mem.indexOf(u8, out, seq) != null) break;
+    }
+
+    try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
+    const right_out = try mux.windowOutput(right_id);
     try testing.expect(std.mem.indexOf(u8, right_out, seq) != null);
+}
+
+test "multiplexer hybrid mode does not forward motion when tracking is disabled" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+    mux.setMouseMode(.hybrid);
+
+    const seq = "\x1b[<32;20;10M";
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
+    _ = try mux.pollOnce(20);
+
+    const out = try mux.windowOutput(win_id);
+    try testing.expect(std.mem.indexOf(u8, out, seq) == null);
 }
 
 test "multiplexer hybrid mode keeps divider click in compositor path" {
