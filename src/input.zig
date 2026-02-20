@@ -17,6 +17,7 @@ pub const Command = enum {
     focus_down,
     focus_up,
     focus_right,
+    zoom_to_master,
     cycle_layout,
     resize_master_shrink,
     resize_master_grow,
@@ -24,6 +25,7 @@ pub const Command = enum {
     master_count_decrease,
     scroll_page_up,
     scroll_page_down,
+    toggle_sync_scroll,
     toggle_mouse_passthrough,
     detach,
 };
@@ -89,6 +91,7 @@ pub const Router = struct {
                 'l' => .{ .command = .focus_right },
                 'J' => .{ .command = .next_window },
                 'K' => .{ .command = .prev_window },
+                '\r', '\n' => .{ .command = .zoom_to_master },
                 ' ' => .{ .command = .cycle_layout },
                 'H' => .{ .command = .resize_master_shrink },
                 'L' => .{ .command = .resize_master_grow },
@@ -96,6 +99,7 @@ pub const Router = struct {
                 'O' => .{ .command = .master_count_decrease },
                 'u' => .{ .command = .scroll_page_up },
                 'd' => .{ .command = .scroll_page_down },
+                's' => .{ .command = .toggle_sync_scroll },
                 'M' => .{ .command = .toggle_mouse_passthrough },
                 '\\' => .{ .command = .detach },
                 else => .{ .forward = b },
@@ -214,6 +218,13 @@ test "input router parses layout cycle command" {
     try testing.expectEqual(Event{ .command = .cycle_layout }, r.feedByte(' '));
 }
 
+test "input router parses zoom-to-master command" {
+    const testing = std.testing;
+    var r = Router{};
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .zoom_to_master }, r.feedByte('\r'));
+}
+
 test "input router parses master resize and count commands" {
     const testing = std.testing;
     var r = Router{};
@@ -229,6 +240,13 @@ test "input router parses master resize and count commands" {
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .master_count_decrease }, r.feedByte('O'));
+}
+
+test "input router parses sync-scroll toggle command" {
+    const testing = std.testing;
+    var r = Router{};
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .toggle_sync_scroll }, r.feedByte('s'));
 }
 
 test "input router parses directional focus commands" {

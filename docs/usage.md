@@ -89,6 +89,7 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G Escape` close focused popup immediately
 - `Ctrl+G Tab` cycle popup focus
 - `Ctrl+G u` / `Ctrl+G d` page up/down scrollback
+- `Ctrl+G s` toggle synchronized scroll across visible panes in active tab
 - `Ctrl+G M` cycle mouse mode (`hybrid` -> `passthrough` -> `compositor`)
 - `Ctrl+G \` detach request
 

@@ -37,4 +37,8 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    const compat_cmd = b.addSystemCommand(&.{"scripts/compat/ci-smoke.sh"});
+    const compat_step = b.step("compat", "Run compatibility smoke checks");
+    compat_step.dependOn(&compat_cmd.step);
 }

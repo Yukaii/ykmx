@@ -30,7 +30,13 @@ pub const Multiplexer = struct {
     };
 
     const DragState = struct {
-        resizing_master: bool = false,
+        const Axis = enum {
+            none,
+            vertical,
+            horizontal,
+        };
+
+        axis: Axis = .none,
     };
 
     allocator: std.mem.Allocator,
@@ -44,6 +50,8 @@ pub const Multiplexer = struct {
     mouse_tracking_enabled: std.AutoHashMapUnmanaged(u32, void) = .{},
     input_router: input_mod.Router = .{},
     detach_requested: bool = false,
+    sync_scroll_enabled: bool = false,
+    sync_scroll_source_window_id: ?u32 = null,
     last_mouse_event: ?input_mod.MouseEvent = null,
     drag_state: DragState = .{},
     hybrid_forward_click_active: bool = false,
@@ -181,6 +189,7 @@ pub const Multiplexer = struct {
             const ev = self.input_router.feedByte(b);
             switch (ev) {
                 .forward => |c| {
+                    if (self.isFocusedScrolledBack()) continue;
                     var tmp = [_]u8{c};
                     if (self.popup_mgr.hasModalOpen()) {
                         self.sendInputToFocusedPopup(&tmp) catch |err| switch (err) {
@@ -217,6 +226,7 @@ pub const Multiplexer = struct {
                         }
                     }
                     if (!consumed_mouse) {
+                        if (self.isFocusedScrolledBack()) continue;
                         if (self.popup_mgr.hasModalOpen()) {
                             self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
                                 error.NoFocusedPopup, error.UnknownWindow => {},
@@ -314,11 +324,13 @@ pub const Multiplexer = struct {
                     },
                     .next_window => {
                         try self.workspace_mgr.focusNextWindowActive();
+                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
                         _ = try self.markActiveWindowsDirty();
                         self.requestRedraw();
                     },
                     .prev_window => {
                         try self.workspace_mgr.focusPrevWindowActive();
+                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
                         _ = try self.markActiveWindowsDirty();
                         self.requestRedraw();
                     },
@@ -330,6 +342,7 @@ pub const Multiplexer = struct {
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
                         }
+                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
                     },
                     .focus_down => {
                         if (screen) |s| {
@@ -339,6 +352,7 @@ pub const Multiplexer = struct {
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
                         }
+                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
                     },
                     .focus_up => {
                         if (screen) |s| {
@@ -348,6 +362,7 @@ pub const Multiplexer = struct {
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
                         }
+                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
                     },
                     .focus_right => {
                         if (screen) |s| {
@@ -357,6 +372,15 @@ pub const Multiplexer = struct {
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
                         }
+                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
+                    },
+                    .zoom_to_master => {
+                        _ = try self.workspace_mgr.zoomFocusedToMasterActive();
+                        if (screen) |s| {
+                            _ = try self.resizeActiveWindowsToLayout(s);
+                        }
+                        _ = try self.markActiveWindowsDirty();
+                        self.requestRedraw();
                     },
                     .cycle_layout => {
                         _ = try self.workspace_mgr.cycleActiveLayout();
@@ -398,6 +422,11 @@ pub const Multiplexer = struct {
                     .scroll_page_down => {
                         const lines: usize = if (screen) |s| s.height else 24;
                         self.scrollPageDownFocused(lines);
+                    },
+                    .toggle_sync_scroll => {
+                        try self.setVisibleScrollOffsetFromSource(screen, 0);
+                        try self.setSyncScrollEnabled(!self.sync_scroll_enabled, screen);
+                        self.requestRedraw();
                     },
                     .toggle_mouse_passthrough => {
                         self.mouse_mode = switch (self.mouse_mode) {
@@ -524,6 +553,19 @@ pub const Multiplexer = struct {
         return self.popup_mgr.focusedWindowId();
     }
 
+    pub fn syncScrollEnabled(self: *const Multiplexer) bool {
+        return self.sync_scroll_enabled;
+    }
+
+    pub fn windowScrollOffset(self: *Multiplexer, window_id: u32) ?usize {
+        const sb = self.scrollbacks.getPtr(window_id) orelse return null;
+        return sb.scroll_offset;
+    }
+
+    pub fn scrollbackBuffer(self: *Multiplexer, window_id: u32) ?*const scrollback_mod.ScrollbackBuffer {
+        return self.scrollbacks.getPtr(window_id);
+    }
+
     pub fn focusedScrollOffset(self: *Multiplexer) usize {
         const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return 0;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return 0;
@@ -534,24 +576,36 @@ pub const Multiplexer = struct {
         const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scrollPageUp(lines);
+        self.sync_scroll_source_window_id = focused_id;
+        if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(self.last_screen) catch {};
+        self.requestRedraw();
     }
 
     pub fn scrollPageDownFocused(self: *Multiplexer, lines: usize) void {
         const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scrollPageDown(lines);
+        self.sync_scroll_source_window_id = focused_id;
+        if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(self.last_screen) catch {};
+        self.requestRedraw();
     }
 
     pub fn scrollHalfPageUpFocused(self: *Multiplexer, lines: usize) void {
         const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scrollHalfPageUp(lines);
+        self.sync_scroll_source_window_id = focused_id;
+        if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(self.last_screen) catch {};
+        self.requestRedraw();
     }
 
     pub fn scrollHalfPageDownFocused(self: *Multiplexer, lines: usize) void {
         const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scrollHalfPageDown(lines);
+        self.sync_scroll_source_window_id = focused_id;
+        if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(self.last_screen) catch {};
+        self.requestRedraw();
     }
 
     pub fn searchFocusedScrollback(
@@ -563,7 +617,68 @@ pub const Multiplexer = struct {
         const sb = self.scrollbacks.getPtr(focused_id) orelse return null;
         const found = sb.search(query, direction) orelse return null;
         sb.jumpToLine(found.line_index);
+        self.sync_scroll_source_window_id = focused_id;
+        if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(self.last_screen) catch {};
+        self.requestRedraw();
         return found;
+    }
+
+    fn setSyncScrollEnabled(self: *Multiplexer, enabled: bool, screen: ?layout.Rect) !void {
+        self.sync_scroll_enabled = enabled;
+        if (enabled) {
+            const focused_id = self.workspace_mgr.focusedWindowIdActive() catch {
+                self.sync_scroll_source_window_id = null;
+                return;
+            };
+            self.sync_scroll_source_window_id = focused_id;
+            try self.propagateSyncScrollFromFocused(screen);
+        } else {
+            self.sync_scroll_source_window_id = null;
+        }
+    }
+
+    fn isFocusedScrolledBack(self: *Multiplexer) bool {
+        const focused_id = if (self.popup_mgr.hasModalOpen())
+            (self.popup_mgr.focusedWindowId() orelse return false)
+        else
+            (self.workspace_mgr.focusedWindowIdActive() catch return false);
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return false;
+        return sb.scroll_offset > 0;
+    }
+
+    fn propagateSyncScrollFromFocused(self: *Multiplexer, screen: ?layout.Rect) !void {
+        if (!self.sync_scroll_enabled) return;
+        const source_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const source_sb = self.scrollbacks.getPtr(source_id) orelse return;
+        try self.setVisibleScrollOffsetFromSource(screen, source_sb.scroll_offset);
+        self.sync_scroll_source_window_id = source_id;
+    }
+
+    fn setVisibleScrollOffsetFromSource(self: *Multiplexer, screen: ?layout.Rect, offset: usize) !void {
+        const tab = try self.workspace_mgr.activeTab();
+
+        if (screen) |s| {
+            const rects = try self.computeActiveLayout(s);
+            defer self.allocator.free(rects);
+            const n = @min(rects.len, tab.windows.items.len);
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                const r = rects[i];
+                if (r.width == 0 or r.height == 0) continue;
+                const window_id = tab.windows.items[i].id;
+                if (self.scrollbacks.getPtr(window_id)) |sb| {
+                    sb.scroll_offset = @min(offset, sb.lines.items.len);
+                }
+            }
+            return;
+        }
+
+        // Fallback when no screen geometry is known: apply within active tab.
+        for (tab.windows.items) |w| {
+            if (self.scrollbacks.getPtr(w.id)) |sb| {
+                sb.scroll_offset = @min(offset, sb.lines.items.len);
+            }
+        }
     }
 
     pub fn dirtyWindowIds(self: *Multiplexer, allocator: std.mem.Allocator) ![]u32 {
@@ -907,21 +1022,25 @@ pub const Multiplexer = struct {
         const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
 
         if (!mouse.pressed) {
-            self.drag_state.resizing_master = false;
+            self.drag_state.axis = .none;
             return;
         }
 
         const motion = (mouse.button & 32) != 0;
-        if (self.drag_state.resizing_master and (motion or mouse.button == 0)) {
-            try self.applyDragResize(screen, px);
+        if (self.drag_state.axis != .none and (motion or mouse.button == 0)) {
+            try self.applyDragResize(screen, px, py);
             return;
         }
 
         if (mouse.button != 0) return;
 
-        // Start divider drag for vertical stack if click is on divider.
+        // Start divider drag for active stack layout if click is on divider.
         if (try self.hitDividerForVerticalStack(screen, px, py)) {
-            self.drag_state.resizing_master = true;
+            self.drag_state.axis = .vertical;
+            return;
+        }
+        if (try self.hitDividerForHorizontalStack(screen, px, py)) {
+            self.drag_state.axis = .horizontal;
             return;
         }
 
@@ -939,8 +1058,8 @@ pub const Multiplexer = struct {
         const target_has_tracking = self.currentMouseForwardTargetHasTracking();
 
         if (!mouse.pressed) {
-            if (self.drag_state.resizing_master) {
-                self.drag_state.resizing_master = false;
+            if (self.drag_state.axis != .none) {
+                self.drag_state.axis = .none;
                 return true;
             }
             if (self.hybrid_forward_click_active) {
@@ -951,8 +1070,8 @@ pub const Multiplexer = struct {
         }
 
         const motion = (mouse.button & 32) != 0;
-        if (self.drag_state.resizing_master and (motion or mouse.button == 0)) {
-            try self.applyDragResize(screen, px);
+        if (self.drag_state.axis != .none and (motion or mouse.button == 0)) {
+            try self.applyDragResize(screen, px, py);
             return true;
         }
         if (motion) return !target_has_tracking;
@@ -961,7 +1080,11 @@ pub const Multiplexer = struct {
         if (!pointInRect(px, py, screen)) return true;
 
         if (try self.hitDividerForVerticalStack(screen, px, py)) {
-            self.drag_state.resizing_master = true;
+            self.drag_state.axis = .vertical;
+            return true;
+        }
+        if (try self.hitDividerForHorizontalStack(screen, px, py)) {
+            self.drag_state.axis = .horizontal;
             return true;
         }
 
@@ -1094,11 +1217,37 @@ pub const Multiplexer = struct {
         return px >= lo and px <= hi;
     }
 
-    fn applyDragResize(self: *Multiplexer, screen: layout.Rect, px: u16) !void {
-        if (screen.width == 0) return;
+    fn hitDividerForHorizontalStack(self: *Multiplexer, screen: layout.Rect, px: u16, py: u16) !bool {
+        if (try self.workspace_mgr.activeLayoutType() != .horizontal_stack) return false;
 
-        const local_x = if (px > screen.x) px - screen.x else 0;
-        const ratio_u32 = (@as(u32, local_x) * 1000) / @as(u32, screen.width);
+        const rects = try self.computeActiveLayout(screen);
+        defer self.allocator.free(rects);
+        if (rects.len < 2) return false;
+
+        // For horizontal stack, master divider is at the bottom edge of pane 0.
+        const divider_y = rects[0].y + rects[0].height;
+        const in_x = px >= rects[0].x and px < (rects[0].x + rects[0].width);
+        if (!in_x) return false;
+
+        const lo = if (divider_y > 0) divider_y - 1 else divider_y;
+        const hi = divider_y + 1;
+        return py >= lo and py <= hi;
+    }
+
+    fn applyDragResize(self: *Multiplexer, screen: layout.Rect, px: u16, py: u16) !void {
+        const ratio_u32: u32 = switch (self.drag_state.axis) {
+            .none => return,
+            .vertical => blk: {
+                if (screen.width == 0) return;
+                const local_x = if (px > screen.x) px - screen.x else 0;
+                break :blk (@as(u32, local_x) * 1000) / @as(u32, screen.width);
+            },
+            .horizontal => blk: {
+                if (screen.height == 0) return;
+                const local_y = if (py > screen.y) py - screen.y else 0;
+                break :blk (@as(u32, local_y) * 1000) / @as(u32, screen.height);
+            },
+        };
         const clamped: u16 = @intCast(@max(@as(u32, 100), @min(@as(u32, 900), ratio_u32)));
         try self.workspace_mgr.setActiveMasterRatioPermille(clamped);
         _ = self.resizeActiveWindowsToLayout(screen) catch 0;
@@ -1730,6 +1879,33 @@ test "multiplexer drag-resize burst does not error" {
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;70;5m");
 }
 
+test "multiplexer drag-resize updates master ratio for horizontal stack" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+    mux.setMousePassthrough(false);
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("top", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("bottom", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    try mux.workspace_mgr.setActiveLayout(.horizontal_stack);
+
+    const before = try mux.workspace_mgr.activeMasterRatioPermille();
+
+    // 1) Press on horizontal divider (near y ~ split in 24 rows).
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;20;13M");
+    // 2) Drag motion downward.
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<32;20;19M");
+    // 3) Release.
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, "\x1b[<0;20;19m");
+
+    const after = try mux.workspace_mgr.activeMasterRatioPermille();
+    try testing.expect(after != before);
+    try testing.expect(after > before);
+}
+
 test "multiplexer focus command requests redraw immediately" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
@@ -1968,6 +2144,27 @@ test "multiplexer layout cycle command updates active layout" {
 
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, ' ' });
     try testing.expectEqual(layout.LayoutType.horizontal_stack, try mux.workspace_mgr.activeLayoutType());
+}
+
+test "multiplexer zoom-to-master command promotes focused pane" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const a = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    const c = try mux.createCommandWindow("c", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    try mux.workspace_mgr.setFocusedWindowIndexActive(2);
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 100, .height = 30 }, &.{ 0x07, '\r' });
+
+    try testing.expectEqual(@as(usize, 0), try mux.workspace_mgr.focusedWindowIndexActive());
+    const tab = try mux.workspace_mgr.activeTab();
+    try testing.expectEqual(c, tab.windows.items[0].id);
+    try testing.expectEqual(a, tab.windows.items[2].id);
 }
 
 test "multiplexer new tab creates shell and redraws" {
@@ -2260,6 +2457,113 @@ test "multiplexer search jumps scroll offset to matched line" {
     const found = mux.searchFocusedScrollback("beta", .backward) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(usize, 1), found.line_index);
     try testing.expect(mux.focusedScrollOffset() > 0);
+}
+
+test "multiplexer sync-scroll toggles and propagates across visible panes" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const left_id = try mux.createCommandWindow("left", &.{"/bin/cat"});
+    const right_id = try mux.createCommandWindow("right", &.{"/bin/cat"});
+
+    const fixture =
+        "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n";
+    try mux.scrollbacks.getPtr(left_id).?.append(fixture);
+    try mux.scrollbacks.getPtr(right_id).?.append(fixture);
+
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 12 };
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
+    try testing.expect(mux.syncScrollEnabled());
+
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'u' });
+
+    const left_off = mux.windowScrollOffset(left_id) orelse return error.TestUnexpectedResult;
+    const right_off = mux.windowScrollOffset(right_id) orelse return error.TestUnexpectedResult;
+    try testing.expect(left_off > 0);
+    try testing.expectEqual(left_off, right_off);
+
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
+    try testing.expect(!mux.syncScrollEnabled());
+    try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(left_id).?);
+    try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(right_id).?);
+
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'J' });
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'u' });
+    const left_after = mux.windowScrollOffset(left_id) orelse return error.TestUnexpectedResult;
+    const right_after = mux.windowScrollOffset(right_id) orelse return error.TestUnexpectedResult;
+    try testing.expect(left_after != right_after);
+}
+
+test "multiplexer sync-scroll respects tab boundaries" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const dev_a = try mux.createCommandWindow("dev-a", &.{"/bin/cat"});
+    const dev_b = try mux.createCommandWindow("dev-b", &.{"/bin/cat"});
+    _ = try mux.createTab("ops");
+    try mux.switchTab(1);
+    const ops_a = try mux.createCommandWindow("ops-a", &.{"/bin/cat"});
+    try mux.switchTab(0);
+
+    const fixture = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
+    try mux.scrollbacks.getPtr(dev_a).?.append(fixture);
+    try mux.scrollbacks.getPtr(dev_b).?.append(fixture);
+    try mux.scrollbacks.getPtr(ops_a).?.append(fixture);
+
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 12 };
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'u' });
+
+    const ops_before = mux.windowScrollOffset(ops_a) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 0), ops_before);
+
+    try mux.switchTab(1);
+    const ops_after = mux.windowScrollOffset(ops_a) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 0), ops_after);
+}
+
+test "multiplexer suppresses forwarded input while focused pane is scrolled back" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+
+    const sb = mux.scrollbacks.getPtr(win_id) orelse return error.TestUnexpectedResult;
+    try sb.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    sb.scrollPageUp(3);
+    try testing.expect(sb.scroll_offset > 0);
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 12 }, "blocked\n");
+    _ = try mux.pollOnce(20);
+    const out_blocked = try mux.windowOutput(win_id);
+    try testing.expect(std.mem.indexOf(u8, out_blocked, "blocked") == null);
+
+    // Return to live bottom view then input should flow again.
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 12 }, &.{ 0x07, 'd' });
+    try testing.expectEqual(@as(usize, 0), sb.scroll_offset);
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 12 }, "ok\n");
+    var tries: usize = 0;
+    while (tries < 40) : (tries += 1) {
+        _ = try mux.pollOnce(20);
+        const out_ok = try mux.windowOutput(win_id);
+        if (std.mem.indexOf(u8, out_ok, "ok") != null) break;
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+    const out_ok = try mux.windowOutput(win_id);
+    try testing.expect(std.mem.indexOf(u8, out_ok, "ok") != null);
 }
 
 test "terminal query parser counts plain DA and CPR across chunk boundaries" {

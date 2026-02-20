@@ -10,6 +10,7 @@ const zmx = @import("zmx.zig");
 const config = @import("config.zig");
 const status = @import("status.zig");
 const benchmark = @import("benchmark.zig");
+const scrollback_mod = @import("scrollback.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const c = @cImport({
@@ -374,6 +375,8 @@ const PaneRenderRef = struct {
     content_y: u16,
     content_w: u16,
     content_h: u16,
+    scroll_offset: usize = 0,
+    scrollback: ?*const scrollback_mod.ScrollbackBuffer = null,
     term: *Terminal,
 };
 
@@ -658,11 +661,14 @@ fn renderRuntimeFrame(
         const window_id = tab.windows.items[i].id;
         const output = mux.windowOutput(window_id) catch "";
         const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
+        const pane_scroll_offset = mux.windowScrollOffset(window_id) orelse 0;
         panes[pane_count] = .{
             .content_x = inner_x,
             .content_y = inner_y,
             .content_w = inner_w,
             .content_h = inner_h,
+            .scroll_offset = pane_scroll_offset,
+            .scrollback = mux.scrollbackBuffer(window_id),
             .term = &wv.term,
         };
         pane_count += 1;
@@ -712,11 +718,14 @@ fn renderRuntimeFrame(
 
         const output = mux.windowOutput(window_id) catch "";
         const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
+        const pane_scroll_offset = mux.windowScrollOffset(window_id) orelse 0;
         panes[pane_count] = .{
             .content_x = inner_x,
             .content_y = inner_y,
             .content_w = inner_w,
             .content_h = inner_h,
+            .scroll_offset = pane_scroll_offset,
+            .scrollback = mux.scrollbackBuffer(window_id),
             .term = &wv.term,
         };
         pane_count += 1;
@@ -738,7 +747,12 @@ fn renderRuntimeFrame(
 
     const tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
     defer allocator.free(tab_line);
-    const status_line = try status.renderStatusBarWithScroll(allocator, &mux.workspace_mgr, mux.focusedScrollOffset());
+    const status_line = try status.renderStatusBarWithScrollAndSync(
+        allocator,
+        &mux.workspace_mgr,
+        mux.focusedScrollOffset(),
+        mux.syncScrollEnabled(),
+    );
     defer allocator.free(status_line);
 
     const resized = try frame_cache.ensureSize(total_cols, total_rows);
@@ -1140,10 +1154,25 @@ fn paneCellAt(
 
         const local_x: usize = x - inner_x0;
         const local_y: usize = y - inner_y0;
+
+        const pages = pane.term.screens.active.pages;
+        const total_rows: usize = pages.total_rows;
+        const active_rows: usize = pages.rows;
+        const off = @min(pane.scroll_offset, total_rows);
+        const start_screen_row: usize = if (total_rows > active_rows + off)
+            total_rows - active_rows - off
+        else
+            0;
+        const source_y = start_screen_row + local_y;
+        if (source_y > std.math.maxInt(u32)) return .{
+            .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+            .text_len = 1,
+            .style = .{},
+        };
         const maybe_cell = pane.term.screens.active.pages.getCell(.{
-            .active = .{
+            .screen = .{
                 .x = @intCast(local_x),
-                .y = @intCast(local_y),
+                .y = @intCast(source_y),
             },
         }) orelse return .{
             .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
@@ -1390,7 +1419,12 @@ fn printMultiplexerPOC(
     mux.scrollHalfPageDownFocused(10);
     const found = mux.searchFocusedScrollback("hello-from-input-layer", .backward) != null;
     const focused_scroll = mux.focusedScrollOffset();
-    const status_line = try status.renderStatusBarWithScroll(alloc, &mux.workspace_mgr, focused_scroll);
+    const status_line = try status.renderStatusBarWithScrollAndSync(
+        alloc,
+        &mux.workspace_mgr,
+        focused_scroll,
+        mux.syncScrollEnabled(),
+    );
     defer alloc.free(status_line);
 
     _ = try mux.openFzfPopup(.{ .x = 0, .y = 0, .width = 72, .height = 12 }, true);

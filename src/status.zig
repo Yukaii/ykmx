@@ -48,6 +48,15 @@ pub fn renderStatusBarWithScroll(
     wm: *workspace_mod.WorkspaceManager,
     scroll_offset: usize,
 ) ![]u8 {
+    return renderStatusBarWithScrollAndSync(allocator, wm, scroll_offset, false);
+}
+
+pub fn renderStatusBarWithScrollAndSync(
+    allocator: std.mem.Allocator,
+    wm: *workspace_mod.WorkspaceManager,
+    scroll_offset: usize,
+    sync_scroll_enabled: bool,
+) ![]u8 {
     var list = std.ArrayList(u8).empty;
     errdefer list.deinit(allocator);
     const writer = list.writer(allocator);
@@ -66,6 +75,7 @@ pub fn renderStatusBarWithScroll(
         focus_title,
     });
     try writer.print(" scroll=+{d}", .{scroll_offset});
+    try writer.print(" sync_scroll={s}", .{if (sync_scroll_enabled) "on" else "off"});
 
     return try list.toOwnedSlice(allocator);
 }
@@ -91,4 +101,5 @@ test "status renders tab and status lines" {
     try testing.expect(std.mem.indexOf(u8, status_bar, "layout=vertical_stack") != null);
     try testing.expect(std.mem.indexOf(u8, status_bar, "focused=shell-1") != null);
     try testing.expect(std.mem.indexOf(u8, status_bar, "scroll=+0") != null);
+    try testing.expect(std.mem.indexOf(u8, status_bar, "sync_scroll=off") != null);
 }

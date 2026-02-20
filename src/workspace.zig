@@ -164,6 +164,17 @@ pub const WorkspaceManager = struct {
         tab.focused_index = if (current == 0) tab.windows.items.len - 1 else current - 1;
     }
 
+    pub fn zoomFocusedToMasterActive(self: *WorkspaceManager) !bool {
+        const tab = try self.activeTab();
+        const focus = tab.focused_index orelse return error.NoFocusedWindow;
+        if (focus >= tab.windows.items.len) return error.NoFocusedWindow;
+        if (focus == 0) return false;
+
+        std.mem.swap(window_mod.Window, &tab.windows.items[0], &tab.windows.items[focus]);
+        tab.focused_index = 0;
+        return true;
+    }
+
     pub fn closeFocusedWindowActive(self: *WorkspaceManager) !u32 {
         const tab = try self.activeTab();
         const focus = tab.focused_index orelse return error.NoFocusedWindow;
@@ -343,6 +354,31 @@ test "workspace manager can set active master ratio" {
 
     try wm.setActiveMasterRatioPermille(700);
     try testing.expectEqual(@as(u16, 700), try wm.activeMasterRatioPermille());
+}
+
+test "workspace manager zoom moves focused window to master slot" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var wm = WorkspaceManager.init(testing.allocator, engine);
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    const a = try wm.addWindowToActive("a");
+    _ = try wm.addWindowToActive("b");
+    const c = try wm.addWindowToActive("c");
+
+    try wm.setFocusedWindowIndexActive(2);
+    const changed = try wm.zoomFocusedToMasterActive();
+    try testing.expect(changed);
+    try testing.expectEqual(@as(usize, 0), try wm.focusedWindowIndexActive());
+
+    const tab = try wm.activeTab();
+    try testing.expectEqual(c, tab.windows.items[0].id);
+    try testing.expectEqual(a, tab.windows.items[2].id);
+
+    const unchanged = try wm.zoomFocusedToMasterActive();
+    try testing.expect(!unchanged);
 }
 
 test "workspace manager cycles active layout order" {
