@@ -93,6 +93,14 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G M` cycle mouse mode (`hybrid` -> `passthrough` -> `compositor`)
 - `Ctrl+G \` detach request
 
+Scrollback navigation mode (while scrolled up):
+
+- `k` scroll up by 1 line
+- `j` scroll down by 1 line
+- `Ctrl+u` page up
+- `Ctrl+d` page down
+- non-prefixed input is consumed (not sent to app PTY) until you return to bottom
+
 ## Mouse
 
 - Default mode is `hybrid`.

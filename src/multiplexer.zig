@@ -189,7 +189,7 @@ pub const Multiplexer = struct {
             const ev = self.input_router.feedByte(b);
             switch (ev) {
                 .forward => |c| {
-                    if (self.isFocusedScrolledBack()) continue;
+                    if (self.handleScrollbackNavForwardByte(c, screen)) continue;
                     var tmp = [_]u8{c};
                     if (self.popup_mgr.hasModalOpen()) {
                         self.sendInputToFocusedPopup(&tmp) catch |err| switch (err) {
@@ -226,6 +226,7 @@ pub const Multiplexer = struct {
                         }
                     }
                     if (!consumed_mouse) {
+                        if (self.handleScrollbackNavSequence(seq.slice(), screen)) continue;
                         if (self.isFocusedScrolledBack()) continue;
                         if (self.popup_mgr.hasModalOpen()) {
                             self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
@@ -644,6 +645,37 @@ pub const Multiplexer = struct {
             (self.workspace_mgr.focusedWindowIdActive() catch return false);
         const sb = self.scrollbacks.getPtr(focused_id) orelse return false;
         return sb.scroll_offset > 0;
+    }
+
+    fn handleScrollbackNavForwardByte(
+        self: *Multiplexer,
+        b: u8,
+        screen: ?layout.Rect,
+    ) bool {
+        if (!self.isFocusedScrolledBack()) return false;
+        const lines: usize = if (screen) |s| s.height else 24;
+        switch (b) {
+            'k' => self.scrollPageUpFocused(1),
+            'j' => self.scrollPageDownFocused(1),
+            0x15 => self.scrollPageUpFocused(lines), // Ctrl+U
+            0x04 => self.scrollPageDownFocused(lines), // Ctrl+D
+            else => {},
+        }
+        // While scrolled back, consume all non-prefixed input.
+        return true;
+    }
+
+    fn handleScrollbackNavSequence(
+        self: *Multiplexer,
+        seq: []const u8,
+        screen: ?layout.Rect,
+    ) bool {
+        _ = screen;
+        _ = seq;
+        if (!self.isFocusedScrolledBack()) return false;
+        // In scrollback mode, consume escape sequences to avoid leaking
+        // terminal controls to the foreground app.
+        return true;
     }
 
     fn propagateSyncScrollFromFocused(self: *Multiplexer, screen: ?layout.Rect) !void {
@@ -2564,6 +2596,45 @@ test "multiplexer suppresses forwarded input while focused pane is scrolled back
     }
     const out_ok = try mux.windowOutput(win_id);
     try testing.expect(std.mem.indexOf(u8, out_ok, "ok") != null);
+}
+
+test "multiplexer scrollback navigation mode supports vim and ctrl paging keys" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+
+    const sb = mux.scrollbacks.getPtr(win_id) orelse return error.TestUnexpectedResult;
+    try sb.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n");
+    sb.scrollPageUp(2);
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 10 };
+
+    const off0 = sb.scroll_offset;
+    try mux.handleInputBytesWithScreen(screen, "k");
+    const off1 = sb.scroll_offset;
+    try testing.expect(off1 > off0);
+
+    try mux.handleInputBytesWithScreen(screen, "j");
+    const off2 = sb.scroll_offset;
+    try testing.expect(off2 < off1);
+
+    try mux.handleInputBytesWithScreen(screen, &.{0x15}); // Ctrl+U
+    const off3 = sb.scroll_offset;
+    try testing.expect(off3 > off2);
+
+    try mux.handleInputBytesWithScreen(screen, &.{0x04}); // Ctrl+D
+    const off4 = sb.scroll_offset;
+    try testing.expect(off4 < off3);
+
+    // Ensure these keys were not forwarded to the child process.
+    _ = try mux.pollOnce(20);
+    const out = try mux.windowOutput(win_id);
+    try testing.expect(std.mem.indexOf(u8, out, "k") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "j") == null);
 }
 
 test "terminal query parser counts plain DA and CPR across chunk boundaries" {
