@@ -25,10 +25,12 @@ pub const Config = struct {
     mouse_mode: MouseMode = .hybrid,
     plugins_enabled: bool = false,
     plugin_dir: ?[]u8 = null,
+    plugins_dir: ?[]u8 = null,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         if (self.source_path) |p| allocator.free(p);
         if (self.plugin_dir) |p| allocator.free(p);
+        if (self.plugins_dir) |p| allocator.free(p);
         self.* = undefined;
     }
 };
@@ -144,6 +146,11 @@ fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, va
         cfg.plugin_dir = try allocator.dupe(u8, value);
         return;
     }
+    if (std.mem.eql(u8, key, "plugins_dir")) {
+        if (cfg.plugins_dir) |p| allocator.free(p);
+        cfg.plugins_dir = try allocator.dupe(u8, value);
+        return;
+    }
     // Unknown keys are ignored for forward compatibility.
 }
 
@@ -191,6 +198,7 @@ test "config parser applies known keys" {
         \\mouse_mode=compositor
         \\plugins_enabled=1
         \\plugin_dir=/tmp/ykwm-plugins
+        \\plugins_dir=/tmp/ykwm-plugins.d
     );
 
     try testing.expectEqual(LayoutBackend.opentui, cfg.layout_backend);
@@ -203,6 +211,7 @@ test "config parser applies known keys" {
     try testing.expectEqual(MouseMode.compositor, cfg.mouse_mode);
     try testing.expect(cfg.plugins_enabled);
     try testing.expectEqualStrings("/tmp/ykwm-plugins", cfg.plugin_dir.?);
+    try testing.expectEqualStrings("/tmp/ykwm-plugins.d", cfg.plugins_dir.?);
 }
 
 test "config parser accepts paperwm layout type" {

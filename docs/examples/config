@@ -17,4 +17,8 @@ mouse_mode=hybrid
 
 # Long-term plugin toggle scaffold
 plugins_enabled=false
+# Dev example paths from this repository:
+# plugin_dir="/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d/paperwm"
+# plugins_dir="/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d"
 plugin_dir="$HOME/.config/ykwm/plugins"
+plugins_dir="$HOME/.config/ykwm/plugins.d"

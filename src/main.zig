@@ -13,6 +13,7 @@ const status = @import("status.zig");
 const benchmark = @import("benchmark.zig");
 const scrollback_mod = @import("scrollback.zig");
 const plugin_host = @import("plugin_host.zig");
+const plugin_manager = @import("plugin_manager.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const c = @cImport({
@@ -214,16 +215,11 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     _ = try mux.createShellWindow("shell-1");
     _ = try mux.createShellWindow("shell-2");
 
-    var plugins: ?plugin_host.PluginHost = null;
-    if (cfg.layout_backend != .plugin and cfg.plugins_enabled and cfg.plugin_dir != null) {
-        plugins = plugin_host.PluginHost.start(allocator, cfg.plugin_dir.?) catch null;
-    }
-    defer if (plugins) |*host| {
-        _ = host.emitShutdown() catch {};
-        host.deinit();
-    };
-    if (plugins) |*host| {
-        _ = host.emitStart(try mux.workspace_mgr.activeLayoutType()) catch {};
+    var plugins = plugin_manager.PluginManager.init(allocator);
+    defer plugins.deinit();
+    if (cfg.plugins_enabled) {
+        _ = plugins.startAll(cfg.plugin_dir, cfg.plugins_dir) catch 0;
+        if (plugins.hasAny()) plugins.emitStart(try mux.workspace_mgr.activeLayoutType());
     }
     var last_layout = try mux.workspace_mgr.activeLayoutType();
 
@@ -238,9 +234,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     var last_content = contentRect(last_size);
     _ = mux.resizeActiveWindowsToLayout(last_content) catch {};
     var last_plugin_state = try collectPluginRuntimeState(&mux, last_content);
-    if (plugins) |*host| {
-        _ = host.emitStateChanged("start", last_plugin_state) catch {};
-    }
+    if (plugins.hasAny()) plugins.emitStateChanged("start", last_plugin_state);
 
     var buf: [256]u8 = undefined;
     var w = std.fs.File.stdout().writer(&buf);
@@ -278,15 +272,11 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
         const tick_result = try mux.tick(30, content, snap);
         const current_layout = try mux.workspace_mgr.activeLayoutType();
         if (current_layout != last_layout) {
-            if (plugins) |*host| {
-                _ = host.emitLayoutChanged(current_layout) catch {};
-            }
+            if (plugins.hasAny()) plugins.emitLayoutChanged(current_layout);
             last_layout = current_layout;
         }
-        if (plugins) |*host| {
-            const actions = host.drainActions(allocator) catch |err| switch (err) {
-                else => null,
-            };
+        if (plugins.hasAny()) {
+            const actions = plugins.drainActions(allocator) catch null;
             if (actions) |owned| {
                 defer allocator.free(owned);
                 var changed = false;
@@ -298,16 +288,16 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
         }
 
         const current_plugin_state = try collectPluginRuntimeState(&mux, content);
-        if (plugins) |*host| {
+        if (plugins.hasAny()) {
             if (!pluginRuntimeStateEql(last_plugin_state, current_plugin_state)) {
                 const reason = detectStateChangeReason(last_plugin_state, current_plugin_state);
-                _ = host.emitStateChanged(reason, current_plugin_state) catch {};
+                plugins.emitStateChanged(reason, current_plugin_state);
                 last_plugin_state = current_plugin_state;
             }
 
             const should_emit_tick = tick_result.reads > 0 or tick_result.resized > 0 or tick_result.popup_updates > 0 or tick_result.redraw or tick_result.detach_requested or snap.sigwinch or snap.sighup or snap.sigterm;
             if (should_emit_tick) {
-                _ = host.emitTick(.{
+                plugins.emitTick(.{
                     .reads = tick_result.reads,
                     .resized = tick_result.resized,
                     .popup_updates = tick_result.popup_updates,
@@ -316,7 +306,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                     .sigwinch = snap.sigwinch,
                     .sighup = snap.sighup,
                     .sigterm = snap.sigterm,
-                }, current_plugin_state) catch {};
+                }, current_plugin_state);
             }
         } else {
             last_plugin_state = current_plugin_state;
@@ -338,6 +328,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             force_redraw = false;
         }
     }
+    if (plugins.hasAny()) plugins.emitShutdown();
 }
 
 fn collectPluginRuntimeState(
@@ -1559,10 +1550,52 @@ fn pickLayoutEngine(allocator: std.mem.Allocator, cfg: config.Config) !layout.La
         // Temporary fallback while OpenTUI adapter compute() is not integrated yet.
         .opentui => layout_native.NativeLayoutEngine.init(),
         .plugin => blk: {
-            const plugin_dir = cfg.plugin_dir orelse break :blk layout_native.NativeLayoutEngine.init();
-            break :blk layout_plugin.PluginLayoutEngine.init(allocator, plugin_dir) catch layout_native.NativeLayoutEngine.init();
+            if (cfg.plugin_dir) |plugin_dir| {
+                break :blk layout_plugin.PluginLayoutEngine.init(allocator, plugin_dir) catch layout_native.NativeLayoutEngine.init();
+            }
+            if (cfg.plugins_dir) |plugins_dir| {
+                const first = try findFirstPluginSubdir(allocator, plugins_dir);
+                defer if (first) |p| allocator.free(p);
+                if (first) |path| {
+                    break :blk layout_plugin.PluginLayoutEngine.init(allocator, path) catch layout_native.NativeLayoutEngine.init();
+                }
+            }
+            break :blk layout_native.NativeLayoutEngine.init();
         },
     };
+}
+
+fn findFirstPluginSubdir(allocator: std.mem.Allocator, plugins_dir: []const u8) !?[]u8 {
+    var dir = std.fs.cwd().openDir(plugins_dir, .{ .iterate = true }) catch return null;
+    defer dir.close();
+
+    var candidates = std.ArrayListUnmanaged([]u8){};
+    defer {
+        for (candidates.items) |p| allocator.free(p);
+        candidates.deinit(allocator);
+    }
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        const full = try std.fs.path.join(allocator, &.{ plugins_dir, entry.name });
+        errdefer allocator.free(full);
+        const index_ts = try std.fs.path.join(allocator, &.{ full, "index.ts" });
+        defer allocator.free(index_ts);
+        std.fs.cwd().access(index_ts, .{}) catch {
+            allocator.free(full);
+            continue;
+        };
+        try candidates.append(allocator, full);
+    }
+
+    if (candidates.items.len == 0) return null;
+    std.mem.sort([]u8, candidates.items, {}, struct {
+        fn less(_: void, a: []u8, b: []u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.less);
+    return try allocator.dupe(u8, candidates.items[0]);
 }
 
 fn printZmxAndSignalPOC(writer: *std.Io.Writer, env: zmx.Env) !void {

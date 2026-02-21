@@ -129,9 +129,14 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 ## Plugins (Bun scaffold)
 
 - Enable with `plugins_enabled=true` and `plugin_dir=/abs/path/to/plugins`.
+- For multiple plugins, set `plugins_dir=/abs/path/to/plugins.d` and place each plugin at:
+  - `<plugins_dir>/<plugin-name>/index.ts`
+- In this repository, the PaperWM example plugin lives at:
+  - `docs/examples/plugins.d/paperwm/index.ts`
 - Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
-- Type definitions for plugin authors: `docs/examples/plugin/types.ts`.
+- Type definitions for plugin authors: `docs/examples/plugins.d/paperwm/types.ts`.
+- Helper utilities for plugin authors: `docs/examples/plugins.d/paperwm/helpers.ts`.
 - Current stdin hook protocol is NDJSON events:
   - `{"v":1,"event":"on_start","layout":"..."}`
   - `{"v":1,"event":"on_layout_changed","layout":"..."}`
