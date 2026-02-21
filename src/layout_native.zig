@@ -22,6 +22,7 @@ pub const NativeLayoutEngine = struct {
             .vertical_stack => computeVerticalStack(allocator, params),
             .horizontal_stack => computeHorizontalStack(allocator, params),
             .grid => computeGrid(allocator, params),
+            .paperwm => computePaperwm(allocator, params),
             .fullscreen => computeFullscreen(allocator, params),
         };
     }
@@ -163,6 +164,46 @@ pub const NativeLayoutEngine = struct {
         return rects;
     }
 
+    fn computePaperwm(allocator: std.mem.Allocator, params: layout.LayoutParams) ![]layout.Rect {
+        const inner = try insetRect(params.screen, params.gap);
+        const count: usize = @intCast(params.window_count);
+        const rects = try allocator.alloc(layout.Rect, count);
+
+        // PaperWM-like behavior: windows are in a horizontal strip and the focused
+        // window is centered. Off-screen windows are clipped to zero width.
+        var pane_width: u16 = @intCast((@as(u32, inner.width) * params.master_ratio_permille) / 1000);
+        if (pane_width == 0) pane_width = 1;
+        if (pane_width > inner.width) pane_width = inner.width;
+
+        const col_step: i32 = @as(i32, pane_width) + @as(i32, params.gap);
+        const inner_x0: i32 = inner.x;
+        const inner_x1: i32 = inner.x + inner.width;
+        const focus_centered_x: i32 = inner_x0 + @divTrunc(@as(i32, inner.width) - @as(i32, pane_width), 2);
+        const focused_idx: i32 = params.focused_index;
+
+        for (rects, 0..) |*r, i| {
+            const idx_i32: i32 = @intCast(i);
+            const virtual_x = focus_centered_x + (idx_i32 - focused_idx) * col_step;
+            const virtual_x1 = virtual_x + @as(i32, pane_width);
+            const clipped_x0 = @max(virtual_x, inner_x0);
+            const clipped_x1 = @min(virtual_x1, inner_x1);
+
+            if (clipped_x1 <= clipped_x0) {
+                r.* = .{ .x = inner.x, .y = inner.y, .width = 0, .height = 0 };
+                continue;
+            }
+
+            r.* = .{
+                .x = @intCast(clipped_x0),
+                .y = inner.y,
+                .width = @intCast(clipped_x1 - clipped_x0),
+                .height = inner.height,
+            };
+        }
+
+        return rects;
+    }
+
     fn insetRect(r: layout.Rect, gap: u16) !layout.Rect {
         const gap_twice: u32 = @as(u32, gap) * 2;
         if (r.width <= gap_twice or r.height <= gap_twice) return error.ScreenTooSmallForGap;
@@ -289,4 +330,26 @@ test "fullscreen shows focused pane only" {
     try testing.expectEqual(@as(u16, 0), rects[0].width);
     try testing.expectEqual(layout.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 }, rects[1]);
     try testing.expectEqual(@as(u16, 0), rects[2].width);
+}
+
+test "paperwm centers focused pane and clips off-screen panes" {
+    const testing = std.testing;
+    const engine = NativeLayoutEngine.init();
+
+    const rects = try engine.compute(testing.allocator, .{
+        .layout = .paperwm,
+        .screen = .{ .x = 0, .y = 0, .width = 100, .height = 30 },
+        .window_count = 5,
+        .focused_index = 2,
+        .master_ratio_permille = 600,
+        .gap = 2,
+    });
+    defer testing.allocator.free(rects);
+
+    try testing.expectEqual(@as(usize, 5), rects.len);
+    try testing.expectEqual(layout.Rect{ .x = 21, .y = 2, .width = 57, .height = 26 }, rects[2]);
+    try testing.expectEqual(@as(u16, 17), rects[1].width);
+    try testing.expectEqual(@as(u16, 18), rects[3].width);
+    try testing.expectEqual(@as(u16, 0), rects[0].width);
+    try testing.expectEqual(@as(u16, 0), rects[4].width);
 }

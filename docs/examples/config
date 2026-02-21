@@ -4,6 +4,7 @@
 #   or $HOME/.config/ykwm/config
 
 layout_backend=native
+# valid values: vertical_stack | horizontal_stack | grid | paperwm | fullscreen
 default_layout=vertical_stack
 master_count=1
 master_ratio_permille=600
@@ -15,3 +16,4 @@ mouse_mode=hybrid
 
 # Long-term plugin toggle scaffold
 plugins_enabled=false
+plugin_dir="$HOME/.config/ykwm/plugins"

@@ -249,7 +249,8 @@ pub const WorkspaceManager = struct {
         tab.layout_type = switch (tab.layout_type) {
             .vertical_stack => .horizontal_stack,
             .horizontal_stack => .grid,
-            .grid => .fullscreen,
+            .grid => .paperwm,
+            .paperwm => .fullscreen,
             .fullscreen => .vertical_stack,
         };
         return tab.layout_type;
@@ -392,6 +393,7 @@ test "workspace manager cycles active layout order" {
     try testing.expectEqual(layout.LayoutType.vertical_stack, try wm.activeLayoutType());
     try testing.expectEqual(layout.LayoutType.horizontal_stack, try wm.cycleActiveLayout());
     try testing.expectEqual(layout.LayoutType.grid, try wm.cycleActiveLayout());
+    try testing.expectEqual(layout.LayoutType.paperwm, try wm.cycleActiveLayout());
     try testing.expectEqual(layout.LayoutType.fullscreen, try wm.cycleActiveLayout());
     try testing.expectEqual(layout.LayoutType.vertical_stack, try wm.cycleActiveLayout());
 }

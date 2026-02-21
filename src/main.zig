@@ -11,6 +11,7 @@ const config = @import("config.zig");
 const status = @import("status.zig");
 const benchmark = @import("benchmark.zig");
 const scrollback_mod = @import("scrollback.zig");
+const plugin_host = @import("plugin_host.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const c = @cImport({
@@ -212,6 +213,19 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     _ = try mux.createShellWindow("shell-1");
     _ = try mux.createShellWindow("shell-2");
 
+    var plugins: ?plugin_host.PluginHost = null;
+    if (cfg.plugins_enabled and cfg.plugin_dir != null) {
+        plugins = plugin_host.PluginHost.start(allocator, cfg.plugin_dir.?) catch null;
+    }
+    defer if (plugins) |*host| {
+        _ = host.emitShutdown() catch {};
+        host.deinit();
+    };
+    if (plugins) |*host| {
+        _ = host.emitStart(try mux.workspace_mgr.activeLayoutType()) catch {};
+    }
+    var last_layout = try mux.workspace_mgr.activeLayoutType();
+
     var term = try RuntimeTerminal.enter();
     defer term.leave();
     var vt_state = RuntimeVtState.init(allocator);
@@ -257,6 +271,13 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
         const snap = signal_mod.drain();
         const tick_result = try mux.tick(30, content, snap);
+        const current_layout = try mux.workspace_mgr.activeLayoutType();
+        if (current_layout != last_layout) {
+            if (plugins) |*host| {
+                _ = host.emitLayoutChanged(current_layout) catch {};
+            }
+            last_layout = current_layout;
+        }
 
         // Keep known VT instances warm even when their tab is inactive.
         // This amortizes parse work and reduces tab-switch spikes for long buffers.
@@ -338,7 +359,7 @@ const RuntimeSize = struct {
 };
 
 const RuntimeRenderCell = struct {
-    text: [32]u8 = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+    text: [32]u8 = [_]u8{' '} ++ ([_]u8{0} ** 31),
     text_len: u8 = 1,
     style: ghostty_vt.Style = .{},
     styled: bool = false,
@@ -368,7 +389,6 @@ const RuntimeFrameCache = struct {
         for (self.cells) |*cell| cell.* = .{};
         return true;
     }
-
 };
 
 const PaneRenderRef = struct {
@@ -792,7 +812,7 @@ fn renderRuntimeFrame(
                     // Explicitly clear spacer-tail cells to avoid stale glyph artifacts
                     // when wide/grapheme content changes near borders.
                     curr[row_off + x] = .{
-                        .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+                        .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
                         .text_len = 1,
                         .style = .{},
                         .styled = false,
@@ -1100,7 +1120,7 @@ fn fillPlainLine(dst: []RuntimeRenderCell, line: []const u8) void {
     while (i < dst.len) : (i += 1) {
         const ch: u8 = if (i < line.len) line[i] else ' ';
         dst[i] = .{
-            .text = [_]u8{ ch } ++ ([_]u8{0} ** 31),
+            .text = [_]u8{ch} ++ ([_]u8{0} ** 31),
             .text_len = 1,
             .style = .{},
             .styled = false,
@@ -1190,7 +1210,7 @@ fn paneCellAt(
                         const line = lines[idx];
                         const ch: u8 = if (local_x < line.len) line[local_x] else ' ';
                         return .{
-                            .text = [_]u8{ ch } ++ ([_]u8{0} ** 31),
+                            .text = [_]u8{ch} ++ ([_]u8{0} ** 31),
                             .text_len = 1,
                             .style = .{},
                         };
@@ -1198,7 +1218,7 @@ fn paneCellAt(
                 }
             }
             return .{
-                .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+                .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
                 .text_len = 1,
                 .style = .{},
             };
@@ -1211,7 +1231,7 @@ fn paneCellAt(
             0;
         const source_y = start_screen_row + local_y;
         if (source_y > std.math.maxInt(u32)) return .{
-            .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+            .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
             .text_len = 1,
             .style = .{},
         };
@@ -1221,7 +1241,7 @@ fn paneCellAt(
                 .y = @intCast(source_y),
             },
         }) orelse return .{
-            .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+            .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
             .text_len = 1,
             .style = .{},
         };

@@ -81,8 +81,6 @@ fn discoverDefaultConfigPath(allocator: std.mem.Allocator) !?[]u8 {
 }
 
 pub fn parseContents(allocator: std.mem.Allocator, cfg: *Config, contents: []const u8) !void {
-    _ = allocator;
-
     var it = std.mem.splitScalar(u8, contents, '\n');
     while (it.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -92,11 +90,11 @@ pub fn parseContents(allocator: std.mem.Allocator, cfg: *Config, contents: []con
         const key = std.mem.trim(u8, line[0..eq_idx], " \t");
         const raw_value = std.mem.trim(u8, line[eq_idx + 1 ..], " \t");
         const value = trimQuotes(raw_value);
-        try applyKeyValue(cfg, key, value);
+        try applyKeyValue(allocator, cfg, key, value);
     }
 }
 
-fn applyKeyValue(cfg: *Config, key: []const u8, value: []const u8) !void {
+fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, value: []const u8) !void {
     if (std.mem.eql(u8, key, "layout_backend")) {
         if (std.mem.eql(u8, value, "native")) cfg.layout_backend = .native else if (std.mem.eql(u8, value, "opentui")) cfg.layout_backend = .opentui else return error.InvalidLayoutBackend;
         return;
@@ -140,6 +138,11 @@ fn applyKeyValue(cfg: *Config, key: []const u8, value: []const u8) !void {
         cfg.plugins_enabled = try parseBool(value);
         return;
     }
+    if (std.mem.eql(u8, key, "plugin_dir")) {
+        if (cfg.plugin_dir) |p| allocator.free(p);
+        cfg.plugin_dir = try allocator.dupe(u8, value);
+        return;
+    }
     // Unknown keys are ignored for forward compatibility.
 }
 
@@ -147,6 +150,7 @@ fn parseLayoutType(value: []const u8) !layout.LayoutType {
     if (std.mem.eql(u8, value, "vertical_stack")) return .vertical_stack;
     if (std.mem.eql(u8, value, "horizontal_stack")) return .horizontal_stack;
     if (std.mem.eql(u8, value, "grid")) return .grid;
+    if (std.mem.eql(u8, value, "paperwm")) return .paperwm;
     if (std.mem.eql(u8, value, "fullscreen")) return .fullscreen;
     return error.InvalidLayoutType;
 }
@@ -185,6 +189,7 @@ test "config parser applies known keys" {
         \\show_status_bar=true
         \\mouse_mode=compositor
         \\plugins_enabled=1
+        \\plugin_dir=/tmp/ykwm-plugins
     );
 
     try testing.expectEqual(LayoutBackend.opentui, cfg.layout_backend);
@@ -196,4 +201,13 @@ test "config parser applies known keys" {
     try testing.expect(cfg.show_status_bar);
     try testing.expectEqual(MouseMode.compositor, cfg.mouse_mode);
     try testing.expect(cfg.plugins_enabled);
+    try testing.expectEqualStrings("/tmp/ykwm-plugins", cfg.plugin_dir.?);
+}
+
+test "config parser accepts paperwm layout type" {
+    const testing = std.testing;
+    var cfg = Config{};
+
+    try parseContents(testing.allocator, &cfg, "default_layout=paperwm\n");
+    try testing.expectEqual(layout.LayoutType.paperwm, cfg.default_layout);
 }

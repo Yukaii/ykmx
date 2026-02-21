@@ -11,6 +11,7 @@ pub const LayoutType = enum {
     vertical_stack,
     horizontal_stack,
     grid,
+    paperwm,
     fullscreen,
 };
 

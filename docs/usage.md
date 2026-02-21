@@ -93,6 +93,8 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G M` cycle mouse mode (`hybrid` -> `passthrough` -> `compositor`)
 - `Ctrl+G \` detach request
 
+Current layout cycle order: `vertical_stack -> horizontal_stack -> grid -> paperwm -> fullscreen`.
+
 Scrollback navigation mode (while scrolled up):
 
 - `k` scroll up by 1 line
@@ -123,3 +125,13 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `hybrid`: coordinate-based split behavior
   - `passthrough`: always forward mouse to app
   - `compositor`: always consume mouse for ykwm interactions
+
+## Plugins (Bun scaffold)
+
+- Enable with `plugins_enabled=true` and `plugin_dir=/abs/path/to/plugins`.
+- Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
+- Current stdin hook protocol is NDJSON events:
+  - `{"v":1,"event":"on_start","layout":"..."}`
+  - `{"v":1,"event":"on_layout_changed","layout":"..."}`
+  - `{"v":1,"event":"on_shutdown"}`
+- Plugin errors/crashes are isolated; ykwm continues running.
