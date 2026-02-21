@@ -165,7 +165,9 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 Desktop control buttons:
 
 - Pane title bar now draws `[_][+][x]` on the right.
+- Minimized windows are listed in a toolbar row above tab/status bars as `min: [id:title] ...`.
 - Pointer hit payload reports which button was clicked:
   - `on_minimize_button`
   - `on_maximize_button`
   - `on_close_button`
+  - `on_restore_button` (for minimized-toolbar restore targets)

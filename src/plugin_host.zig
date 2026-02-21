@@ -39,6 +39,7 @@ pub const PluginHost = struct {
         restore_all_minimized_windows,
         move_focused_window_to_index: usize,
         close_focused_window,
+        restore_window_by_id: u32,
     };
 
     pub const PointerEvent = struct {
@@ -56,6 +57,8 @@ pub const PluginHost = struct {
         on_minimize_button: bool,
         on_maximize_button: bool,
         on_close_button: bool,
+        on_minimized_toolbar: bool,
+        on_restore_button: bool,
     };
 
     allocator: std.mem.Allocator,
@@ -85,6 +88,7 @@ pub const PluginHost = struct {
         layout: ?[]const u8 = null,
         value: ?u16 = null,
         index: ?usize = null,
+        window_id: ?u32 = null,
     };
 
     pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8) !PluginHost {
@@ -220,8 +224,8 @@ pub const PluginHost = struct {
         const line = if (hit) |h|
             try std.fmt.bufPrint(
                 &buf,
-                "{{\"v\":1,\"event\":\"on_pointer\",\"pointer\":{{\"x\":{},\"y\":{},\"button\":{},\"pressed\":{},\"motion\":{}}},\"hit\":{{\"window_id\":{},\"window_index\":{},\"on_title_bar\":{},\"on_minimize_button\":{},\"on_maximize_button\":{},\"on_close_button\":{}}}}}\n",
-                .{ pointer.x, pointer.y, pointer.button, pointer.pressed, pointer.motion, h.window_id, h.window_index, h.on_title_bar, h.on_minimize_button, h.on_maximize_button, h.on_close_button },
+                "{{\"v\":1,\"event\":\"on_pointer\",\"pointer\":{{\"x\":{},\"y\":{},\"button\":{},\"pressed\":{},\"motion\":{}}},\"hit\":{{\"window_id\":{},\"window_index\":{},\"on_title_bar\":{},\"on_minimize_button\":{},\"on_maximize_button\":{},\"on_close_button\":{},\"on_minimized_toolbar\":{},\"on_restore_button\":{}}}}}\n",
+                .{ pointer.x, pointer.y, pointer.button, pointer.pressed, pointer.motion, h.window_id, h.window_index, h.on_title_bar, h.on_minimize_button, h.on_maximize_button, h.on_close_button, h.on_minimized_toolbar, h.on_restore_button },
             )
         else
             try std.fmt.bufPrint(
@@ -395,6 +399,10 @@ pub const PluginHost = struct {
             return .{ .move_focused_window_to_index = idx };
         }
         if (std.mem.eql(u8, action_name, "close_focused_window")) return .close_focused_window;
+        if (std.mem.eql(u8, action_name, "restore_window_by_id")) {
+            const window_id = envelope.window_id orelse return null;
+            return .{ .restore_window_by_id = window_id };
+        }
         return null;
     }
 

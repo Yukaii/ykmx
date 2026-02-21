@@ -280,6 +280,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                 const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
                 const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
                 const hit = mux.windowChromeHitAt(content, px, py) catch null;
+                const toolbar_hit = minimizedToolbarHitAt(&mux.workspace_mgr, content, px, py);
                 plugins.emitPointer(
                     .{
                         .x = px,
@@ -295,6 +296,17 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                         .on_minimize_button = h.on_minimize_button,
                         .on_maximize_button = h.on_maximize_button,
                         .on_close_button = h.on_close_button,
+                        .on_minimized_toolbar = false,
+                        .on_restore_button = false,
+                    } else if (toolbar_hit) |th| .{
+                        .window_id = th.window_id,
+                        .window_index = th.window_index,
+                        .on_title_bar = false,
+                        .on_minimize_button = false,
+                        .on_maximize_button = false,
+                        .on_close_button = false,
+                        .on_minimized_toolbar = true,
+                        .on_restore_button = true,
                     } else null,
                 );
             }
@@ -463,6 +475,9 @@ fn applyPluginAction(
             };
             _ = try mux.resizeActiveWindowsToLayout(screen);
             return true;
+        },
+        .restore_window_by_id => |window_id| {
+            return try mux.restoreWindowById(window_id, screen);
         },
     }
 }
@@ -829,8 +844,8 @@ fn getTerminalSize() RuntimeSize {
 }
 
 fn contentRect(size: RuntimeSize) layout.Rect {
-    // Reserve two lines at bottom for tab + status bars.
-    const usable_rows: u16 = if (size.rows > 3) size.rows - 2 else 1;
+    // Reserve three lines at bottom for minimized-toolbar + tab + status bars.
+    const usable_rows: u16 = if (size.rows > 4) size.rows - 3 else 1;
     return .{ .x = 0, .y = 0, .width = size.cols, .height = usable_rows };
 }
 
@@ -867,7 +882,7 @@ fn renderRuntimeFrame(
 ) !void {
     const total_cols: usize = size.cols;
     const content_rows: usize = content.height;
-    const total_rows: usize = content_rows + 2;
+    const total_rows: usize = content_rows + 3;
     const canvas_len = total_cols * content_rows;
     const canvas = try allocator.alloc(u21, canvas_len);
     defer allocator.free(canvas);
@@ -1004,12 +1019,44 @@ fn renderRuntimeFrame(
         }
     }
     applyBorderGlyphs(canvas, border_conn, total_cols, content_rows);
+
+    // Border glyph synthesis can overwrite titlebar text/chrome because both share
+    // the top border row. Repaint chrome after border pass.
+    for (rects[0..n], 0..) |r, i| {
+        if (r.width < 2 or r.height < 2) continue;
+        const border = computeBorderMask(rects[0..n], i, r, content);
+        const insets = computeContentInsets(rects[0..n], i, r, border);
+        const inner_x = r.x + insets.left;
+        const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
+        if (inner_w == 0) continue;
+
+        const title = tab.windows.items[i].title;
+        const controls = "[_][+][x]";
+        const controls_w: u16 = @intCast(controls.len);
+        const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
+        drawText(canvas, total_cols, content_rows, inner_x, r.y, title, title_max);
+        if (r.width >= 10) {
+            const controls_x: u16 = r.x + r.width - controls_w - 1;
+            drawText(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w);
+        }
+    }
+    for (popup_order) |popup_idx| {
+        const p = mux.popup_mgr.popups.items[popup_idx];
+        if (p.rect.width < 2 or p.rect.height < 2) continue;
+        const inner_x = p.rect.x + 1;
+        const inner_w = p.rect.width - 2;
+        if (inner_w == 0) continue;
+        drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
+    }
+
     const live_ids = try mux.liveWindowIds(allocator);
     defer allocator.free(live_ids);
     try vt_state.prune(live_ids);
 
     const tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
     defer allocator.free(tab_line);
+    const minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
+    defer allocator.free(minimized_line);
     const status_line = try status.renderStatusBarWithScrollAndSync(
         allocator,
         &mux.workspace_mgr,
@@ -1060,8 +1107,9 @@ fn renderRuntimeFrame(
         }
     }
 
-    fillPlainLine(curr[content_rows * total_cols .. (content_rows + 1) * total_cols], tab_line);
-    fillPlainLine(curr[(content_rows + 1) * total_cols .. (content_rows + 2) * total_cols], status_line);
+    fillPlainLine(curr[content_rows * total_cols .. (content_rows + 1) * total_cols], minimized_line);
+    fillPlainLine(curr[(content_rows + 1) * total_cols .. (content_rows + 2) * total_cols], tab_line);
+    fillPlainLine(curr[(content_rows + 2) * total_cols .. (content_rows + 3) * total_cols], status_line);
 
     var active_style: ?ghostty_vt.Style = null;
     var idx: usize = 0;
@@ -1131,7 +1179,7 @@ fn renderRuntimeFrame(
     if (focused_cursor_abs) |p| {
         try writeFmtBlocking(out, "\x1b[{};{}H", .{ p.row, p.col });
     } else {
-        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
+        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
     }
     try writeAllBlocking(out, "\x1b[?25h");
 }
@@ -1355,6 +1403,45 @@ fn fillPlainLine(dst: []RuntimeRenderCell, line: []const u8) void {
             .styled = false,
         };
     }
+}
+
+fn renderMinimizedToolbarLine(allocator: std.mem.Allocator, wm: *workspace.WorkspaceManager) ![]u8 {
+    var list = std.ArrayListUnmanaged(u8){};
+    errdefer list.deinit(allocator);
+
+    try list.appendSlice(allocator, "min: ");
+    const tab = wm.activeTab() catch return list.toOwnedSlice(allocator);
+    for (tab.windows.items) |w| {
+        if (!w.minimized) continue;
+        try list.appendSlice(allocator, "[");
+        try list.writer(allocator).print("{d}:{s}", .{ w.id, w.title });
+        try list.appendSlice(allocator, "] ");
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+fn minimizedToolbarHitAt(
+    wm: *workspace.WorkspaceManager,
+    content: layout.Rect,
+    px: u16,
+    py: u16,
+) ?struct { window_id: u32, window_index: usize } {
+    if (py != content.y + content.height) return null;
+    const tab = wm.activeTab() catch return null;
+
+    var x: u16 = 5; // "min: "
+    for (tab.windows.items, 0..) |w, i| {
+        if (!w.minimized) continue;
+
+        var id_buf: [16]u8 = undefined;
+        const id_txt = std.fmt.bufPrint(&id_buf, "{d}", .{w.id}) catch continue;
+        const seg_w: u16 = @intCast(1 + id_txt.len + 1 + w.title.len + 2); // [id:title] + trailing space
+        const start = x;
+        const end = x + seg_w;
+        if (px >= start and px < end) return .{ .window_id = w.id, .window_index = i };
+        x = end;
+    }
+    return null;
 }
 
 fn plainCellFromCodepoint(cp: u21) RuntimeRenderCell {

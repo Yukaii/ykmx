@@ -15,6 +15,8 @@ pub const Multiplexer = struct {
         on_minimize_button: bool,
         on_maximize_button: bool,
         on_close_button: bool,
+        on_minimized_toolbar: bool = false,
+        on_restore_button: bool = false,
     };
 
     pub const MouseMode = enum {
@@ -591,9 +593,11 @@ pub const Multiplexer = struct {
             if (!(inside_x and inside_y)) continue;
 
             const on_title_bar = py == r.y and px > r.x and px < (r.x + r.width - 1);
-            const on_close_button = on_title_bar and r.width >= 4 and px == (r.x + r.width - 2);
-            const on_maximize_button = on_title_bar and r.width >= 7 and px == (r.x + r.width - 5);
-            const on_minimize_button = on_title_bar and r.width >= 10 and px == (r.x + r.width - 8);
+            // Controls render as "[_][+][x]" anchored to right border.
+            // Symbol cells are at offsets: '_' => -9, '+' => -6, 'x' => -3.
+            const on_close_button = on_title_bar and r.width >= 5 and px == (r.x + r.width - 3);
+            const on_maximize_button = on_title_bar and r.width >= 8 and px == (r.x + r.width - 6);
+            const on_minimize_button = on_title_bar and r.width >= 11 and px == (r.x + r.width - 9);
 
             return .{
                 .window_id = tab.windows.items[i].id,
@@ -634,6 +638,15 @@ pub const Multiplexer = struct {
         _ = try self.markActiveWindowsDirty();
         self.requestRedraw();
         return restored;
+    }
+
+    pub fn restoreWindowById(self: *Multiplexer, window_id: u32, screen: ?layout.Rect) !bool {
+        const restored = try self.workspace_mgr.restoreWindowByIdActive(window_id);
+        if (!restored) return false;
+        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+        _ = try self.markActiveWindowsDirty();
+        self.requestRedraw();
+        return true;
     }
 
     pub fn moveFocusedWindowToIndex(self: *Multiplexer, target_index: usize, screen: ?layout.Rect) !bool {

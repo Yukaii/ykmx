@@ -19,6 +19,11 @@ async function main() {
     }
     if (!isPointerEvent(ev)) continue;
 
+    if (ev.hit?.on_restore_button && ev.pointer.pressed && !ev.pointer.motion && ev.pointer.button === 0) {
+      await writeAction({ v: 1, action: "restore_window_by_id", window_id: ev.hit.window_id });
+      continue;
+    }
+
     if (ev.hit?.on_close_button && ev.pointer.pressed && !ev.pointer.motion && ev.pointer.button === 0) {
       await writeAction({ v: 1, action: "close_focused_window" });
       continue;

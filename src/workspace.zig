@@ -348,6 +348,18 @@ pub const WorkspaceManager = struct {
         return restored;
     }
 
+    pub fn restoreWindowByIdActive(self: *WorkspaceManager, window_id: u32) !bool {
+        const tab = try self.activeTab();
+        for (tab.windows.items, 0..) |*w, i| {
+            if (w.id != window_id) continue;
+            if (!w.minimized) return false;
+            w.minimized = false;
+            if (tab.focused_index == null) tab.focused_index = i;
+            return true;
+        }
+        return false;
+    }
+
     pub fn moveFocusedWindowToIndexActive(self: *WorkspaceManager, dst_index: usize) !void {
         const tab = try self.activeTab();
         const focus = tab.focused_index orelse return error.NoFocusedWindow;
@@ -540,4 +552,20 @@ test "workspace manager moves focused window to target index" {
     try testing.expectEqual(@as(usize, 2), try wm.focusedWindowIndexActive());
     const tab = try wm.activeTab();
     try testing.expectEqual(a, tab.windows.items[2].id);
+}
+
+test "workspace manager restores minimized window by id" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var wm = WorkspaceManager.init(testing.allocator, engine);
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    const a = try wm.addWindowToActive("a");
+    _ = try wm.addWindowToActive("b");
+
+    _ = try wm.minimizeFocusedWindowActive();
+    try testing.expect(try wm.restoreWindowByIdActive(a));
+    try testing.expect(!(try wm.restoreWindowByIdActive(999999)));
 }
