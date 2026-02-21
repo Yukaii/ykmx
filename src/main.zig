@@ -279,6 +279,19 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             }
             last_layout = current_layout;
         }
+        if (plugins) |*host| {
+            const actions = host.drainActions(allocator) catch |err| switch (err) {
+                else => null,
+            };
+            if (actions) |owned| {
+                defer allocator.free(owned);
+                var changed = false;
+                for (owned) |action| {
+                    changed = (try applyPluginAction(&mux, content, action)) or changed;
+                }
+                if (changed) force_redraw = true;
+            }
+        }
 
         // Keep known VT instances warm even when their tab is inactive.
         // This amortizes parse work and reduces tab-switch spikes for long buffers.
@@ -295,6 +308,31 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             try out.flush();
             force_redraw = false;
         }
+    }
+}
+
+fn applyPluginAction(
+    mux: *multiplexer.Multiplexer,
+    screen: layout.Rect,
+    action: plugin_host.PluginHost.Action,
+) !bool {
+    switch (action) {
+        .cycle_layout => {
+            _ = try mux.workspace_mgr.cycleActiveLayout();
+            _ = try mux.resizeActiveWindowsToLayout(screen);
+            return true;
+        },
+        .set_layout => |layout_type| {
+            try mux.workspace_mgr.setActiveLayout(layout_type);
+            _ = try mux.resizeActiveWindowsToLayout(screen);
+            return true;
+        },
+        .set_master_ratio_permille => |value| {
+            const clamped: u16 = @intCast(@max(@as(u32, 100), @min(@as(u32, 900), value)));
+            try mux.workspace_mgr.setActiveMasterRatioPermille(clamped);
+            _ = try mux.resizeActiveWindowsToLayout(screen);
+            return true;
+        },
     }
 }
 

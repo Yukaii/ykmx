@@ -3,11 +3,18 @@ const layout = @import("layout.zig");
 const posix = std.posix;
 
 pub const PluginHost = struct {
+    pub const Action = union(enum) {
+        cycle_layout,
+        set_layout: layout.LayoutType,
+        set_master_ratio_permille: u16,
+    };
+
     allocator: std.mem.Allocator,
     child: std.process.Child,
     alive: bool = true,
     next_request_id: u64 = 1,
     read_buf: std.ArrayListUnmanaged(u8) = .{},
+    pending_actions: std.ArrayListUnmanaged(Action) = .{},
 
     const LayoutRect = struct {
         x: u16,
@@ -21,6 +28,13 @@ pub const PluginHost = struct {
         id: ?u64 = null,
         fallback: ?bool = null,
         rects: ?[]LayoutRect = null,
+    };
+
+    const ActionEnvelope = struct {
+        v: ?u8 = null,
+        action: ?[]const u8 = null,
+        layout: ?[]const u8 = null,
+        value: ?u16 = null,
     };
 
     pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8) !PluginHost {
@@ -48,6 +62,7 @@ pub const PluginHost = struct {
 
     pub fn deinit(self: *PluginHost) void {
         self.read_buf.deinit(self.allocator);
+        self.pending_actions.deinit(self.allocator);
         if (self.alive) {
             _ = self.child.kill() catch {};
             self.alive = false;
@@ -123,6 +138,18 @@ pub const PluginHost = struct {
         return null;
     }
 
+    pub fn drainActions(self: *PluginHost, allocator: std.mem.Allocator) ![]Action {
+        var matched: ?[]layout.Rect = null;
+        try self.readAvailableStdout();
+        try self.processBufferedLines(allocator, null, &matched);
+
+        if (self.pending_actions.items.len == 0) return allocator.alloc(Action, 0);
+        const out = try allocator.alloc(Action, self.pending_actions.items.len);
+        @memcpy(out, self.pending_actions.items);
+        self.pending_actions.clearRetainingCapacity();
+        return out;
+    }
+
     fn emitLine(self: *PluginHost, line: []const u8) !void {
         if (!self.alive) return;
         const stdin_file = self.child.stdin orelse {
@@ -145,16 +172,29 @@ pub const PluginHost = struct {
     ) !?[]layout.Rect {
         if (!self.alive) return null;
         try self.readAvailableStdout();
+        var matched: ?[]layout.Rect = null;
+        try self.processBufferedLines(allocator, request_id, &matched);
+        return matched;
+    }
 
+    fn processBufferedLines(
+        self: *PluginHost,
+        allocator: std.mem.Allocator,
+        expected_request_id: ?u64,
+        matched: *?[]layout.Rect,
+    ) !void {
         while (std.mem.indexOfScalar(u8, self.read_buf.items, '\n')) |nl_idx| {
             const line = self.read_buf.items[0..nl_idx];
-            if (try self.parseLayoutResponseLine(allocator, request_id, line)) |rects| {
-                self.consumeReadBufPrefix(nl_idx + 1);
-                return rects;
+            if (expected_request_id) |request_id| {
+                if (try self.parseLayoutResponseLine(allocator, request_id, line)) |rects| {
+                    matched.* = rects;
+                }
+            }
+            if (self.parseActionLine(allocator, line)) |action| {
+                try self.pending_actions.append(self.allocator, action);
             }
             self.consumeReadBufPrefix(nl_idx + 1);
         }
-        return null;
     }
 
     fn parseLayoutResponseLine(
@@ -186,6 +226,39 @@ pub const PluginHost = struct {
             };
         }
         return rects;
+    }
+
+    fn parseActionLine(self: *PluginHost, allocator: std.mem.Allocator, line: []const u8) ?Action {
+        _ = self;
+        if (line.len == 0) return null;
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const parsed = std.json.parseFromSlice(ActionEnvelope, arena.allocator(), line, .{}) catch return null;
+        const envelope = parsed.value;
+        const action_name = envelope.action orelse return null;
+
+        if (std.mem.eql(u8, action_name, "cycle_layout")) return .cycle_layout;
+        if (std.mem.eql(u8, action_name, "set_layout")) {
+            const layout_name = envelope.layout orelse return null;
+            const layout_type = parseLayoutType(layout_name) orelse return null;
+            return .{ .set_layout = layout_type };
+        }
+        if (std.mem.eql(u8, action_name, "set_master_ratio_permille")) {
+            const value = envelope.value orelse return null;
+            return .{ .set_master_ratio_permille = value };
+        }
+        return null;
+    }
+
+    fn parseLayoutType(name: []const u8) ?layout.LayoutType {
+        if (std.mem.eql(u8, name, "vertical_stack")) return .vertical_stack;
+        if (std.mem.eql(u8, name, "horizontal_stack")) return .horizontal_stack;
+        if (std.mem.eql(u8, name, "grid")) return .grid;
+        if (std.mem.eql(u8, name, "paperwm")) return .paperwm;
+        if (std.mem.eql(u8, name, "fullscreen")) return .fullscreen;
+        return null;
     }
 
     fn readAvailableStdout(self: *PluginHost) !void {

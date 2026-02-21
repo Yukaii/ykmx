@@ -63,6 +63,12 @@ async function main() {
 
       if (typeof msg !== "object" || msg === null) continue;
       const ev = msg as Partial<ComputeLayoutEvent>;
+      if ((msg as any).event === "on_start") {
+        await Bun.stdout.write(
+          encoder.encode(JSON.stringify({ v: 1, action: "set_layout", layout: "paperwm" }) + "\n"),
+        );
+        continue;
+      }
       if (ev.event !== "on_compute_layout" || typeof ev.id !== "number" || !ev.params) continue;
 
       const rects = computePaperwm(ev.params);

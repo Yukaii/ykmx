@@ -140,4 +140,8 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 - Plugin may write to stdout:
   - `{"v":1,"id":N,"rects":[{"x":0,"y":0,"width":80,"height":24}, ...]}`
   - or `{"v":1,"id":N,"fallback":true}` to use native layout.
+- Plugin may also emit action messages (applied by ykwm runtime):
+  - `{"v":1,"action":"cycle_layout"}`
+  - `{"v":1,"action":"set_layout","layout":"paperwm"}`
+  - `{"v":1,"action":"set_master_ratio_permille","value":650}`
 - Plugin errors/crashes are isolated; ykwm continues running.
