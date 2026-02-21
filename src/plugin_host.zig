@@ -6,6 +6,8 @@ pub const PluginHost = struct {
     pub const RuntimeState = struct {
         layout: []const u8,
         window_count: usize,
+        minimized_window_count: usize,
+        visible_window_count: usize,
         focused_index: usize,
         has_focused_window: bool,
         tab_count: usize,
@@ -33,6 +35,27 @@ pub const PluginHost = struct {
         cycle_layout,
         set_layout: layout.LayoutType,
         set_master_ratio_permille: u16,
+        minimize_focused_window,
+        restore_all_minimized_windows,
+        move_focused_window_to_index: usize,
+        close_focused_window,
+    };
+
+    pub const PointerEvent = struct {
+        x: u16,
+        y: u16,
+        button: u16,
+        pressed: bool,
+        motion: bool,
+    };
+
+    pub const PointerHit = struct {
+        window_id: u32,
+        window_index: usize,
+        on_title_bar: bool,
+        on_minimize_button: bool,
+        on_maximize_button: bool,
+        on_close_button: bool,
     };
 
     allocator: std.mem.Allocator,
@@ -61,6 +84,7 @@ pub const PluginHost = struct {
         action: ?[]const u8 = null,
         layout: ?[]const u8 = null,
         value: ?u16 = null,
+        index: ?usize = null,
     };
 
     pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8) !PluginHost {
@@ -130,11 +154,13 @@ pub const PluginHost = struct {
         var buf: [512]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
-            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"focused_index\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"focused_index\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
             .{
                 reason,
                 state.layout,
                 state.window_count,
+                state.minimized_window_count,
+                state.visible_window_count,
                 state.focused_index,
                 state.has_focused_window,
                 state.tab_count,
@@ -157,7 +183,7 @@ pub const PluginHost = struct {
         var buf: [640]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
-            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"focused_index\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"focused_index\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
             .{
                 stats.reads,
                 stats.resized,
@@ -169,6 +195,8 @@ pub const PluginHost = struct {
                 stats.sigterm,
                 state.layout,
                 state.window_count,
+                state.minimized_window_count,
+                state.visible_window_count,
                 state.focused_index,
                 state.has_focused_window,
                 state.tab_count,
@@ -184,6 +212,23 @@ pub const PluginHost = struct {
                 state.screen.height,
             },
         );
+        try self.emitLine(line);
+    }
+
+    pub fn emitPointer(self: *PluginHost, pointer: PointerEvent, hit: ?PointerHit) !void {
+        var buf: [512]u8 = undefined;
+        const line = if (hit) |h|
+            try std.fmt.bufPrint(
+                &buf,
+                "{{\"v\":1,\"event\":\"on_pointer\",\"pointer\":{{\"x\":{},\"y\":{},\"button\":{},\"pressed\":{},\"motion\":{}}},\"hit\":{{\"window_id\":{},\"window_index\":{},\"on_title_bar\":{},\"on_minimize_button\":{},\"on_maximize_button\":{},\"on_close_button\":{}}}}}\n",
+                .{ pointer.x, pointer.y, pointer.button, pointer.pressed, pointer.motion, h.window_id, h.window_index, h.on_title_bar, h.on_minimize_button, h.on_maximize_button, h.on_close_button },
+            )
+        else
+            try std.fmt.bufPrint(
+                &buf,
+                "{{\"v\":1,\"event\":\"on_pointer\",\"pointer\":{{\"x\":{},\"y\":{},\"button\":{},\"pressed\":{},\"motion\":{}}}}}\n",
+                .{ pointer.x, pointer.y, pointer.button, pointer.pressed, pointer.motion },
+            );
         try self.emitLine(line);
     }
 
@@ -343,6 +388,13 @@ pub const PluginHost = struct {
             const value = envelope.value orelse return null;
             return .{ .set_master_ratio_permille = value };
         }
+        if (std.mem.eql(u8, action_name, "minimize_focused_window")) return .minimize_focused_window;
+        if (std.mem.eql(u8, action_name, "restore_all_minimized_windows")) return .restore_all_minimized_windows;
+        if (std.mem.eql(u8, action_name, "move_focused_window_to_index")) {
+            const idx = envelope.index orelse return null;
+            return .{ .move_focused_window_to_index = idx };
+        }
+        if (std.mem.eql(u8, action_name, "close_focused_window")) return .close_focused_window;
         return null;
     }
 

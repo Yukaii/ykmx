@@ -8,6 +8,15 @@ const popup_mod = @import("popup.zig");
 const scrollback_mod = @import("scrollback.zig");
 
 pub const Multiplexer = struct {
+    pub const WindowChromeHit = struct {
+        window_id: u32,
+        window_index: usize,
+        on_title_bar: bool,
+        on_minimize_button: bool,
+        on_maximize_button: bool,
+        on_close_button: bool,
+    };
+
     pub const MouseMode = enum {
         hybrid,
         passthrough,
@@ -566,12 +575,76 @@ pub const Multiplexer = struct {
         return self.workspace_mgr.focusedWindowIdActive();
     }
 
+    pub fn windowChromeHitAt(self: *Multiplexer, screen: layout.Rect, px: u16, py: u16) !?WindowChromeHit {
+        const rects = try self.computeActiveLayout(screen);
+        defer self.allocator.free(rects);
+
+        const tab = try self.workspace_mgr.activeTab();
+        const n = @min(rects.len, tab.windows.items.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const r = rects[i];
+            if (r.width < 2 or r.height < 2) continue;
+
+            const inside_x = px >= r.x and px < (r.x + r.width);
+            const inside_y = py >= r.y and py < (r.y + r.height);
+            if (!(inside_x and inside_y)) continue;
+
+            const on_title_bar = py == r.y and px > r.x and px < (r.x + r.width - 1);
+            const on_close_button = on_title_bar and r.width >= 4 and px == (r.x + r.width - 2);
+            const on_maximize_button = on_title_bar and r.width >= 7 and px == (r.x + r.width - 5);
+            const on_minimize_button = on_title_bar and r.width >= 10 and px == (r.x + r.width - 8);
+
+            return .{
+                .window_id = tab.windows.items[i].id,
+                .window_index = i,
+                .on_title_bar = on_title_bar,
+                .on_minimize_button = on_minimize_button,
+                .on_maximize_button = on_maximize_button,
+                .on_close_button = on_close_button,
+            };
+        }
+
+        return null;
+    }
+
     pub fn focusedPopupWindowId(self: *Multiplexer) ?u32 {
         return self.popup_mgr.focusedWindowId();
     }
 
     pub fn syncScrollEnabled(self: *const Multiplexer) bool {
         return self.sync_scroll_enabled;
+    }
+
+    pub fn minimizeFocusedWindow(self: *Multiplexer, screen: ?layout.Rect) !bool {
+        _ = self.workspace_mgr.minimizeFocusedWindowActive() catch |err| switch (err) {
+            error.NoFocusedWindow => return false,
+            else => return err,
+        };
+        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+        _ = try self.markActiveWindowsDirty();
+        self.requestRedraw();
+        return true;
+    }
+
+    pub fn restoreAllMinimizedWindows(self: *Multiplexer, screen: ?layout.Rect) !usize {
+        const restored = try self.workspace_mgr.restoreAllMinimizedActive();
+        if (restored == 0) return 0;
+        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+        _ = try self.markActiveWindowsDirty();
+        self.requestRedraw();
+        return restored;
+    }
+
+    pub fn moveFocusedWindowToIndex(self: *Multiplexer, target_index: usize, screen: ?layout.Rect) !bool {
+        self.workspace_mgr.moveFocusedWindowToIndexActive(target_index) catch |err| switch (err) {
+            error.NoFocusedWindow => return false,
+            else => return err,
+        };
+        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+        _ = try self.markActiveWindowsDirty();
+        self.requestRedraw();
+        return true;
     }
 
     pub fn windowScrollOffset(self: *Multiplexer, window_id: u32) ?usize {

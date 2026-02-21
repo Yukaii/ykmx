@@ -90,17 +90,44 @@ pub const WorkspaceManager = struct {
 
     pub fn computeActiveLayout(self: *WorkspaceManager, screen: layout.Rect) ![]layout.Rect {
         const tab = try self.activeTab();
-        const window_count: u16 = @intCast(tab.windows.items.len);
-        const focused_index: u16 = if (tab.focused_index) |i| @intCast(i) else 0;
-        return self.layout_engine.compute(self.allocator, .{
+        const total_count = tab.windows.items.len;
+        var rects = try self.allocator.alloc(layout.Rect, total_count);
+        @memset(rects, .{ .x = screen.x, .y = screen.y, .width = 0, .height = 0 });
+
+        var visible_indices = std.ArrayListUnmanaged(usize){};
+        defer visible_indices.deinit(self.allocator);
+        for (tab.windows.items, 0..) |w, i| {
+            if (!w.minimized) try visible_indices.append(self.allocator, i);
+        }
+        if (visible_indices.items.len == 0) return rects;
+
+        const focused_index_visible: u16 = blk: {
+            const focus = tab.focused_index orelse break :blk 0;
+            if (focus >= tab.windows.items.len or tab.windows.items[focus].minimized) break :blk 0;
+            var pos: u16 = 0;
+            for (visible_indices.items) |idx| {
+                if (idx == focus) break :blk pos;
+                pos += 1;
+            }
+            break :blk 0;
+        };
+
+        const visible_count_u16: u16 = @intCast(visible_indices.items.len);
+        const visible_rects = try self.layout_engine.compute(self.allocator, .{
             .layout = tab.layout_type,
             .screen = screen,
-            .window_count = window_count,
-            .focused_index = focused_index,
+            .window_count = visible_count_u16,
+            .focused_index = focused_index_visible,
             .master_count = tab.master_count,
             .master_ratio_permille = tab.master_ratio_permille,
             .gap = tab.gap,
         });
+        defer self.allocator.free(visible_rects);
+
+        for (visible_indices.items, 0..) |idx, vis_i| {
+            rects[idx] = visible_rects[vis_i];
+        }
+        return rects;
     }
 
     pub fn moveFocusedWindowToTab(self: *WorkspaceManager, destination_index: usize) !void {
@@ -277,6 +304,64 @@ pub const WorkspaceManager = struct {
         tab.master_count = if (count == 0) 1 else count;
     }
 
+    pub fn minimizeFocusedWindowActive(self: *WorkspaceManager) !u32 {
+        const tab = try self.activeTab();
+        const focus = tab.focused_index orelse return error.NoFocusedWindow;
+        if (focus >= tab.windows.items.len) return error.NoFocusedWindow;
+
+        tab.windows.items[focus].minimized = true;
+        const id = tab.windows.items[focus].id;
+
+        var next_focus: ?usize = null;
+        var i = focus + 1;
+        while (i < tab.windows.items.len) : (i += 1) {
+            if (!tab.windows.items[i].minimized) {
+                next_focus = i;
+                break;
+            }
+        }
+        if (next_focus == null and focus > 0) {
+            i = focus;
+            while (i > 0) {
+                i -= 1;
+                if (!tab.windows.items[i].minimized) {
+                    next_focus = i;
+                    break;
+                }
+            }
+        }
+        tab.focused_index = next_focus;
+        return id;
+    }
+
+    pub fn restoreAllMinimizedActive(self: *WorkspaceManager) !usize {
+        const tab = try self.activeTab();
+        var restored: usize = 0;
+        for (tab.windows.items) |*w| {
+            if (!w.minimized) continue;
+            w.minimized = false;
+            restored += 1;
+        }
+        if (tab.focused_index == null and tab.windows.items.len > 0) {
+            tab.focused_index = 0;
+        }
+        return restored;
+    }
+
+    pub fn moveFocusedWindowToIndexActive(self: *WorkspaceManager, dst_index: usize) !void {
+        const tab = try self.activeTab();
+        const focus = tab.focused_index orelse return error.NoFocusedWindow;
+        if (focus >= tab.windows.items.len) return error.NoFocusedWindow;
+        if (tab.windows.items.len == 0) return error.NoFocusedWindow;
+
+        const clamped_dst = @min(dst_index, tab.windows.items.len - 1);
+        if (focus == clamped_dst) return;
+
+        const moved = tab.windows.orderedRemove(focus);
+        try tab.windows.insert(self.allocator, clamped_dst, moved);
+        tab.focused_index = clamped_dst;
+    }
+
     pub fn closeActiveTab(self: *WorkspaceManager, allocator: std.mem.Allocator) ![]u32 {
         const idx = self.active_tab_index orelse return error.NoActiveTab;
         if (self.tabs.items.len <= 1) return error.CannotCloseLastTab;
@@ -415,4 +500,44 @@ test "workspace manager closes active tab and keeps another active" {
     try testing.expectEqual(@as(usize, 1), removed.len);
     try testing.expectEqual(@as(usize, 1), wm.tabCount());
     try testing.expectEqual(@as(usize, 0), wm.activeTabIndex().?);
+}
+
+test "workspace manager minimizes focused window and can restore all" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var wm = WorkspaceManager.init(testing.allocator, engine);
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    const a = try wm.addWindowToActive("a");
+    _ = try wm.addWindowToActive("b");
+
+    const min_id = try wm.minimizeFocusedWindowActive();
+    try testing.expectEqual(a, min_id);
+    try testing.expectEqual(@as(usize, 1), try wm.focusedWindowIndexActive());
+
+    const restored = try wm.restoreAllMinimizedActive();
+    try testing.expectEqual(@as(usize, 1), restored);
+}
+
+test "workspace manager moves focused window to target index" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var wm = WorkspaceManager.init(testing.allocator, engine);
+    defer wm.deinit();
+
+    _ = try wm.createTab("dev");
+    const a = try wm.addWindowToActive("a");
+    const b = try wm.addWindowToActive("b");
+    _ = b;
+    const c = try wm.addWindowToActive("c");
+    _ = c;
+
+    try wm.setFocusedWindowIndexActive(0);
+    try wm.moveFocusedWindowToIndexActive(2);
+    try testing.expectEqual(@as(usize, 2), try wm.focusedWindowIndexActive());
+    const tab = try wm.activeTab();
+    try testing.expectEqual(a, tab.windows.items[2].id);
 }

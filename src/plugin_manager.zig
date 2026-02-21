@@ -64,6 +64,12 @@ pub const PluginManager = struct {
         }
     }
 
+    pub fn emitPointer(self: *PluginManager, pointer: plugin_host.PluginHost.PointerEvent, hit: ?plugin_host.PluginHost.PointerHit) void {
+        for (self.hosts.items) |*host| {
+            _ = host.emitPointer(pointer, hit) catch {};
+        }
+    }
+
     pub fn drainActions(self: *PluginManager, allocator: std.mem.Allocator) ![]plugin_host.PluginHost.Action {
         var merged = std.ArrayListUnmanaged(plugin_host.PluginHost.Action){};
         errdefer merged.deinit(allocator);

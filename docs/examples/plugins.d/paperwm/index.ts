@@ -1,6 +1,5 @@
 import {
   isComputeLayoutEvent,
-  isStateChangedEvent,
   readEvents,
   writeAction,
   writeLayoutResponse,
@@ -37,9 +36,6 @@ async function main() {
     if (ev.event === "on_start") {
       await writeAction({ v: 1, action: "set_layout", layout: "paperwm" });
       continue;
-    }
-    if (isStateChangedEvent(ev) && ev.reason === "focus" && ev.state.has_focused_window) {
-      // Example of typed state event handling for plugin authors.
     }
     if (!isComputeLayoutEvent(ev)) continue;
 

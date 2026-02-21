@@ -276,6 +276,30 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             last_layout = current_layout;
         }
         if (plugins.hasAny()) {
+            if (mux.consumeLastMouseEvent()) |mouse| {
+                const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
+                const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
+                const hit = mux.windowChromeHitAt(content, px, py) catch null;
+                plugins.emitPointer(
+                    .{
+                        .x = px,
+                        .y = py,
+                        .button = mouse.button,
+                        .pressed = mouse.pressed,
+                        .motion = (mouse.button & 32) != 0,
+                    },
+                    if (hit) |h| .{
+                        .window_id = h.window_id,
+                        .window_index = h.window_index,
+                        .on_title_bar = h.on_title_bar,
+                        .on_minimize_button = h.on_minimize_button,
+                        .on_maximize_button = h.on_maximize_button,
+                        .on_close_button = h.on_close_button,
+                    } else null,
+                );
+            }
+        }
+        if (plugins.hasAny()) {
             const actions = plugins.drainActions(allocator) catch null;
             if (actions) |owned| {
                 defer allocator.free(owned);
@@ -336,7 +360,12 @@ fn collectPluginRuntimeState(
     screen: layout.Rect,
 ) !plugin_host.PluginHost.RuntimeState {
     const layout_type = try mux.workspace_mgr.activeLayoutType();
-    const window_count = try mux.workspace_mgr.activeWindowCount();
+    const tab = try mux.workspace_mgr.activeTab();
+    const window_count = tab.windows.items.len;
+    var minimized_count: usize = 0;
+    for (tab.windows.items) |w| {
+        if (w.minimized) minimized_count += 1;
+    }
     const focus_idx = mux.workspace_mgr.focusedWindowIndexActive() catch null;
     const master_count = try mux.workspace_mgr.activeMasterCount();
     const master_ratio = try mux.workspace_mgr.activeMasterRatioPermille();
@@ -345,6 +374,8 @@ fn collectPluginRuntimeState(
     return .{
         .layout = @tagName(layout_type),
         .window_count = window_count,
+        .minimized_window_count = minimized_count,
+        .visible_window_count = window_count - minimized_count,
         .focused_index = focus_idx orelse 0,
         .has_focused_window = focus_idx != null,
         .tab_count = mux.workspace_mgr.tabCount(),
@@ -364,6 +395,8 @@ fn pluginRuntimeStateEql(
 ) bool {
     return std.mem.eql(u8, a.layout, b.layout) and
         a.window_count == b.window_count and
+        a.minimized_window_count == b.minimized_window_count and
+        a.visible_window_count == b.visible_window_count and
         a.focused_index == b.focused_index and
         a.has_focused_window == b.has_focused_window and
         a.tab_count == b.tab_count and
@@ -382,6 +415,7 @@ fn detectStateChangeReason(
 ) []const u8 {
     if (!std.mem.eql(u8, prev.layout, next.layout)) return "layout";
     if (prev.window_count != next.window_count) return "window_count";
+    if (prev.minimized_window_count != next.minimized_window_count or prev.visible_window_count != next.visible_window_count) return "window_count";
     if (prev.focused_index != next.focused_index or prev.has_focused_window != next.has_focused_window) return "focus";
     if (prev.tab_count != next.tab_count or prev.active_tab_index != next.active_tab_index or prev.has_active_tab != next.has_active_tab) return "tab";
     if (prev.master_count != next.master_count or prev.master_ratio_permille != next.master_ratio_permille) return "master";
@@ -410,6 +444,23 @@ fn applyPluginAction(
         .set_master_ratio_permille => |value| {
             const clamped: u16 = @intCast(@max(@as(u32, 100), @min(@as(u32, 900), value)));
             try mux.workspace_mgr.setActiveMasterRatioPermille(clamped);
+            _ = try mux.resizeActiveWindowsToLayout(screen);
+            return true;
+        },
+        .minimize_focused_window => {
+            return try mux.minimizeFocusedWindow(screen);
+        },
+        .restore_all_minimized_windows => {
+            return (try mux.restoreAllMinimizedWindows(screen)) > 0;
+        },
+        .move_focused_window_to_index => |index| {
+            return try mux.moveFocusedWindowToIndex(index, screen);
+        },
+        .close_focused_window => {
+            _ = mux.closeFocusedWindow() catch |err| switch (err) {
+                error.NoFocusedWindow => return false,
+                else => return err,
+            };
             _ = try mux.resizeActiveWindowsToLayout(screen);
             return true;
         },
@@ -850,7 +901,14 @@ fn renderRuntimeFrame(
         if (inner_w == 0 or inner_h == 0) continue;
 
         const title = tab.windows.items[i].title;
-        drawText(canvas, total_cols, content_rows, inner_x, r.y, title, inner_w);
+        const controls = "[_][+][x]";
+        const controls_w: u16 = @intCast(controls.len);
+        const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
+        drawText(canvas, total_cols, content_rows, inner_x, r.y, title, title_max);
+        if (r.width >= 10) {
+            const controls_x: u16 = r.x + r.width - controls_w - 1;
+            drawText(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w);
+        }
 
         const window_id = tab.windows.items[i].id;
         const output = mux.windowOutput(window_id) catch "";

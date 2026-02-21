@@ -133,6 +133,8 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `<plugins_dir>/<plugin-name>/index.ts`
 - In this repository, the PaperWM example plugin lives at:
   - `docs/examples/plugins.d/paperwm/index.ts`
+- Desktop-like window controls + DnD example plugin lives at:
+  - `docs/examples/plugins.d/desktop-wm/index.ts`
 - Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
 - Type definitions for plugin authors: `docs/examples/plugins.d/paperwm/types.ts`.
@@ -142,6 +144,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"event":"on_layout_changed","layout":"..."}`
   - `{"v":1,"event":"on_state_changed","reason":"...","state":{...}}`
   - `{"v":1,"event":"on_tick","stats":{...},"state":{...}}`
+  - `{"v":1,"event":"on_pointer","pointer":{...},"hit":{...}}`
   - `{"v":1,"event":"on_shutdown"}`
 - `state` currently includes layout, window/focus info, tab info, master settings, mouse mode, sync-scroll flag, and current screen rect.
 - For plugin layout backend, ykwm also sends:
@@ -153,4 +156,16 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"cycle_layout"}`
   - `{"v":1,"action":"set_layout","layout":"paperwm"}`
   - `{"v":1,"action":"set_master_ratio_permille","value":650}`
+  - `{"v":1,"action":"minimize_focused_window"}`
+  - `{"v":1,"action":"restore_all_minimized_windows"}`
+  - `{"v":1,"action":"move_focused_window_to_index","index":1}`
+  - `{"v":1,"action":"close_focused_window"}`
 - Plugin errors/crashes are isolated; ykwm continues running.
+
+Desktop control buttons:
+
+- Pane title bar now draws `[_][+][x]` on the right.
+- Pointer hit payload reports which button was clicked:
+  - `on_minimize_button`
+  - `on_maximize_button`
+  - `on_close_button`
