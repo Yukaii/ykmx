@@ -3,6 +3,12 @@ const layout = @import("layout.zig");
 const posix = std.posix;
 
 pub const PluginHost = struct {
+    pub const UiBarsView = struct {
+        toolbar_line: []const u8,
+        tab_line: []const u8,
+        status_line: []const u8,
+    };
+
     pub const RuntimeState = struct {
         layout: []const u8,
         window_count: usize,
@@ -67,6 +73,8 @@ pub const PluginHost = struct {
     next_request_id: u64 = 1,
     read_buf: std.ArrayListUnmanaged(u8) = .{},
     pending_actions: std.ArrayListUnmanaged(Action) = .{},
+    ui_bars: ?UiBars = null,
+    ui_dirty: bool = false,
 
     const LayoutRect = struct {
         x: u16,
@@ -89,6 +97,15 @@ pub const PluginHost = struct {
         value: ?u16 = null,
         index: ?usize = null,
         window_id: ?u32 = null,
+        toolbar_line: ?[]const u8 = null,
+        tab_line: ?[]const u8 = null,
+        status_line: ?[]const u8 = null,
+    };
+
+    const UiBars = struct {
+        toolbar_line: []u8,
+        tab_line: []u8,
+        status_line: []u8,
     };
 
     pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8) !PluginHost {
@@ -117,6 +134,7 @@ pub const PluginHost = struct {
     pub fn deinit(self: *PluginHost) void {
         self.read_buf.deinit(self.allocator);
         self.pending_actions.deinit(self.allocator);
+        self.clearUiBars();
         if (self.alive) {
             _ = self.child.kill() catch {};
             self.alive = false;
@@ -234,6 +252,21 @@ pub const PluginHost = struct {
                 .{ pointer.x, pointer.y, pointer.button, pointer.pressed, pointer.motion },
             );
         try self.emitLine(line);
+    }
+
+    pub fn uiBars(self: *const PluginHost) ?UiBarsView {
+        const ui = self.ui_bars orelse return null;
+        return .{
+            .toolbar_line = ui.toolbar_line,
+            .tab_line = ui.tab_line,
+            .status_line = ui.status_line,
+        };
+    }
+
+    pub fn consumeUiDirty(self: *PluginHost) bool {
+        const dirty = self.ui_dirty;
+        self.ui_dirty = false;
+        return dirty;
     }
 
     pub fn requestLayout(
@@ -372,7 +405,6 @@ pub const PluginHost = struct {
     }
 
     fn parseActionLine(self: *PluginHost, allocator: std.mem.Allocator, line: []const u8) ?Action {
-        _ = self;
         if (line.len == 0) return null;
 
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -403,7 +435,38 @@ pub const PluginHost = struct {
             const window_id = envelope.window_id orelse return null;
             return .{ .restore_window_by_id = window_id };
         }
+        if (std.mem.eql(u8, action_name, "set_ui_bars")) {
+            const toolbar = envelope.toolbar_line orelse return null;
+            const tab = envelope.tab_line orelse return null;
+            const status = envelope.status_line orelse return null;
+            self.setUiBars(toolbar, tab, status) catch {};
+            return null;
+        }
+        if (std.mem.eql(u8, action_name, "clear_ui_bars")) {
+            self.clearUiBars();
+            self.ui_dirty = true;
+            return null;
+        }
         return null;
+    }
+
+    fn setUiBars(self: *PluginHost, toolbar: []const u8, tab: []const u8, status: []const u8) !void {
+        self.clearUiBars();
+        self.ui_bars = .{
+            .toolbar_line = try self.allocator.dupe(u8, toolbar),
+            .tab_line = try self.allocator.dupe(u8, tab),
+            .status_line = try self.allocator.dupe(u8, status),
+        };
+        self.ui_dirty = true;
+    }
+
+    fn clearUiBars(self: *PluginHost) void {
+        if (self.ui_bars) |bars| {
+            self.allocator.free(bars.toolbar_line);
+            self.allocator.free(bars.tab_line);
+            self.allocator.free(bars.status_line);
+            self.ui_bars = null;
+        }
     }
 
     fn parseLayoutType(name: []const u8) ?layout.LayoutType {

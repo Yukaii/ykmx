@@ -1,5 +1,12 @@
-import { isPointerEvent, isStateChangedEvent, readEvents, writeAction } from "./helpers";
-import type { LayoutType } from "./types";
+import { isPointerEvent, isStateChangedEvent, readEvents, writeAction, writeUiBars } from "./helpers";
+import type { LayoutType, RuntimeState } from "./types";
+
+function renderBars(state: RuntimeState): { toolbar: string; tab: string; status: string } {
+  const toolbar = `desk: minimized=${state.minimized_window_count} visible=${state.visible_window_count} windows=${state.window_count}`;
+  const tab = `tab:${state.active_tab_index + 1}/${state.tab_count} layout=${state.layout} focus=${state.has_focused_window ? state.focused_index + 1 : 0}`;
+  const status = `mouse=${state.mouse_mode} sync=${state.sync_scroll_enabled ? "on" : "off"} ratio=${state.master_ratio_permille} screen=${state.screen.width}x${state.screen.height}`;
+  return { toolbar, tab, status };
+}
 
 async function main() {
   let dragSourceIndex: number | null = null;
@@ -15,6 +22,8 @@ async function main() {
     if (isStateChangedEvent(ev)) {
       currentLayout = ev.state.layout;
       if (ev.state.layout !== "fullscreen") lastNonFullscreenLayout = ev.state.layout;
+      const bars = renderBars(ev.state);
+      await writeUiBars(bars.toolbar, bars.tab, bars.status);
       continue;
     }
     if (!isPointerEvent(ev)) continue;

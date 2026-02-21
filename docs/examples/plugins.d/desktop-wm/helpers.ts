@@ -36,6 +36,18 @@ export async function writeAction(msg: ActionMessage): Promise<void> {
   await writeOutput(msg);
 }
 
+export async function writeUiBars(
+  toolbar_line: string,
+  tab_line: string,
+  status_line: string,
+): Promise<void> {
+  await writeAction({ v: 1, action: "set_ui_bars", toolbar_line, tab_line, status_line });
+}
+
+export async function clearUiBars(): Promise<void> {
+  await writeAction({ v: 1, action: "clear_ui_bars" });
+}
+
 export async function writeLayoutResponse(
   id: number,
   rects: Rect[],

@@ -1396,6 +1396,14 @@ pub const Multiplexer = struct {
         const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
         const target_has_tracking = self.currentMouseForwardTargetHasTracking();
 
+        // Never forward pointer events outside the tiled content area
+        // (e.g. plugin-rendered toolbars/tabs/status lines).
+        if (!pointInRect(px, py, screen)) {
+            self.hybrid_forward_click_active = false;
+            if (!mouse.pressed) self.drag_state.axis = .none;
+            return true;
+        }
+
         if (!mouse.pressed) {
             if (self.drag_state.axis != .none) {
                 self.drag_state.axis = .none;
@@ -1415,8 +1423,6 @@ pub const Multiplexer = struct {
         }
         if (motion) return !target_has_tracking;
         if (mouse.button != 0) return !target_has_tracking;
-
-        if (!pointInRect(px, py, screen)) return true;
 
         if (try self.hitDividerForVerticalStack(screen, px, py)) {
             self.drag_state.axis = .vertical;

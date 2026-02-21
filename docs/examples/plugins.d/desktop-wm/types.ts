@@ -116,7 +116,9 @@ export type ActionMessage =
   | { v: 1; action: "restore_all_minimized_windows" }
   | { v: 1; action: "move_focused_window_to_index"; index: number }
   | { v: 1; action: "close_focused_window" }
-  | { v: 1; action: "restore_window_by_id"; window_id: number };
+  | { v: 1; action: "restore_window_by_id"; window_id: number }
+  | { v: 1; action: "set_ui_bars"; toolbar_line: string; tab_line: string; status_line: string }
+  | { v: 1; action: "clear_ui_bars" };
 
 export type LayoutResponseMessage =
   | { v: 1; id: number; rects: Rect[] }

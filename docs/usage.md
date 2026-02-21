@@ -160,6 +160,9 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"restore_all_minimized_windows"}`
   - `{"v":1,"action":"move_focused_window_to_index","index":1}`
   - `{"v":1,"action":"close_focused_window"}`
+  - `{"v":1,"action":"restore_window_by_id","window_id":123}`
+  - `{"v":1,"action":"set_ui_bars","toolbar_line":"...","tab_line":"...","status_line":"..."}`
+  - `{"v":1,"action":"clear_ui_bars"}`
 - Plugin errors/crashes are isolated; ykwm continues running.
 
 Desktop control buttons:

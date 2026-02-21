@@ -70,6 +70,22 @@ pub const PluginManager = struct {
         }
     }
 
+    pub fn uiBars(self: *PluginManager) ?plugin_host.PluginHost.UiBarsView {
+        var selected: ?plugin_host.PluginHost.UiBarsView = null;
+        for (self.hosts.items) |*host| {
+            if (host.uiBars()) |ui| selected = ui;
+        }
+        return selected;
+    }
+
+    pub fn consumeUiDirtyAny(self: *PluginManager) bool {
+        var dirty = false;
+        for (self.hosts.items) |*host| {
+            dirty = host.consumeUiDirty() or dirty;
+        }
+        return dirty;
+    }
+
     pub fn drainActions(self: *PluginManager, allocator: std.mem.Allocator) ![]plugin_host.PluginHost.Action {
         var merged = std.ArrayListUnmanaged(plugin_host.PluginHost.Action){};
         errdefer merged.deinit(allocator);

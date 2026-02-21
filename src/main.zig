@@ -321,6 +321,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                 }
                 if (changed) force_redraw = true;
             }
+            if (plugins.consumeUiDirtyAny()) force_redraw = true;
         }
 
         const current_plugin_state = try collectPluginRuntimeState(&mux, content);
@@ -359,7 +360,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
         if (snap.sigwinch) force_redraw = true;
         if (force_redraw or tick_result.redraw) {
-            try renderRuntimeFrame(out, allocator, &mux, &vt_state, &frame_cache, size, content);
+            try renderRuntimeFrame(out, allocator, &mux, &vt_state, &frame_cache, size, content, if (plugins.hasAny()) plugins.uiBars() else null);
             try out.flush();
             force_redraw = false;
         }
@@ -879,6 +880,7 @@ fn renderRuntimeFrame(
     frame_cache: *RuntimeFrameCache,
     size: RuntimeSize,
     content: layout.Rect,
+    plugin_ui_bars: ?plugin_host.PluginHost.UiBarsView,
 ) !void {
     const total_cols: usize = size.cols;
     const content_rows: usize = content.height;
@@ -1053,17 +1055,36 @@ fn renderRuntimeFrame(
     defer allocator.free(live_ids);
     try vt_state.prune(live_ids);
 
-    const tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
-    defer allocator.free(tab_line);
-    const minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
-    defer allocator.free(minimized_line);
-    const status_line = try status.renderStatusBarWithScrollAndSync(
-        allocator,
-        &mux.workspace_mgr,
-        mux.focusedScrollOffset(),
-        mux.syncScrollEnabled(),
-    );
-    defer allocator.free(status_line);
+    var owned_minimized_line: ?[]u8 = null;
+    defer if (owned_minimized_line) |line| allocator.free(line);
+    var owned_tab_line: ?[]u8 = null;
+    defer if (owned_tab_line) |line| allocator.free(line);
+    var owned_status_line: ?[]u8 = null;
+    defer if (owned_status_line) |line| allocator.free(line);
+
+    const minimized_line: []const u8 = if (plugin_ui_bars) |ui|
+        ui.toolbar_line
+    else blk: {
+        owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
+        break :blk owned_minimized_line.?;
+    };
+    const tab_line: []const u8 = if (plugin_ui_bars) |ui|
+        ui.tab_line
+    else blk: {
+        owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
+        break :blk owned_tab_line.?;
+    };
+    const status_line: []const u8 = if (plugin_ui_bars) |ui|
+        ui.status_line
+    else blk: {
+        owned_status_line = try status.renderStatusBarWithScrollAndSync(
+            allocator,
+            &mux.workspace_mgr,
+            mux.focusedScrollOffset(),
+            mux.syncScrollEnabled(),
+        );
+        break :blk owned_status_line.?;
+    };
 
     const resized = try frame_cache.ensureSize(total_cols, total_rows);
     if (resized) try writeAllBlocking(out, "\x1b[2J");
