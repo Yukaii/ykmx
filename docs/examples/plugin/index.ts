@@ -1,21 +1,6 @@
-type Rect = { x: number; y: number; width: number; height: number };
+import type { OnComputeLayoutEvent, PluginEvent, PluginOutput, Rect } from "./types";
 
-type ComputeLayoutEvent = {
-  v: 1;
-  id: number;
-  event: "on_compute_layout";
-  params: {
-    layout: string;
-    screen: Rect;
-    window_count: number;
-    focused_index: number;
-    master_count: number;
-    master_ratio_permille: number;
-    gap: number;
-  };
-};
-
-function computePaperwm(params: ComputeLayoutEvent["params"]): Rect[] {
+function computePaperwm(params: OnComputeLayoutEvent["params"]): Rect[] {
   const { screen, window_count, focused_index, master_ratio_permille, gap } = params;
   if (window_count <= 0) return [];
 
@@ -62,18 +47,22 @@ async function main() {
       }
 
       if (typeof msg !== "object" || msg === null) continue;
-      const ev = msg as Partial<ComputeLayoutEvent>;
-      if ((msg as any).event === "on_start") {
+      const ev = msg as PluginEvent;
+      if (ev.event === "on_start") {
+        const setLayout: PluginOutput = { v: 1, action: "set_layout", layout: "paperwm" };
         await Bun.stdout.write(
-          encoder.encode(JSON.stringify({ v: 1, action: "set_layout", layout: "paperwm" }) + "\n"),
+          encoder.encode(JSON.stringify(setLayout) + "\n"),
         );
         continue;
       }
-      if (ev.event !== "on_compute_layout" || typeof ev.id !== "number" || !ev.params) continue;
+      if (ev.event === "on_state_changed" && ev.reason === "focus" && ev.state.has_focused_window) {
+        // Example of typed state event handling for plugin authors.
+      }
+      if (ev.event !== "on_compute_layout") continue;
 
       const rects = computePaperwm(ev.params);
-      const response = JSON.stringify({ v: 1, id: ev.id, rects }) + "\n";
-      await Bun.stdout.write(encoder.encode(response));
+      const response: PluginOutput = { v: 1, id: ev.id, rects };
+      await Bun.stdout.write(encoder.encode(JSON.stringify(response) + "\n"));
     }
   }
 }

@@ -131,10 +131,14 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 - Enable with `plugins_enabled=true` and `plugin_dir=/abs/path/to/plugins`.
 - Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
+- Type definitions for plugin authors: `docs/examples/plugin/types.ts`.
 - Current stdin hook protocol is NDJSON events:
   - `{"v":1,"event":"on_start","layout":"..."}`
   - `{"v":1,"event":"on_layout_changed","layout":"..."}`
+  - `{"v":1,"event":"on_state_changed","reason":"...","state":{...}}`
+  - `{"v":1,"event":"on_tick","stats":{...},"state":{...}}`
   - `{"v":1,"event":"on_shutdown"}`
+- `state` currently includes layout, window/focus info, tab info, master settings, mouse mode, sync-scroll flag, and current screen rect.
 - For plugin layout backend, ykwm also sends:
   - `{"v":1,"id":N,"event":"on_compute_layout","params":{...}}`
 - Plugin may write to stdout:

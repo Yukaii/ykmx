@@ -3,6 +3,32 @@ const layout = @import("layout.zig");
 const posix = std.posix;
 
 pub const PluginHost = struct {
+    pub const RuntimeState = struct {
+        layout: []const u8,
+        window_count: usize,
+        focused_index: usize,
+        has_focused_window: bool,
+        tab_count: usize,
+        active_tab_index: usize,
+        has_active_tab: bool,
+        master_count: u16,
+        master_ratio_permille: u16,
+        mouse_mode: []const u8,
+        sync_scroll_enabled: bool,
+        screen: layout.Rect,
+    };
+
+    pub const TickStats = struct {
+        reads: usize,
+        resized: usize,
+        popup_updates: usize,
+        redraw: bool,
+        detach_requested: bool,
+        sigwinch: bool,
+        sighup: bool,
+        sigterm: bool,
+    };
+
     pub const Action = union(enum) {
         cycle_layout,
         set_layout: layout.LayoutType,
@@ -94,6 +120,71 @@ pub const PluginHost = struct {
 
     pub fn emitShutdown(self: *PluginHost) !void {
         try self.emitLine("{\"v\":1,\"event\":\"on_shutdown\"}\n");
+    }
+
+    pub fn emitStateChanged(
+        self: *PluginHost,
+        reason: []const u8,
+        state: RuntimeState,
+    ) !void {
+        var buf: [512]u8 = undefined;
+        const line = try std.fmt.bufPrint(
+            &buf,
+            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"focused_index\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            .{
+                reason,
+                state.layout,
+                state.window_count,
+                state.focused_index,
+                state.has_focused_window,
+                state.tab_count,
+                state.active_tab_index,
+                state.has_active_tab,
+                state.master_count,
+                state.master_ratio_permille,
+                state.mouse_mode,
+                state.sync_scroll_enabled,
+                state.screen.x,
+                state.screen.y,
+                state.screen.width,
+                state.screen.height,
+            },
+        );
+        try self.emitLine(line);
+    }
+
+    pub fn emitTick(self: *PluginHost, stats: TickStats, state: RuntimeState) !void {
+        var buf: [640]u8 = undefined;
+        const line = try std.fmt.bufPrint(
+            &buf,
+            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"focused_index\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            .{
+                stats.reads,
+                stats.resized,
+                stats.popup_updates,
+                stats.redraw,
+                stats.detach_requested,
+                stats.sigwinch,
+                stats.sighup,
+                stats.sigterm,
+                state.layout,
+                state.window_count,
+                state.focused_index,
+                state.has_focused_window,
+                state.tab_count,
+                state.active_tab_index,
+                state.has_active_tab,
+                state.master_count,
+                state.master_ratio_permille,
+                state.mouse_mode,
+                state.sync_scroll_enabled,
+                state.screen.x,
+                state.screen.y,
+                state.screen.width,
+                state.screen.height,
+            },
+        );
+        try self.emitLine(line);
     }
 
     pub fn requestLayout(

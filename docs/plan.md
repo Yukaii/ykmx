@@ -730,6 +730,54 @@ Initial focus is core stability (PTY, layout, rendering, tabs, zmx integration).
 - Optional in-process fast path only for trusted/built-in plugins
 - Hot-reload for development; cold-restart for production by default
 
+### Plugin Roadmap (next)
+
+#### Phase P1: Typed Developer Experience (next immediate)
+
+- [ ] Publish `@ykwm/plugin-sdk` package (or in-repo module export) from `docs/examples/plugin/types.ts`.
+- [ ] Add event/action type guards and helpers:
+  - `isComputeLayoutEvent`
+  - `isStateChangedEvent`
+  - `isTickEvent`
+  - `writeAction`
+  - `writeLayoutResponse`
+- [ ] Add protocol version constant and compatibility helpers (`v1` validation).
+- [ ] Add example plugin test harness that replays recorded NDJSON events.
+
+#### Phase P2: Multi-Plugin Runtime
+
+- [ ] Add `plugins_dir` config for loading multiple plugins.
+- [ ] Add per-plugin directory convention:
+  - `<plugins_dir>/<plugin-name>/index.ts`
+  - `<plugins_dir>/<plugin-name>/plugin.toml`
+- [ ] Add plugin manifest fields:
+  - `name`
+  - `version`
+  - `enabled`
+  - `order`
+  - `capabilities`
+- [ ] Implement deterministic load order and fan-out dispatch.
+- [ ] Define action conflict policy (first-wins / last-wins / priority-based).
+
+#### Phase P3: Capability and Isolation Hardening
+
+- [ ] Enforce capability allowlist at runtime (`layout`, `actions`, `fs`, `network`, `pty`).
+- [ ] Add per-plugin timeout budgets for layout and action handling.
+- [ ] Add per-plugin circuit breaker (disable on repeated failures).
+- [ ] Add structured plugin health/status in status bar and logs.
+
+#### Phase P4: Operational Tooling
+
+- [ ] Add CLI commands:
+  - `ykwm --plugins-list`
+  - `ykwm --plugin-doctor`
+  - `ykwm --plugin-disable <name>`
+- [ ] Add development mode hot-reload per plugin.
+- [ ] Add integration tests for:
+  - multi-plugin startup
+  - mixed layout/action plugin interactions
+  - fallback correctness under plugin crash/timeout
+
 ## Technical Decisions
 
 ### Language: Zig

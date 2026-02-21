@@ -237,6 +237,10 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     var last_size = getTerminalSize();
     var last_content = contentRect(last_size);
     _ = mux.resizeActiveWindowsToLayout(last_content) catch {};
+    var last_plugin_state = try collectPluginRuntimeState(&mux, last_content);
+    if (plugins) |*host| {
+        _ = host.emitStateChanged("start", last_plugin_state) catch {};
+    }
 
     var buf: [256]u8 = undefined;
     var w = std.fs.File.stdout().writer(&buf);
@@ -293,6 +297,31 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             }
         }
 
+        const current_plugin_state = try collectPluginRuntimeState(&mux, content);
+        if (plugins) |*host| {
+            if (!pluginRuntimeStateEql(last_plugin_state, current_plugin_state)) {
+                const reason = detectStateChangeReason(last_plugin_state, current_plugin_state);
+                _ = host.emitStateChanged(reason, current_plugin_state) catch {};
+                last_plugin_state = current_plugin_state;
+            }
+
+            const should_emit_tick = tick_result.reads > 0 or tick_result.resized > 0 or tick_result.popup_updates > 0 or tick_result.redraw or tick_result.detach_requested or snap.sigwinch or snap.sighup or snap.sigterm;
+            if (should_emit_tick) {
+                _ = host.emitTick(.{
+                    .reads = tick_result.reads,
+                    .resized = tick_result.resized,
+                    .popup_updates = tick_result.popup_updates,
+                    .redraw = tick_result.redraw,
+                    .detach_requested = tick_result.detach_requested,
+                    .sigwinch = snap.sigwinch,
+                    .sighup = snap.sighup,
+                    .sigterm = snap.sigterm,
+                }, current_plugin_state) catch {};
+            }
+        } else {
+            last_plugin_state = current_plugin_state;
+        }
+
         // Keep known VT instances warm even when their tab is inactive.
         // This amortizes parse work and reduces tab-switch spikes for long buffers.
         try warmKnownDirtyWindowVtState(allocator, &mux, &vt_state);
@@ -309,6 +338,66 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             force_redraw = false;
         }
     }
+}
+
+fn collectPluginRuntimeState(
+    mux: *multiplexer.Multiplexer,
+    screen: layout.Rect,
+) !plugin_host.PluginHost.RuntimeState {
+    const layout_type = try mux.workspace_mgr.activeLayoutType();
+    const window_count = try mux.workspace_mgr.activeWindowCount();
+    const focus_idx = mux.workspace_mgr.focusedWindowIndexActive() catch null;
+    const master_count = try mux.workspace_mgr.activeMasterCount();
+    const master_ratio = try mux.workspace_mgr.activeMasterRatioPermille();
+    const active_tab_idx = mux.workspace_mgr.activeTabIndex();
+
+    return .{
+        .layout = @tagName(layout_type),
+        .window_count = window_count,
+        .focused_index = focus_idx orelse 0,
+        .has_focused_window = focus_idx != null,
+        .tab_count = mux.workspace_mgr.tabCount(),
+        .active_tab_index = active_tab_idx orelse 0,
+        .has_active_tab = active_tab_idx != null,
+        .master_count = master_count,
+        .master_ratio_permille = master_ratio,
+        .mouse_mode = @tagName(mux.mouseMode()),
+        .sync_scroll_enabled = mux.syncScrollEnabled(),
+        .screen = screen,
+    };
+}
+
+fn pluginRuntimeStateEql(
+    a: plugin_host.PluginHost.RuntimeState,
+    b: plugin_host.PluginHost.RuntimeState,
+) bool {
+    return std.mem.eql(u8, a.layout, b.layout) and
+        a.window_count == b.window_count and
+        a.focused_index == b.focused_index and
+        a.has_focused_window == b.has_focused_window and
+        a.tab_count == b.tab_count and
+        a.active_tab_index == b.active_tab_index and
+        a.has_active_tab == b.has_active_tab and
+        a.master_count == b.master_count and
+        a.master_ratio_permille == b.master_ratio_permille and
+        std.mem.eql(u8, a.mouse_mode, b.mouse_mode) and
+        a.sync_scroll_enabled == b.sync_scroll_enabled and
+        std.meta.eql(a.screen, b.screen);
+}
+
+fn detectStateChangeReason(
+    prev: plugin_host.PluginHost.RuntimeState,
+    next: plugin_host.PluginHost.RuntimeState,
+) []const u8 {
+    if (!std.mem.eql(u8, prev.layout, next.layout)) return "layout";
+    if (prev.window_count != next.window_count) return "window_count";
+    if (prev.focused_index != next.focused_index or prev.has_focused_window != next.has_focused_window) return "focus";
+    if (prev.tab_count != next.tab_count or prev.active_tab_index != next.active_tab_index or prev.has_active_tab != next.has_active_tab) return "tab";
+    if (prev.master_count != next.master_count or prev.master_ratio_permille != next.master_ratio_permille) return "master";
+    if (!std.mem.eql(u8, prev.mouse_mode, next.mouse_mode)) return "mouse_mode";
+    if (prev.sync_scroll_enabled != next.sync_scroll_enabled) return "sync_scroll";
+    if (!std.meta.eql(prev.screen, next.screen)) return "screen";
+    return "state";
 }
 
 fn applyPluginAction(
