@@ -97,9 +97,20 @@ Scrollback navigation mode (while scrolled up):
 
 - `k` scroll up by 1 line
 - `j` scroll down by 1 line
+- `h` / `l` move selection cursor left/right
+- `0` move selection cursor to line start
+- `$` move selection cursor to line end
 - `Ctrl+u` page up
 - `Ctrl+d` page down
+- `g` jump to top of scrollback
+- `G` jump to bottom (live view)
+- `/` start search query, then press Enter
+- `n` repeat last search direction
+- `N` repeat last search in opposite direction
+- `q` or `Esc` exit scrollback view (jump to bottom)
 - non-prefixed input is consumed (not sent to app PTY) until you return to bottom
+
+When sync scroll is enabled, navigation controls are accepted immediately (even at `scroll=+0`).
 
 ## Mouse
 

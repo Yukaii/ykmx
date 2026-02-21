@@ -22,6 +22,7 @@ const c = @cImport({
 
 const POC_ROWS: u16 = 12;
 const POC_COLS: u16 = 36;
+const RUNTIME_VT_MAX_SCROLLBACK: usize = 20_000;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -429,7 +430,9 @@ const RuntimeVtState = struct {
                 .term = try Terminal.init(self.allocator, .{
                     .rows = safe_rows,
                     .cols = safe_cols,
-                    .max_scrollback = 5000,
+                    // Keep VT history deeper than logical scrollback so
+                    // styled rendering stays available through normal scrollback.
+                    .max_scrollback = RUNTIME_VT_MAX_SCROLLBACK,
                 }),
                 .consumed_bytes = 0,
                 .cols = safe_cols,
@@ -674,13 +677,24 @@ fn renderRuntimeFrame(
         pane_count += 1;
 
         if (tab.focused_index == i) {
-            const cursor = wv.term.screens.active.cursor;
-            const cx: usize = @min(@as(usize, @intCast(cursor.x)), @as(usize, inner_w - 1));
-            const cy: usize = @min(@as(usize, @intCast(cursor.y)), @as(usize, inner_h - 1));
-            focused_cursor_abs = .{
-                .row = @as(usize, inner_y) + cy + 1,
-                .col = @as(usize, inner_x) + cx + 1,
-            };
+            if (pane_scroll_offset > 0) {
+                // In scrollback view, render a local selection cursor anchor
+                // instead of the live app cursor.
+                const sel_x = @min(mux.selectionCursorX(window_id), @as(usize, inner_w - 1));
+                const sel_y = @min(mux.selectionCursorY(window_id, inner_h), @as(usize, inner_h - 1));
+                focused_cursor_abs = .{
+                    .row = @as(usize, inner_y) + sel_y + 1,
+                    .col = @as(usize, inner_x) + sel_x + 1,
+                };
+            } else {
+                const cursor = wv.term.screens.active.cursor;
+                const cx: usize = @min(@as(usize, @intCast(cursor.x)), @as(usize, inner_w - 1));
+                const cy: usize = @min(@as(usize, @intCast(cursor.y)), @as(usize, inner_h - 1));
+                focused_cursor_abs = .{
+                    .row = @as(usize, inner_y) + cy + 1,
+                    .col = @as(usize, inner_x) + cx + 1,
+                };
+            }
         }
     }
 
@@ -1158,6 +1172,38 @@ fn paneCellAt(
         const pages = pane.term.screens.active.pages;
         const total_rows: usize = pages.total_rows;
         const active_rows: usize = pages.rows;
+        const vt_max_off: usize = if (total_rows > active_rows) total_rows - active_rows else 0;
+        // If requested offset is deeper than VT can address, fall back to
+        // line-based scrollback (plain text, no VT styling) for stable deep history.
+        if (pane.scroll_offset > vt_max_off) {
+            if (pane.scrollback) |sb| {
+                const lines = sb.lines.items;
+                if (lines.len > 0) {
+                    const view_rows: usize = pane.content_h;
+                    const off = @min(pane.scroll_offset, lines.len);
+                    const start = if (lines.len > view_rows + off)
+                        lines.len - view_rows - off
+                    else
+                        0;
+                    const idx = start + local_y;
+                    if (idx < lines.len) {
+                        const line = lines[idx];
+                        const ch: u8 = if (local_x < line.len) line[local_x] else ' ';
+                        return .{
+                            .text = [_]u8{ ch } ++ ([_]u8{0} ** 31),
+                            .text_len = 1,
+                            .style = .{},
+                        };
+                    }
+                }
+            }
+            return .{
+                .text = [_]u8{ ' ' } ++ ([_]u8{0} ** 31),
+                .text_len = 1,
+                .style = .{},
+            };
+        }
+
         const off = @min(pane.scroll_offset, total_rows);
         const start_screen_row: usize = if (total_rows > active_rows + off)
             total_rows - active_rows - off

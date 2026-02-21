@@ -45,6 +45,8 @@ pub const Multiplexer = struct {
     ptys: std.AutoHashMapUnmanaged(u32, pty_mod.Pty) = .{},
     stdout_buffers: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u8)) = .{},
     scrollbacks: std.AutoHashMapUnmanaged(u32, scrollback_mod.ScrollbackBuffer) = .{},
+    selection_cursor_x: std.AutoHashMapUnmanaged(u32, usize) = .{},
+    selection_cursor_y: std.AutoHashMapUnmanaged(u32, usize) = .{},
     dirty_windows: std.AutoHashMapUnmanaged(u32, void) = .{},
     da_parse_states: std.AutoHashMapUnmanaged(u32, DaParseState) = .{},
     mouse_tracking_enabled: std.AutoHashMapUnmanaged(u32, void) = .{},
@@ -52,6 +54,12 @@ pub const Multiplexer = struct {
     detach_requested: bool = false,
     sync_scroll_enabled: bool = false,
     sync_scroll_source_window_id: ?u32 = null,
+    scrollback_query_mode: bool = false,
+    scrollback_query_len: u16 = 0,
+    scrollback_query_buf: [256]u8 = [_]u8{0} ** 256,
+    scrollback_last_query_len: u16 = 0,
+    scrollback_last_query_buf: [256]u8 = [_]u8{0} ** 256,
+    scrollback_last_direction: scrollback_mod.SearchDirection = .backward,
     last_mouse_event: ?input_mod.MouseEvent = null,
     drag_state: DragState = .{},
     hybrid_forward_click_active: bool = false,
@@ -102,6 +110,8 @@ pub const Multiplexer = struct {
             entry.value_ptr.deinit();
         }
         self.scrollbacks.deinit(self.allocator);
+        self.selection_cursor_x.deinit(self.allocator);
+        self.selection_cursor_y.deinit(self.allocator);
         self.dirty_windows.deinit(self.allocator);
         self.da_parse_states.deinit(self.allocator);
         self.mouse_tracking_enabled.deinit(self.allocator);
@@ -143,6 +153,8 @@ pub const Multiplexer = struct {
         try self.ptys.put(self.allocator, id, p);
         try self.stdout_buffers.put(self.allocator, id, .{});
         try self.scrollbacks.put(self.allocator, id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 10_000));
+        try self.selection_cursor_x.put(self.allocator, id, 0);
+        try self.selection_cursor_y.put(self.allocator, id, 0);
         try self.da_parse_states.put(self.allocator, id, .idle);
         _ = self.mouse_tracking_enabled.fetchRemove(id);
         return id;
@@ -156,6 +168,8 @@ pub const Multiplexer = struct {
         try self.ptys.put(self.allocator, id, p);
         try self.stdout_buffers.put(self.allocator, id, .{});
         try self.scrollbacks.put(self.allocator, id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 10_000));
+        try self.selection_cursor_x.put(self.allocator, id, 0);
+        try self.selection_cursor_y.put(self.allocator, id, 0);
         try self.da_parse_states.put(self.allocator, id, .idle);
         _ = self.mouse_tracking_enabled.fetchRemove(id);
         return id;
@@ -189,6 +203,7 @@ pub const Multiplexer = struct {
             const ev = self.input_router.feedByte(b);
             switch (ev) {
                 .forward => |c| {
+                    if (self.handleScrollbackQueryByte(c, screen)) continue;
                     if (self.handleScrollbackNavForwardByte(c, screen)) continue;
                     var tmp = [_]u8{c};
                     if (self.popup_mgr.hasModalOpen()) {
@@ -204,6 +219,7 @@ pub const Multiplexer = struct {
                     }
                 },
                 .forward_sequence => |seq| {
+                    if (self.handleScrollbackQuerySequence(seq.slice(), screen)) continue;
                     var consumed_mouse = false;
                     if (screen) |s| {
                         if (seq.mouse) |mouse| {
@@ -563,6 +579,17 @@ pub const Multiplexer = struct {
         return sb.scroll_offset;
     }
 
+    pub fn selectionCursorX(self: *Multiplexer, window_id: u32) usize {
+        return self.selection_cursor_x.get(window_id) orelse 0;
+    }
+
+    pub fn selectionCursorY(self: *Multiplexer, window_id: u32, view_rows: usize) usize {
+        if (view_rows == 0) return 0;
+        const fallback = view_rows - 1;
+        const y = self.selection_cursor_y.get(window_id) orelse fallback;
+        return @min(y, fallback);
+    }
+
     pub fn scrollbackBuffer(self: *Multiplexer, window_id: u32) ?*const scrollback_mod.ScrollbackBuffer {
         return self.scrollbacks.getPtr(window_id);
     }
@@ -647,22 +674,183 @@ pub const Multiplexer = struct {
         return sb.scroll_offset > 0;
     }
 
+    fn scrollNavArmed(self: *Multiplexer) bool {
+        return self.sync_scroll_enabled or self.isFocusedScrolledBack();
+    }
+
+    fn handleScrollbackQueryByte(
+        self: *Multiplexer,
+        b: u8,
+        screen: ?layout.Rect,
+    ) bool {
+        if (!self.scrollback_query_mode) return false;
+        switch (b) {
+            '\r', '\n' => {
+                self.scrollback_query_mode = false;
+                if (self.scrollback_query_len > 0) {
+                    self.scrollback_last_query_len = self.scrollback_query_len;
+                    @memcpy(
+                        self.scrollback_last_query_buf[0..self.scrollback_last_query_len],
+                        self.scrollback_query_buf[0..self.scrollback_query_len],
+                    );
+                    self.scrollback_last_direction = .backward;
+                    _ = self.searchFocusedScrollback(self.scrollback_last_query_buf[0..self.scrollback_last_query_len], .backward);
+                    if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(screen) catch {};
+                }
+                self.requestRedraw();
+            },
+            0x7f => { // backspace
+                if (self.scrollback_query_len > 0) self.scrollback_query_len -= 1;
+                self.requestRedraw();
+            },
+            0x03 => { // Ctrl+C cancel
+                self.scrollback_query_mode = false;
+                self.scrollback_query_len = 0;
+                self.requestRedraw();
+            },
+            else => {
+                if (b >= 0x20 and b <= 0x7e and self.scrollback_query_len < self.scrollback_query_buf.len) {
+                    self.scrollback_query_buf[self.scrollback_query_len] = b;
+                    self.scrollback_query_len += 1;
+                    self.requestRedraw();
+                }
+            },
+        }
+        return true;
+    }
+
+    fn handleScrollbackQuerySequence(
+        self: *Multiplexer,
+        seq: []const u8,
+        screen: ?layout.Rect,
+    ) bool {
+        _ = screen;
+        if (!self.scrollback_query_mode) return false;
+        if (std.mem.eql(u8, seq, "\x1b")) {
+            self.scrollback_query_mode = false;
+            self.scrollback_query_len = 0;
+            self.requestRedraw();
+            return true;
+        }
+        // Consume all sequences while typing query.
+        return true;
+    }
+
     fn handleScrollbackNavForwardByte(
         self: *Multiplexer,
         b: u8,
         screen: ?layout.Rect,
     ) bool {
-        if (!self.isFocusedScrolledBack()) return false;
-        const lines: usize = if (screen) |s| s.height else 24;
+        if (!self.scrollNavArmed()) return false;
+        const lines: usize = if (screen) |s| @max(@as(usize, 1), s.height) else 24;
         switch (b) {
-            'k' => self.scrollPageUpFocused(1),
-            'j' => self.scrollPageDownFocused(1),
+            'h' => self.moveSelectionCursorXFocused(-1),
+            'l' => self.moveSelectionCursorXFocused(1),
+            'k' => self.moveSelectionCursorYFocused(-1, lines),
+            'j' => self.moveSelectionCursorYFocused(1, lines),
             0x15 => self.scrollPageUpFocused(lines), // Ctrl+U
             0x04 => self.scrollPageDownFocused(lines), // Ctrl+D
+            'g' => self.scrollToTopFocused(screen),
+            'G' => self.scrollToBottomFocused(screen),
+            '0' => self.setSelectionCursorXFocused(0),
+            '$' => self.setSelectionCursorXToLineEndFocused(lines),
+            '/' => {
+                self.scrollback_query_mode = true;
+                self.scrollback_query_len = 0;
+                self.requestRedraw();
+            },
+            'n' => {
+                if (self.scrollback_last_query_len > 0) {
+                    _ = self.searchFocusedScrollback(
+                        self.scrollback_last_query_buf[0..self.scrollback_last_query_len],
+                        self.scrollback_last_direction,
+                    );
+                    if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(screen) catch {};
+                }
+            },
+            'N' => {
+                if (self.scrollback_last_query_len > 0) {
+                    const dir: scrollback_mod.SearchDirection = switch (self.scrollback_last_direction) {
+                        .forward => .backward,
+                        .backward => .forward,
+                    };
+                    _ = self.searchFocusedScrollback(
+                        self.scrollback_last_query_buf[0..self.scrollback_last_query_len],
+                        dir,
+                    );
+                    if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(screen) catch {};
+                }
+            },
+            'q' => self.scrollToBottomFocused(screen),
             else => {},
         }
-        // While scrolled back, consume all non-prefixed input.
+        // Scrollback/navigation mode is modal: consume all non-prefixed input.
         return true;
+    }
+
+    fn moveSelectionCursorXFocused(self: *Multiplexer, delta: i32) void {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const cur = self.selection_cursor_x.get(focused_id) orelse 0;
+        const next: usize = if (delta < 0)
+            (if (cur == 0) 0 else cur - 1)
+        else
+            cur + 1;
+        self.selection_cursor_x.put(self.allocator, focused_id, next) catch return;
+        self.requestRedraw();
+    }
+
+    fn setSelectionCursorXFocused(self: *Multiplexer, x: usize) void {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        self.selection_cursor_x.put(self.allocator, focused_id, x) catch return;
+        self.requestRedraw();
+    }
+
+    fn moveSelectionCursorYFocused(self: *Multiplexer, delta: i32, view_rows: usize) void {
+        if (view_rows == 0) return;
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const cur = self.selectionCursorY(focused_id, view_rows);
+        var next = cur;
+        if (delta < 0) {
+            if (cur > 0) {
+                next = cur - 1;
+            } else {
+                self.scrollPageUpFocused(1);
+                return;
+            }
+        } else if (delta > 0) {
+            if (cur + 1 < view_rows) {
+                next = cur + 1;
+            } else {
+                self.scrollPageDownFocused(1);
+                return;
+            }
+        }
+        self.selection_cursor_y.put(self.allocator, focused_id, next) catch return;
+        self.requestRedraw();
+    }
+
+    fn setSelectionCursorXToLineEndFocused(self: *Multiplexer, view_rows: usize) void {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return;
+        if (view_rows == 0 or sb.lines.items.len == 0) {
+            self.setSelectionCursorXFocused(0);
+            return;
+        }
+
+        const off = @min(sb.scroll_offset, sb.lines.items.len);
+        const start = if (sb.lines.items.len > view_rows + off)
+            sb.lines.items.len - view_rows - off
+        else
+            0;
+        const y = self.selectionCursorY(focused_id, view_rows);
+        const idx = start + y;
+        if (idx >= sb.lines.items.len) {
+            self.setSelectionCursorXFocused(0);
+            return;
+        }
+        const line = sb.lines.items[idx];
+        const end_x: usize = if (line.len == 0) 0 else line.len - 1;
+        self.setSelectionCursorXFocused(end_x);
     }
 
     fn handleScrollbackNavSequence(
@@ -670,12 +858,36 @@ pub const Multiplexer = struct {
         seq: []const u8,
         screen: ?layout.Rect,
     ) bool {
-        _ = screen;
-        _ = seq;
-        if (!self.isFocusedScrolledBack()) return false;
-        // In scrollback mode, consume escape sequences to avoid leaking
-        // terminal controls to the foreground app.
+        if (!self.scrollNavArmed()) return false;
+        if (std.mem.eql(u8, seq, "\x1b")) {
+            self.scrollToBottomFocused(screen);
+            return true;
+        }
+        // Scrollback/navigation mode is modal: consume all sequences.
         return true;
+    }
+
+    fn scrollToTopFocused(self: *Multiplexer, screen: ?layout.Rect) void {
+        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const sb = self.scrollbacks.getPtr(focused_id) orelse return;
+        sb.scroll_offset = sb.lines.items.len;
+        self.sync_scroll_source_window_id = focused_id;
+        if (self.sync_scroll_enabled) self.propagateSyncScrollFromFocused(screen) catch {};
+        self.requestRedraw();
+    }
+
+    fn scrollToBottomFocused(self: *Multiplexer, screen: ?layout.Rect) void {
+        if (self.sync_scroll_enabled) {
+            self.setVisibleScrollOffsetFromSource(screen, 0) catch {};
+        } else {
+            const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+            const sb = self.scrollbacks.getPtr(focused_id) orelse return;
+            sb.scroll_offset = 0;
+            self.selection_cursor_y.put(self.allocator, focused_id, 0) catch {};
+        }
+        self.scrollback_query_mode = false;
+        self.scrollback_query_len = 0;
+        self.requestRedraw();
     }
 
     fn propagateSyncScrollFromFocused(self: *Multiplexer, screen: ?layout.Rect) !void {
@@ -823,6 +1035,7 @@ pub const Multiplexer = struct {
         self.ptys.clearRetainingCapacity();
         self.da_parse_states.clearRetainingCapacity();
         self.mouse_tracking_enabled.clearRetainingCapacity();
+        self.selection_cursor_x.clearRetainingCapacity();
     }
 
     pub fn closeFocusedWindow(self: *Multiplexer) !u32 {
@@ -836,6 +1049,8 @@ pub const Multiplexer = struct {
         _ = self.stdout_buffers.fetchRemove(id);
         if (self.scrollbacks.getPtr(id)) |sb| sb.deinit();
         _ = self.scrollbacks.fetchRemove(id);
+        _ = self.selection_cursor_x.fetchRemove(id);
+        _ = self.selection_cursor_y.fetchRemove(id);
         _ = self.dirty_windows.fetchRemove(id);
 
         return id;
@@ -859,6 +1074,8 @@ pub const Multiplexer = struct {
         try self.ptys.put(self.allocator, popup_window_id, p);
         try self.stdout_buffers.put(self.allocator, popup_window_id, .{});
         try self.scrollbacks.put(self.allocator, popup_window_id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 2_000));
+        try self.selection_cursor_x.put(self.allocator, popup_window_id, 0);
+        try self.selection_cursor_y.put(self.allocator, popup_window_id, 0);
         try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
 
         const popup_inner_rows: u16 = if (rect.height > 2) rect.height - 2 else 1;
@@ -896,6 +1113,8 @@ pub const Multiplexer = struct {
         try self.ptys.put(self.allocator, popup_window_id, p);
         try self.stdout_buffers.put(self.allocator, popup_window_id, .{});
         try self.scrollbacks.put(self.allocator, popup_window_id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 2_000));
+        try self.selection_cursor_x.put(self.allocator, popup_window_id, 0);
+        try self.selection_cursor_y.put(self.allocator, popup_window_id, 0);
         try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
 
         const popup_inner_rows: u16 = if (rect.height > 2) rect.height - 2 else 1;
@@ -960,6 +1179,8 @@ pub const Multiplexer = struct {
             _ = self.stdout_buffers.fetchRemove(id);
             if (self.scrollbacks.getPtr(id)) |sb| sb.deinit();
             _ = self.scrollbacks.fetchRemove(id);
+            _ = self.selection_cursor_x.fetchRemove(id);
+            _ = self.selection_cursor_y.fetchRemove(id);
             _ = self.dirty_windows.fetchRemove(id);
         }
     }
@@ -1505,6 +1726,8 @@ pub const Multiplexer = struct {
             _ = self.stdout_buffers.fetchRemove(window_id);
             if (self.scrollbacks.getPtr(window_id)) |sb| sb.deinit();
             _ = self.scrollbacks.fetchRemove(window_id);
+            _ = self.selection_cursor_x.fetchRemove(window_id);
+            _ = self.selection_cursor_y.fetchRemove(window_id);
             _ = self.dirty_windows.fetchRemove(window_id);
         }
     }
@@ -1518,6 +1741,8 @@ pub const Multiplexer = struct {
         _ = self.stdout_buffers.fetchRemove(window_id);
         if (self.scrollbacks.getPtr(window_id)) |sb| sb.deinit();
         _ = self.scrollbacks.fetchRemove(window_id);
+        _ = self.selection_cursor_x.fetchRemove(window_id);
+        _ = self.selection_cursor_y.fetchRemove(window_id);
         _ = self.dirty_windows.fetchRemove(window_id);
     }
 
@@ -2635,6 +2860,146 @@ test "multiplexer scrollback navigation mode supports vim and ctrl paging keys" 
     const out = try mux.windowOutput(win_id);
     try testing.expect(std.mem.indexOf(u8, out, "k") == null);
     try testing.expect(std.mem.indexOf(u8, out, "j") == null);
+}
+
+test "multiplexer sync-scroll accepts nav controls immediately at offset zero" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const a = try mux.createCommandWindow("a", &.{"/bin/cat"});
+    const b = try mux.createCommandWindow("b", &.{"/bin/cat"});
+    try mux.scrollbacks.getPtr(a).?.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    try mux.scrollbacks.getPtr(b).?.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 12 };
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' }); // enable sync
+    try testing.expect(mux.syncScrollEnabled());
+    try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(a).?);
+    try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(b).?);
+
+    try mux.handleInputBytesWithScreen(screen, "k");
+    try testing.expect(mux.windowScrollOffset(a).? > 0);
+    try testing.expectEqual(mux.windowScrollOffset(a).?, mux.windowScrollOffset(b).?);
+
+    // In nav mode, non-prefixed input is consumed (not forwarded).
+    try mux.handleInputBytesWithScreen(screen, "xyz");
+    _ = try mux.pollOnce(20);
+    const out_a = try mux.windowOutput(a);
+    try testing.expect(std.mem.indexOf(u8, out_a, "xyz") == null);
+}
+
+test "multiplexer nav mode supports g G slash n N q and Esc" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+    const sb = mux.scrollbacks.getPtr(win_id) orelse return error.TestUnexpectedResult;
+    try sb.append("alpha\nbeta\ngamma\nbeta-delta\nomega\n");
+
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 10 };
+    sb.scrollPageUp(1);
+    const before = sb.scroll_offset;
+
+    try mux.handleInputBytesWithScreen(screen, "g");
+    try testing.expect(sb.scroll_offset >= before);
+
+    try mux.handleInputBytesWithScreen(screen, "G");
+    try testing.expectEqual(@as(usize, 0), sb.scroll_offset);
+
+    sb.scrollPageUp(2);
+    try mux.handleInputBytesWithScreen(screen, "/beta\r");
+    try testing.expect(mux.focusedScrollOffset() > 0);
+
+    const off_after_search = mux.focusedScrollOffset();
+    try mux.handleInputBytesWithScreen(screen, "n");
+    try testing.expect(mux.focusedScrollOffset() >= 0);
+    try mux.handleInputBytesWithScreen(screen, "N");
+    try testing.expect(mux.focusedScrollOffset() >= 0);
+    try testing.expect(off_after_search >= 0);
+
+    try mux.handleInputBytesWithScreen(screen, "q");
+    try testing.expectEqual(@as(usize, 0), mux.focusedScrollOffset());
+
+    sb.scrollPageUp(2);
+    try mux.handleInputBytesWithScreen(screen, "\x1b");
+    try testing.expectEqual(@as(usize, 0), mux.focusedScrollOffset());
+}
+
+test "multiplexer nav mode h l move selection cursor x and are not forwarded" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+    const sb = mux.scrollbacks.getPtr(win_id) orelse return error.TestUnexpectedResult;
+    try sb.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    sb.scrollPageUp(2);
+
+    const x0 = mux.selectionCursorX(win_id);
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 10 }, "l");
+    try testing.expect(mux.selectionCursorX(win_id) > x0);
+
+    const x1 = mux.selectionCursorX(win_id);
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 10 }, "h");
+    try testing.expect(mux.selectionCursorX(win_id) < x1 or mux.selectionCursorX(win_id) == 0);
+
+    _ = try mux.pollOnce(20);
+    const out = try mux.windowOutput(win_id);
+    try testing.expect(std.mem.indexOf(u8, out, "h") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "l") == null);
+}
+
+test "multiplexer nav mode k at top scrolls up while cursor stays in viewport" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+    const sb = mux.scrollbacks.getPtr(win_id) orelse return error.TestUnexpectedResult;
+    try sb.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n");
+    sb.scrollPageUp(2);
+
+    // Put selection cursor at visual top row.
+    try mux.selection_cursor_y.put(testing.allocator, win_id, 0);
+    const before = sb.scroll_offset;
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 10 }, "k");
+    try testing.expect(sb.scroll_offset > before);
+    try testing.expectEqual(@as(usize, 0), mux.selectionCursorY(win_id, 10));
+}
+
+test "multiplexer nav mode supports 0 and $ horizontal cursor jumps" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const win_id = try mux.createCommandWindow("cat", &.{"/bin/cat"});
+    const sb = mux.scrollbacks.getPtr(win_id) orelse return error.TestUnexpectedResult;
+    try sb.append("abcde\nline-two\n");
+    sb.scrollPageUp(1);
+
+    try mux.selection_cursor_x.put(testing.allocator, win_id, 3);
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 10 }, "0");
+    try testing.expectEqual(@as(usize, 0), mux.selectionCursorX(win_id));
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 10 }, "$");
+    try testing.expect(mux.selectionCursorX(win_id) > 0);
 }
 
 test "terminal query parser counts plain DA and CPR across chunk boundaries" {
