@@ -214,7 +214,10 @@ pub const PluginHost = struct {
         if (response.id == null or response.id.? != request_id) return null;
         if (response.fallback orelse false) return null;
         const in_rects = response.rects orelse return null;
-        if (in_rects.len == 0) return allocator.alloc(layout.Rect, 0);
+        if (in_rects.len == 0) {
+            const empty = try allocator.alloc(layout.Rect, 0);
+            return @as(?[]layout.Rect, empty);
+        }
 
         const rects = try allocator.alloc(layout.Rect, in_rects.len);
         for (in_rects, 0..) |r, i| {
