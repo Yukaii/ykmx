@@ -4,6 +4,7 @@ const layout = @import("layout.zig");
 pub const LayoutBackend = enum {
     native,
     opentui,
+    plugin,
 };
 
 pub const MouseMode = enum {
@@ -96,7 +97,7 @@ pub fn parseContents(allocator: std.mem.Allocator, cfg: *Config, contents: []con
 
 fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, value: []const u8) !void {
     if (std.mem.eql(u8, key, "layout_backend")) {
-        if (std.mem.eql(u8, value, "native")) cfg.layout_backend = .native else if (std.mem.eql(u8, value, "opentui")) cfg.layout_backend = .opentui else return error.InvalidLayoutBackend;
+        if (std.mem.eql(u8, value, "native")) cfg.layout_backend = .native else if (std.mem.eql(u8, value, "opentui")) cfg.layout_backend = .opentui else if (std.mem.eql(u8, value, "plugin")) cfg.layout_backend = .plugin else return error.InvalidLayoutBackend;
         return;
     }
     if (std.mem.eql(u8, key, "default_layout")) {
@@ -210,4 +211,12 @@ test "config parser accepts paperwm layout type" {
 
     try parseContents(testing.allocator, &cfg, "default_layout=paperwm\n");
     try testing.expectEqual(layout.LayoutType.paperwm, cfg.default_layout);
+}
+
+test "config parser accepts plugin layout backend" {
+    const testing = std.testing;
+    var cfg = Config{};
+
+    try parseContents(testing.allocator, &cfg, "layout_backend=plugin\n");
+    try testing.expectEqual(LayoutBackend.plugin, cfg.layout_backend);
 }

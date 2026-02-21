@@ -4,6 +4,7 @@
 #   or $HOME/.config/ykwm/config
 
 layout_backend=native
+# backend values: native | opentui | plugin
 # valid values: vertical_stack | horizontal_stack | grid | paperwm | fullscreen
 default_layout=vertical_stack
 master_count=1

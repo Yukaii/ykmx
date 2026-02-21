@@ -3,6 +3,7 @@ const ghostty_vt = @import("ghostty-vt");
 const layout = @import("layout.zig");
 const layout_native = @import("layout_native.zig");
 const layout_opentui = @import("layout_opentui.zig");
+const layout_plugin = @import("layout_plugin.zig");
 const multiplexer = @import("multiplexer.zig");
 const signal_mod = @import("signal.zig");
 const workspace = @import("workspace.zig");
@@ -200,7 +201,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
 
-    var mux = multiplexer.Multiplexer.init(allocator, pickLayoutEngine(cfg.layout_backend));
+    var mux = multiplexer.Multiplexer.init(allocator, try pickLayoutEngine(allocator, cfg));
     defer mux.deinit();
     mux.setMouseMode(switch (cfg.mouse_mode) {
         .hybrid => .hybrid,
@@ -214,7 +215,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     _ = try mux.createShellWindow("shell-2");
 
     var plugins: ?plugin_host.PluginHost = null;
-    if (cfg.plugins_enabled and cfg.plugin_dir != null) {
+    if (cfg.layout_backend != .plugin and cfg.plugins_enabled and cfg.plugin_dir != null) {
         plugins = plugin_host.PluginHost.start(allocator, cfg.plugin_dir.?) catch null;
     }
     defer if (plugins) |*host| {
@@ -1373,11 +1374,15 @@ fn writeFmtBlocking(out: *std.Io.Writer, comptime fmt: []const u8, args: anytype
     try writeAllBlocking(out, text);
 }
 
-fn pickLayoutEngine(backend: config.LayoutBackend) layout.LayoutEngine {
-    return switch (backend) {
+fn pickLayoutEngine(allocator: std.mem.Allocator, cfg: config.Config) !layout.LayoutEngine {
+    return switch (cfg.layout_backend) {
         .native => layout_native.NativeLayoutEngine.init(),
         // Temporary fallback while OpenTUI adapter compute() is not integrated yet.
         .opentui => layout_native.NativeLayoutEngine.init(),
+        .plugin => blk: {
+            const plugin_dir = cfg.plugin_dir orelse break :blk layout_native.NativeLayoutEngine.init();
+            break :blk layout_plugin.PluginLayoutEngine.init(allocator, plugin_dir) catch layout_native.NativeLayoutEngine.init();
+        },
     };
 }
 
@@ -1403,7 +1408,7 @@ fn printConfigPOC(writer: *std.Io.Writer, cfg: config.Config) !void {
 }
 
 fn printWorkspacePOC(writer: *std.Io.Writer, alloc: std.mem.Allocator, cfg: config.Config) !void {
-    var wm = workspace.WorkspaceManager.init(alloc, pickLayoutEngine(cfg.layout_backend));
+    var wm = workspace.WorkspaceManager.init(alloc, try pickLayoutEngine(alloc, cfg));
     defer wm.deinit();
 
     _ = try wm.createTab("dev");
@@ -1448,7 +1453,7 @@ fn printMultiplexerPOC(
     cfg: config.Config,
     zmx_env: *const zmx.Env,
 ) !void {
-    var mux = multiplexer.Multiplexer.init(alloc, pickLayoutEngine(cfg.layout_backend));
+    var mux = multiplexer.Multiplexer.init(alloc, try pickLayoutEngine(alloc, cfg));
     defer mux.deinit();
 
     _ = try mux.createTab("dev");
