@@ -522,7 +522,9 @@ const RuntimeVtState = struct {
             const split = utf8SafePrefixLen(merged[0..ansi_safe]);
             if (split > 0) {
                 var stream = wv.term.vtStream();
-                try stream.nextSlice(merged[0..split]);
+                const sanitized = try stripUnsupportedXtwinops(self.allocator, merged[0..split]);
+                defer if (sanitized) |owned| self.allocator.free(owned);
+                try stream.nextSlice(if (sanitized) |owned| owned else merged[0..split]);
             }
 
             const rem = merged[split..];
@@ -569,6 +571,56 @@ const RuntimeVtState = struct {
         return true;
     }
 };
+
+fn stripUnsupportedXtwinops(allocator: std.mem.Allocator, input: []const u8) !?[]u8 {
+    // ghostty-vt logs noisy warnings for CSI 22/23 t with extra parameters.
+    // These title stack operations are not relevant for pane compositing here.
+    if (std.mem.indexOf(u8, input, "\x1b[22") == null and std.mem.indexOf(u8, input, "\x1b[23") == null) {
+        return null;
+    }
+
+    var out = std.ArrayListUnmanaged(u8){};
+    defer if (out.items.len == 0) out.deinit(allocator);
+
+    var i: usize = 0;
+    var changed = false;
+    while (i < input.len) {
+        if (input[i] == 0x1b and i + 2 < input.len and input[i + 1] == '[') {
+            var j = i + 2;
+            while (j < input.len and ((input[j] >= '0' and input[j] <= '9') or input[j] == ';')) : (j += 1) {}
+            if (j < input.len and input[j] == 't') {
+                if (parseFirstCsiParam(input[i + 2 .. j])) |first| {
+                    if (first == 22 or first == 23) {
+                        changed = true;
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                try out.appendSlice(allocator, input[i .. j + 1]);
+                i = j + 1;
+                continue;
+            }
+        }
+
+        try out.append(allocator, input[i]);
+        i += 1;
+    }
+
+    if (!changed) {
+        out.deinit(allocator);
+        return null;
+    }
+
+    const owned = try out.toOwnedSlice(allocator);
+    return @as(?[]u8, owned);
+}
+
+fn parseFirstCsiParam(params: []const u8) ?u16 {
+    if (params.len == 0) return null;
+    const end = std.mem.indexOfScalar(u8, params, ';') orelse params.len;
+    if (end == 0) return null;
+    return std.fmt.parseInt(u16, params[0..end], 10) catch null;
+}
 
 fn utf8SafePrefixLen(bytes: []const u8) usize {
     if (bytes.len == 0) return 0;
