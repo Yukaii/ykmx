@@ -97,11 +97,6 @@ No existing solution provides:
 
 ### 3. Scrollable Tiled Windows (Experimental)
 
-**Synchronized Scrolling:**
-- All visible tiles scroll together
-- View history across multiple panes simultaneously
-- Timeline view of command outputs
-
 **Scrollback Features:**
 - Independent scrollback per window
 - Shared scrollback search
@@ -412,7 +407,6 @@ scroll positions, focus). Two strategies:
 **What ykwm adds beyond dvtm:**
 - Floating popup windows (dvtm limitation)
 - Session persistence via zmx (dvtm delegates to abduco)
-- Synchronized scrolling across tiles
 - Experimental UX features
 
 **Reference Implementation:**
@@ -586,8 +580,8 @@ Next implementation focus:
    - Done when no reproducible raw-sequence/render corruption remains in those scenarios.
 
 4. **Phase 6 implementation**
-   - [ ] Execute the canonical Phase 6 checklist in the `Phase 6: Experimental UX` section below (sync scroll first, then follow-ons).
-   - Done when the first sync-scroll deliverable is stable and test-backed.
+   - [ ] Execute the canonical Phase 6 checklist in the `Phase 6: Experimental UX` section below.
+   - Done when the first Phase 6 deliverable is stable and test-backed.
 
 ### Phase 2: Core Features (Weeks 3-4)
 
@@ -682,18 +676,15 @@ Next implementation focus:
 ### Phase 6: Experimental UX (Weeks 11-12)
 
 **Goals:**
-- Synchronized scrolling across tiles
 - Experimental interaction patterns
 
 **Deliverables:**
-- [ ] Synchronized scroll mode (all visible tiles scroll together)
 - [ ] Inline expandable sections (fold/unfold command output)
 - [ ] Contextual popups that follow cursor
 - [ ] Preview panes (hover to see full output)
 - [ ] Zoom transitions between tile and fullscreen
 
 **Testing:**
-- Sync scroll multiple windows
 - Expand/collapse output sections
 - Contextual popups appear at correct positions
 
@@ -873,7 +864,6 @@ Popup Management:
 Scrolling:
   MOD + u/d        Page up/down
   MOD + Shift + j/k  Scroll window
-  MOD + s          Toggle sync scroll
 
 Session:
   MOD + \          Detach from session
@@ -896,7 +886,6 @@ Tabs:
 | Floating Popups | ✓ | ✓ | ✗ | ✗ |
 | Tabs / Workspaces | ✓ | ✓ | ✓ (tags) | ✗ |
 | Tiling Layouts | ✓ | ✓ | ✓ (inspired) | ✗ |
-| Scrollback Sync | ✓ | ✗ | ✗ | ✗ |
 | Native Terminal Features | ✓ | ✗ | ✓ | ✓ |
 | Experimental UX | ✓ | ✗ | ✗ | ✗ |
 | zmx Integration | ✓ | N/A | ✗ | N/A |
