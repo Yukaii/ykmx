@@ -2112,47 +2112,8 @@ fn renderRuntimeFrame(
     defer allocator.free(live_ids);
     try vt_state.prune(live_ids);
 
-    var owned_minimized_line: ?[]u8 = null;
-    defer if (owned_minimized_line) |line| allocator.free(line);
-    var owned_tab_line: ?[]u8 = null;
-    defer if (owned_tab_line) |line| allocator.free(line);
-    var owned_status_line: ?[]u8 = null;
-    defer if (owned_status_line) |line| allocator.free(line);
-
-    const minimized_line: []const u8 = if (plugin_ui_bars) |ui| blk: {
-        if (ui.toolbar_line.len > 0) break :blk ui.toolbar_line;
-        owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
-        break :blk owned_minimized_line.?;
-    } else blk: {
-        owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
-        break :blk owned_minimized_line.?;
-    };
-    const tab_line: []const u8 = if (plugin_ui_bars) |ui| blk: {
-        if (ui.tab_line.len > 0) break :blk ui.tab_line;
-        owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
-        break :blk owned_tab_line.?;
-    } else blk: {
-        owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
-        break :blk owned_tab_line.?;
-    };
-    const status_line: []const u8 = if (plugin_ui_bars) |ui| blk: {
-        if (ui.status_line.len > 0) break :blk ui.status_line;
-        owned_status_line = try status.renderStatusBarWithScrollAndSync(
-            allocator,
-            &mux.workspace_mgr,
-            mux.focusedScrollOffset(),
-            mux.syncScrollEnabled(),
-        );
-        break :blk owned_status_line.?;
-    } else blk: {
-        owned_status_line = try status.renderStatusBarWithScrollAndSync(
-            allocator,
-            &mux.workspace_mgr,
-            mux.focusedScrollOffset(),
-            mux.syncScrollEnabled(),
-        );
-        break :blk owned_status_line.?;
-    };
+    const footer_lines = try resolveFooterLines(allocator, mux, plugin_ui_bars);
+    defer footer_lines.deinit(allocator);
 
     const resized = try frame_cache.ensureSize(total_cols, total_rows);
 
@@ -2196,7 +2157,15 @@ fn renderRuntimeFrame(
     }
 
     const footer_rows = total_rows - content_rows;
-    composeFooterRows(curr, total_cols, content_rows, total_rows, minimized_line, tab_line, status_line);
+    composeFooterRows(
+        curr,
+        total_cols,
+        content_rows,
+        total_rows,
+        footer_lines.minimized_line,
+        footer_lines.tab_line,
+        footer_lines.status_line,
+    );
     try writeFrameToTerminal(
         out,
         frame_cache,
@@ -2205,9 +2174,9 @@ fn renderRuntimeFrame(
         total_cols,
         content_rows,
         footer_rows,
-        minimized_line,
-        tab_line,
-        status_line,
+        footer_lines.minimized_line,
+        footer_lines.tab_line,
+        footer_lines.status_line,
     );
 
     @memcpy(frame_cache.cells, curr);
@@ -2218,6 +2187,75 @@ fn renderRuntimeFrame(
         try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
     }
     try writeAllBlocking(out, "\x1b[?25h");
+}
+
+const FooterLines = struct {
+    minimized_line: []const u8,
+    tab_line: []const u8,
+    status_line: []const u8,
+    owned_minimized_line: ?[]u8 = null,
+    owned_tab_line: ?[]u8 = null,
+    owned_status_line: ?[]u8 = null,
+
+    fn deinit(self: FooterLines, allocator: std.mem.Allocator) void {
+        if (self.owned_minimized_line) |line| allocator.free(line);
+        if (self.owned_tab_line) |line| allocator.free(line);
+        if (self.owned_status_line) |line| allocator.free(line);
+    }
+};
+
+fn resolveFooterLines(
+    allocator: std.mem.Allocator,
+    mux: *multiplexer.Multiplexer,
+    plugin_ui_bars: ?plugin_host.PluginHost.UiBarsView,
+) !FooterLines {
+    var lines: FooterLines = .{
+        .minimized_line = "",
+        .tab_line = "",
+        .status_line = "",
+    };
+
+    if (plugin_ui_bars) |ui| {
+        if (ui.toolbar_line.len > 0) {
+            lines.minimized_line = ui.toolbar_line;
+        } else {
+            lines.owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
+            lines.minimized_line = lines.owned_minimized_line.?;
+        }
+
+        if (ui.tab_line.len > 0) {
+            lines.tab_line = ui.tab_line;
+        } else {
+            lines.owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
+            lines.tab_line = lines.owned_tab_line.?;
+        }
+
+        if (ui.status_line.len > 0) {
+            lines.status_line = ui.status_line;
+        } else {
+            lines.owned_status_line = try status.renderStatusBarWithScrollAndSync(
+                allocator,
+                &mux.workspace_mgr,
+                mux.focusedScrollOffset(),
+                mux.syncScrollEnabled(),
+            );
+            lines.status_line = lines.owned_status_line.?;
+        }
+        return lines;
+    }
+
+    lines.owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
+    lines.minimized_line = lines.owned_minimized_line.?;
+    lines.owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
+    lines.tab_line = lines.owned_tab_line.?;
+    lines.owned_status_line = try status.renderStatusBarWithScrollAndSync(
+        allocator,
+        &mux.workspace_mgr,
+        mux.focusedScrollOffset(),
+        mux.syncScrollEnabled(),
+    );
+    lines.status_line = lines.owned_status_line.?;
+    return lines;
 }
 
 fn composeFooterRows(
