@@ -381,6 +381,30 @@ pub const WorkspaceManager = struct {
         tab.focused_index = clamped_dst;
     }
 
+    pub fn moveWindowByIdToIndexActive(self: *WorkspaceManager, window_id: u32, dst_index: usize) !bool {
+        const tab = try self.activeTab();
+        if (tab.windows.items.len == 0) return false;
+
+        var src_index_opt: ?usize = null;
+        for (tab.windows.items, 0..) |w, i| {
+            if (w.id == window_id) {
+                src_index_opt = i;
+                break;
+            }
+        }
+        const src_index = src_index_opt orelse return false;
+        const clamped_dst = @min(dst_index, tab.windows.items.len - 1);
+        if (src_index == clamped_dst) {
+            tab.focused_index = clamped_dst;
+            return true;
+        }
+
+        const moved = tab.windows.orderedRemove(src_index);
+        try tab.windows.insert(self.allocator, clamped_dst, moved);
+        tab.focused_index = clamped_dst;
+        return true;
+    }
+
     pub fn closeActiveTab(self: *WorkspaceManager, allocator: std.mem.Allocator) ![]u32 {
         const idx = self.active_tab_index orelse return error.NoActiveTab;
         if (self.tabs.items.len <= 1) return error.CannotCloseLastTab;

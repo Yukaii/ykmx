@@ -124,11 +124,11 @@ function resizeFrame(base: Frame, edges: ResizeEdges, dx: number, dy: number, sc
   return clampFrame({ x, y, width, height }, screen);
 }
 
-async function maybeBringToFront(windowIndex: number): Promise<void> {
+async function maybeBringToFront(windowId: number, windowIndex: number): Promise<void> {
   if (!lastState) return;
-  const topIndex = Math.max(0, lastState.visible_window_count - 1);
+  const topIndex = Math.max(0, lastState.window_count - 1);
   if (windowIndex < topIndex) {
-    await writeAction({ v: 1, action: "move_focused_window_to_index", index: topIndex });
+    await writeAction({ v: 1, action: "move_window_by_id_to_index", window_id: windowId, index: topIndex });
   }
 }
 
@@ -206,7 +206,7 @@ async function main() {
       continue;
     }
 
-    await maybeBringToFront(ev.hit.window_index);
+    await maybeBringToFront(ev.hit.window_id, ev.hit.window_index);
 
     const frame = frames.get(ev.hit.window_id);
     if (!frame) continue;

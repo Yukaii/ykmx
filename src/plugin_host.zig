@@ -45,6 +45,7 @@ pub const PluginHost = struct {
         minimize_focused_window,
         restore_all_minimized_windows,
         move_focused_window_to_index: usize,
+        move_window_by_id_to_index: struct { window_id: u32, index: usize },
         close_focused_window,
         restore_window_by_id: u32,
     };
@@ -441,6 +442,11 @@ pub const PluginHost = struct {
         if (std.mem.eql(u8, action_name, "move_focused_window_to_index")) {
             const idx = envelope.index orelse return null;
             return .{ .move_focused_window_to_index = idx };
+        }
+        if (std.mem.eql(u8, action_name, "move_window_by_id_to_index")) {
+            const idx = envelope.index orelse return null;
+            const window_id = envelope.window_id orelse return null;
+            return .{ .move_window_by_id_to_index = .{ .window_id = window_id, .index = idx } };
         }
         if (std.mem.eql(u8, action_name, "close_focused_window")) return .close_focused_window;
         if (std.mem.eql(u8, action_name, "restore_window_by_id")) {

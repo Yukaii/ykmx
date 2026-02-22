@@ -590,8 +590,9 @@ pub const Multiplexer = struct {
 
         const tab = try self.workspace_mgr.activeTab();
         const n = @min(rects.len, tab.windows.items.len);
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
+        var i: usize = n;
+        while (i > 0) {
+            i -= 1;
             const r = rects[i];
             if (r.width < 2 or r.height < 2) continue;
 
@@ -661,6 +662,15 @@ pub const Multiplexer = struct {
             error.NoFocusedWindow => return false,
             else => return err,
         };
+        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+        _ = try self.markActiveWindowsDirty();
+        self.requestRedraw();
+        return true;
+    }
+
+    pub fn moveWindowByIdToIndex(self: *Multiplexer, window_id: u32, target_index: usize, screen: ?layout.Rect) !bool {
+        const moved = try self.workspace_mgr.moveWindowByIdToIndexActive(window_id, target_index);
+        if (!moved) return false;
         if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
         _ = try self.markActiveWindowsDirty();
         self.requestRedraw();
@@ -1580,8 +1590,9 @@ pub const Multiplexer = struct {
 
         const tab = try self.workspace_mgr.activeTab();
         const n = @min(rects.len, tab.windows.items.len);
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
+        var i: usize = n;
+        while (i > 0) {
+            i -= 1;
             const r = rects[i];
             if (!pointInRect(px, py, r)) continue;
             const on_border = px == r.x or py == r.y or
@@ -1618,8 +1629,9 @@ pub const Multiplexer = struct {
         const tab = try self.workspace_mgr.activeTab();
         const n = @min(rects.len, tab.windows.items.len);
 
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
+        var i: usize = n;
+        while (i > 0) {
+            i -= 1;
             const r = rects[i];
             const inside_x = px >= r.x and px < (r.x + r.width);
             const inside_y = py >= r.y and py < (r.y + r.height);
@@ -2522,6 +2534,32 @@ test "multiplexer hybrid mode keeps divider click in compositor path" {
     const right_out = try mux.windowOutput(right_id);
     try testing.expect(std.mem.indexOf(u8, left_out, seq) == null);
     try testing.expect(std.mem.indexOf(u8, right_out, seq) == null);
+}
+
+test "multiplexer chrome hit prefers topmost on overlap" {
+    const testing = std.testing;
+
+    const OverlapEngine = struct {
+        fn compute(_: ?*anyopaque, allocator: std.mem.Allocator, params: layout.LayoutParams) anyerror![]layout.Rect {
+            const rects = try allocator.alloc(layout.Rect, params.window_count);
+            if (rects.len == 0) return rects;
+            // Every window occupies the same rect so hit-testing must choose topmost (highest index).
+            for (rects) |*r| r.* = .{ .x = params.screen.x, .y = params.screen.y, .width = 40, .height = 10 };
+            return rects;
+        }
+    };
+
+    const engine: layout.LayoutEngine = .{ .ctx = null, .compute_fn = OverlapEngine.compute };
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.1" });
+    _ = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.1" });
+
+    const hit = try mux.windowChromeHitAt(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, 2, 2);
+    try testing.expect(hit != null);
+    try testing.expectEqual(@as(usize, 1), hit.?.window_index);
 }
 
 test "multiplexer tick does not block on poll after tab switch redraw request" {

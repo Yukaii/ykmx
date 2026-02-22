@@ -472,6 +472,9 @@ fn applyPluginAction(
         .move_focused_window_to_index => |index| {
             return try mux.moveFocusedWindowToIndex(index, screen);
         },
+        .move_window_by_id_to_index => |payload| {
+            return try mux.moveWindowByIdToIndex(payload.window_id, payload.index, screen);
+        },
         .close_focused_window => {
             _ = mux.closeFocusedWindow() catch |err| switch (err) {
                 error.NoFocusedWindow => return false,
@@ -898,6 +901,9 @@ fn renderRuntimeFrame(
     const popup_overlay = try allocator.alloc(bool, canvas_len);
     defer allocator.free(popup_overlay);
     @memset(popup_overlay, false);
+    const top_window_owner = try allocator.alloc(i32, canvas_len);
+    defer allocator.free(top_window_owner);
+    @memset(top_window_owner, -1);
 
     const rects = try mux.computeActiveLayout(content);
     defer allocator.free(rects);
@@ -910,10 +916,23 @@ fn renderRuntimeFrame(
     var focused_cursor_abs: ?struct { row: usize, col: usize } = null;
 
     for (rects[0..n], 0..) |r, i| {
+        if (r.width == 0 or r.height == 0) continue;
+        var yy: usize = r.y;
+        const y_end: usize = @min(@as(usize, r.y + r.height), content_rows);
+        while (yy < y_end) : (yy += 1) {
+            var xx: usize = r.x;
+            const x_end: usize = @min(@as(usize, r.x + r.width), total_cols);
+            while (xx < x_end) : (xx += 1) {
+                top_window_owner[yy * total_cols + xx] = @intCast(i);
+            }
+        }
+    }
+
+    for (rects[0..n], 0..) |r, i| {
         if (r.width < 2 or r.height < 2) continue;
         const border = computeBorderMask(rects[0..n], i, r, content);
         const insets = computeContentInsets(rects[0..n], i, r, border);
-        drawBorder(canvas, border_conn, total_cols, content_rows, r, border, if (tab.focused_index == i) '*' else ' ');
+        drawBorder(canvas, border_conn, total_cols, content_rows, r, border, if (tab.focused_index == i) '*' else ' ', i, top_window_owner);
         const inner_x = r.x + insets.left;
         const inner_y = r.y + insets.top;
         const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
@@ -924,10 +943,10 @@ fn renderRuntimeFrame(
         const controls = "[_][+][x]";
         const controls_w: u16 = @intCast(controls.len);
         const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
-        drawText(canvas, total_cols, content_rows, inner_x, r.y, title, title_max);
+        drawTextOwned(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner);
         if (r.width >= 10) {
             const controls_x: u16 = r.x + r.width - controls_w - 1;
-            drawText(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w);
+            drawTextOwned(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner);
         }
 
         const window_id = tab.windows.items[i].id;
@@ -988,7 +1007,7 @@ fn renderRuntimeFrame(
         if (p.rect.width < 2 or p.rect.height < 2) continue;
 
         const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
-        drawBorder(canvas, border_conn, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) '*' else ' ');
+        drawBorder(canvas, border_conn, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) '*' else ' ', null, null);
 
         const inner_x = p.rect.x + 1;
         const inner_y = p.rect.y + 1;
@@ -1039,10 +1058,10 @@ fn renderRuntimeFrame(
         const controls = "[_][+][x]";
         const controls_w: u16 = @intCast(controls.len);
         const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
-        drawText(canvas, total_cols, content_rows, inner_x, r.y, title, title_max);
+        drawTextOwned(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner);
         if (r.width >= 10) {
             const controls_x: u16 = r.x + r.width - controls_w - 1;
-            drawText(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w);
+            drawTextOwned(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner);
         }
     }
     for (popup_order) |popup_idx| {
@@ -1102,6 +1121,12 @@ fn renderRuntimeFrame(
         const start = row * total_cols;
         var x: usize = 0;
         while (x < total_cols) : (x += 1) {
+            // Border/chrome cells always win compositor layering so overlapped
+            // panes don't paint content over visible frame edges/titles.
+            if (border_conn[row_off + x] != 0) {
+                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
+                continue;
+            }
             if (popup_overlay[row_off + x]) {
                 curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
                 continue;
@@ -1198,6 +1223,17 @@ fn renderRuntimeFrame(
         idx = run_end - 1;
     }
     if (active_style != null) try writeAllBlocking(out, "\x1b[0m");
+
+    // Footer bars are informational UI chrome; always paint them last to avoid
+    // transient corruption from incremental pane diff writes during focus churn.
+    try writeAllBlocking(out, "\x1b[0m");
+    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 1});
+    try writeClippedLine(out, minimized_line, total_cols);
+    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
+    try writeClippedLine(out, tab_line, total_cols);
+    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
+    try writeClippedLine(out, status_line, total_cols);
+
     @memcpy(frame_cache.cells, curr);
 
     if (focused_cursor_abs) |p| {
@@ -1281,40 +1317,75 @@ fn computeBorderMask(rects: []const layout.Rect, idx: usize, r: layout.Rect, con
     };
 }
 
-fn drawBorder(canvas: []u21, border_conn: []u8, cols: usize, rows: usize, r: layout.Rect, border: BorderMask, marker: u8) void {
+fn drawBorder(
+    canvas: []u21,
+    border_conn: []u8,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+    border: BorderMask,
+    marker: u8,
+    owner_idx: ?usize,
+    top_window_owner: ?[]const i32,
+) void {
     const x0: usize = r.x;
     const y0: usize = r.y;
     const x1: usize = x0 + r.width - 1;
     const y1: usize = y0 + r.height - 1;
     if (x1 >= cols or y1 >= rows) return;
 
-    if (border.left and border.top) addBorderConn(border_conn, cols, rows, x0, y0, BorderConn.D | BorderConn.R);
-    if (border.right and border.top) addBorderConn(border_conn, cols, rows, x1, y0, BorderConn.D | BorderConn.L);
-    if (border.left and border.bottom) addBorderConn(border_conn, cols, rows, x0, y1, BorderConn.U | BorderConn.R);
-    if (border.right and border.bottom) addBorderConn(border_conn, cols, rows, x1, y1, BorderConn.U | BorderConn.L);
+    if (border.left and border.top) addBorderConnOwned(border_conn, cols, rows, x0, y0, BorderConn.D | BorderConn.R, owner_idx, top_window_owner);
+    if (border.right and border.top) addBorderConnOwned(border_conn, cols, rows, x1, y0, BorderConn.D | BorderConn.L, owner_idx, top_window_owner);
+    if (border.left and border.bottom) addBorderConnOwned(border_conn, cols, rows, x0, y1, BorderConn.U | BorderConn.R, owner_idx, top_window_owner);
+    if (border.right and border.bottom) addBorderConnOwned(border_conn, cols, rows, x1, y1, BorderConn.U | BorderConn.L, owner_idx, top_window_owner);
 
     if (border.top) {
         var x = x0 + 1;
-        while (x < x1) : (x += 1) addBorderConn(border_conn, cols, rows, x, y0, BorderConn.L | BorderConn.R);
+        while (x < x1) : (x += 1) addBorderConnOwned(border_conn, cols, rows, x, y0, BorderConn.L | BorderConn.R, owner_idx, top_window_owner);
     }
     if (border.bottom) {
         var x = x0 + 1;
-        while (x < x1) : (x += 1) addBorderConn(border_conn, cols, rows, x, y1, BorderConn.L | BorderConn.R);
+        while (x < x1) : (x += 1) addBorderConnOwned(border_conn, cols, rows, x, y1, BorderConn.L | BorderConn.R, owner_idx, top_window_owner);
     }
     if (border.left) {
         var y = y0 + 1;
-        while (y < y1) : (y += 1) addBorderConn(border_conn, cols, rows, x0, y, BorderConn.U | BorderConn.D);
+        while (y < y1) : (y += 1) addBorderConnOwned(border_conn, cols, rows, x0, y, BorderConn.U | BorderConn.D, owner_idx, top_window_owner);
     }
     if (border.right) {
         var y = y0 + 1;
-        while (y < y1) : (y += 1) addBorderConn(border_conn, cols, rows, x1, y, BorderConn.U | BorderConn.D);
+        while (y < y1) : (y += 1) addBorderConnOwned(border_conn, cols, rows, x1, y, BorderConn.U | BorderConn.D, owner_idx, top_window_owner);
     }
-    if (border.top and x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, marker);
+    if (border.top and x0 + 1 < cols) {
+        const idx = y0 * cols + (x0 + 1);
+        if (cellOwnedBy(idx, owner_idx, top_window_owner)) putCell(canvas, cols, x0 + 1, y0, marker);
+    }
 }
 
 fn addBorderConn(conn: []u8, cols: usize, rows: usize, x: usize, y: usize, bits: u8) void {
     if (x >= cols or y >= rows) return;
     conn[y * cols + x] |= bits;
+}
+
+fn addBorderConnOwned(
+    conn: []u8,
+    cols: usize,
+    rows: usize,
+    x: usize,
+    y: usize,
+    bits: u8,
+    owner_idx: ?usize,
+    top_window_owner: ?[]const i32,
+) void {
+    if (x >= cols or y >= rows) return;
+    const idx = y * cols + x;
+    if (!cellOwnedBy(idx, owner_idx, top_window_owner)) return;
+    conn[idx] |= bits;
+}
+
+fn cellOwnedBy(idx: usize, owner_idx: ?usize, top_window_owner: ?[]const i32) bool {
+    const owner = owner_idx orelse return true;
+    const owners = top_window_owner orelse return true;
+    return owners[idx] == @as(i32, @intCast(owner));
 }
 
 fn glyphFromConn(bits: u8) u21 {
@@ -1651,6 +1722,30 @@ fn drawText(
     var i: usize = 0;
     while (i < text.len and i < max_w and x < cols) : (i += 1) {
         putCell(canvas, cols, x, y_usize, text[i]);
+        x += 1;
+    }
+}
+
+fn drawTextOwned(
+    canvas: []u21,
+    cols: usize,
+    rows: usize,
+    x_start: u16,
+    y: u16,
+    text: []const u8,
+    max_w: u16,
+    owner_idx: usize,
+    top_window_owner: []const i32,
+) void {
+    if (y >= rows) return;
+    var x: usize = x_start;
+    const y_usize: usize = y;
+    var i: usize = 0;
+    while (i < text.len and i < max_w and x < cols) : (i += 1) {
+        const idx = y_usize * cols + x;
+        if (top_window_owner[idx] == @as(i32, @intCast(owner_idx))) {
+            putCell(canvas, cols, x, y_usize, text[i]);
+        }
         x += 1;
     }
 }

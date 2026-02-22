@@ -117,6 +117,7 @@ export type ActionMessage =
   | { v: 1; action: "minimize_focused_window" }
   | { v: 1; action: "restore_all_minimized_windows" }
   | { v: 1; action: "move_focused_window_to_index"; index: number }
+  | { v: 1; action: "move_window_by_id_to_index"; window_id: number; index: number }
   | { v: 1; action: "close_focused_window" }
   | { v: 1; action: "restore_window_by_id"; window_id: number }
   | { v: 1; action: "set_ui_bars"; toolbar_line: string; tab_line: string; status_line: string }
