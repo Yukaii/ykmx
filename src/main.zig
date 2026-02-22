@@ -2092,98 +2092,21 @@ fn renderRuntimeFrame(
         &focused_cursor_abs,
     );
     applyBorderGlyphs(canvas, border_conn, total_cols, content_rows, mux.borderGlyphs(), mux.focusMarker());
-
-    // Border glyph synthesis can overwrite titlebar text/chrome because both share
-    // the top border row. Repaint chrome after border pass.
-    for (rects[0..n], 0..) |r, i| {
-        if (r.width < 2 or r.height < 2) continue;
-        const border = computeBorderMask(rects[0..n], i, r, content);
-        const insets = computeContentInsets(rects[0..n], i, r, border);
-        const inner_x = r.x + insets.left;
-        const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
-        if (inner_w == 0) continue;
-
-        const title = tab.windows.items[i].title;
-        var controls_buf: [9]u8 = undefined;
-        const control_chars = mux.windowControlChars();
-        controls_buf = .{ '[', control_chars.minimize, ']', '[', control_chars.maximize, ']', '[', control_chars.close, ']' };
-        const controls = controls_buf[0..];
-        const controls_w: u16 = @intCast(controls.len);
-        const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
-        drawTextOwnedMasked(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner, popup_cover);
-        if (r.width >= 10) {
-            const controls_x: u16 = r.x + r.width - controls_w - 1;
-            drawTextOwnedMasked(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner, popup_cover);
-        }
-    }
-    for (popup_order[0..popup_count]) |popup_idx| {
-        const p = mux.popup_mgr.popups.items[popup_idx];
-        if (p.rect.width < 2 or p.rect.height < 2) continue;
-        const panel_active = mux.popup_mgr.focused_popup_id == p.id;
-        // Preserve popup-vs-popup z-order during border/title repaint by
-        // clearing any lower-z popup chrome first.
-        clearCanvasRect(canvas, total_cols, content_rows, p.rect);
-        clearBorderConnRect(border_conn, total_cols, content_rows, p.rect);
-        clearChromeLayerRect(chrome_layer, chrome_panel_id, total_cols, content_rows, p.rect);
-        if (p.show_border) {
-            drawPopupBorderDirect(
-                canvas,
-                total_cols,
-                content_rows,
-                p.rect,
-                mux.borderGlyphs(),
-                if (panel_active) mux.focusMarker() else null,
-            );
-            const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
-            markBorderLayer(
-                chrome_layer,
-                chrome_panel_id,
-                total_cols,
-                content_rows,
-                p.rect,
-                popup_border,
-                if (panel_active) chrome_layer_active_border else chrome_layer_inactive_border,
-                p.id,
-            );
-        }
-        const inner_x = p.rect.x + 1;
-        const inner_w = p.rect.width - 2;
-        if (inner_w == 0) continue;
-        drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
-        markTextLayer(
-            chrome_layer,
-            chrome_panel_id,
-            total_cols,
-            content_rows,
-            inner_x,
-            p.rect.y,
-            p.title,
-            inner_w,
-            if (panel_active) chrome_layer_active_title else chrome_layer_inactive_title,
-            p.id,
-        );
-        if (p.show_controls and p.rect.width >= 10) {
-            var controls_buf: [9]u8 = undefined;
-            const control_chars = mux.windowControlChars();
-            controls_buf = .{ '[', control_chars.minimize, ']', '[', control_chars.maximize, ']', '[', control_chars.close, ']' };
-            const controls = controls_buf[0..];
-            const controls_w: u16 = @intCast(controls.len);
-            const controls_x: u16 = p.rect.x + p.rect.width - controls_w - 1;
-            drawText(canvas, total_cols, content_rows, controls_x, p.rect.y, controls, controls_w);
-            markTextLayer(
-                chrome_layer,
-                chrome_panel_id,
-                total_cols,
-                content_rows,
-                controls_x,
-                p.rect.y,
-                controls,
-                controls_w,
-                if (panel_active) chrome_layer_active_buttons else chrome_layer_inactive_buttons,
-                p.id,
-            );
-        }
-    }
+    repaintChromeAfterBorderPass(
+        mux,
+        tab,
+        rects[0..n],
+        content,
+        popup_order,
+        total_cols,
+        content_rows,
+        canvas,
+        border_conn,
+        chrome_layer,
+        chrome_panel_id,
+        top_window_owner,
+        popup_cover,
+    );
 
     const live_ids = try mux.liveWindowIds(allocator);
     defer allocator.free(live_ids);
@@ -2236,64 +2159,19 @@ fn renderRuntimeFrame(
     var curr = try allocator.alloc(RuntimeRenderCell, total_cols * total_rows);
     defer allocator.free(curr);
     for (curr) |*cell| cell.* = .{};
-
-    var row: usize = 0;
-    while (row < content_rows) : (row += 1) {
-        const row_off = row * total_cols;
-        const start = row * total_cols;
-        var x: usize = 0;
-        while (x < total_cols) : (x += 1) {
-            // Popup chrome (border/title/buttons) must win over any pane border
-            // connectors underneath in overlap scenarios.
-            if (popup_overlay[row_off + x]) {
-                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
-                if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
-                    curr[row_off + x].style = s;
-                    curr[row_off + x].styled = !s.default();
-                }
-                continue;
-            }
-            // Border/chrome cells win over pane content, but only after popup
-            // chrome has had a chance to override them.
-            if (border_conn[row_off + x] != 0) {
-                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
-                if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
-                    curr[row_off + x].style = s;
-                    curr[row_off + x].styled = !s.default();
-                }
-                continue;
-            }
-            const pane_cell = paneCellAt(panes[0..pane_count], x, row);
-            if (pane_cell) |pc| {
-                if (pc.skip_draw) {
-                    // Explicitly clear spacer-tail cells to avoid stale glyph artifacts
-                    // when wide/grapheme content changes near borders.
-                    curr[row_off + x] = .{
-                        .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
-                        .text_len = 1,
-                        .style = .{},
-                        .styled = false,
-                    };
-                } else {
-                    curr[row_off + x] = .{
-                        .text = pc.text,
-                        .text_len = pc.text_len,
-                        .style = pc.style,
-                        .styled = !pc.style.default(),
-                    };
-                }
-            } else {
-                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
-            }
-            if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
-                curr[row_off + x].style = s;
-                curr[row_off + x].styled = !s.default();
-            }
-            if (popup_opaque_cover[row_off + x]) {
-                enforceOpaqueRuntimeCellBg(&curr[row_off + x]);
-            }
-        }
-    }
+    composeContentCells(
+        mux,
+        panes[0..pane_count],
+        total_cols,
+        content_rows,
+        canvas,
+        border_conn,
+        chrome_layer,
+        chrome_panel_id,
+        popup_overlay,
+        popup_opaque_cover,
+        curr,
+    );
     if (compose_debug_enabled and popup_count > 0) {
         logComposePopupSummary(
             mux.popup_mgr.popups.items,
@@ -2717,6 +2595,177 @@ fn composePopups(
                 .row = @as(usize, inner_y) + cy + 1,
                 .col = @as(usize, inner_x) + cx + 1,
             };
+        }
+    }
+}
+
+fn repaintChromeAfterBorderPass(
+    mux: *multiplexer.Multiplexer,
+    tab: anytype,
+    rects: []const layout.Rect,
+    content: layout.Rect,
+    popup_order: []const usize,
+    total_cols: usize,
+    content_rows: usize,
+    canvas: []u21,
+    border_conn: []u8,
+    chrome_layer: []u8,
+    chrome_panel_id: []u32,
+    top_window_owner: []const i32,
+    popup_cover: []const bool,
+) void {
+    for (rects, 0..) |r, i| {
+        if (r.width < 2 or r.height < 2) continue;
+        const border = computeBorderMask(rects, i, r, content);
+        const insets = computeContentInsets(rects, i, r, border);
+        const inner_x = r.x + insets.left;
+        const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
+        if (inner_w == 0) continue;
+
+        const title = tab.windows.items[i].title;
+        var controls_buf: [9]u8 = undefined;
+        const control_chars = mux.windowControlChars();
+        controls_buf = .{ '[', control_chars.minimize, ']', '[', control_chars.maximize, ']', '[', control_chars.close, ']' };
+        const controls = controls_buf[0..];
+        const controls_w: u16 = @intCast(controls.len);
+        const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
+        drawTextOwnedMasked(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner, popup_cover);
+        if (r.width >= 10) {
+            const controls_x: u16 = r.x + r.width - controls_w - 1;
+            drawTextOwnedMasked(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner, popup_cover);
+        }
+    }
+
+    for (popup_order) |popup_idx| {
+        const p = mux.popup_mgr.popups.items[popup_idx];
+        if (p.rect.width < 2 or p.rect.height < 2) continue;
+        const panel_active = mux.popup_mgr.focused_popup_id == p.id;
+        clearCanvasRect(canvas, total_cols, content_rows, p.rect);
+        clearBorderConnRect(border_conn, total_cols, content_rows, p.rect);
+        clearChromeLayerRect(chrome_layer, chrome_panel_id, total_cols, content_rows, p.rect);
+        if (p.show_border) {
+            drawPopupBorderDirect(
+                canvas,
+                total_cols,
+                content_rows,
+                p.rect,
+                mux.borderGlyphs(),
+                if (panel_active) mux.focusMarker() else null,
+            );
+            const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
+            markBorderLayer(
+                chrome_layer,
+                chrome_panel_id,
+                total_cols,
+                content_rows,
+                p.rect,
+                popup_border,
+                if (panel_active) chrome_layer_active_border else chrome_layer_inactive_border,
+                p.id,
+            );
+        }
+        const inner_x = p.rect.x + 1;
+        const inner_w = p.rect.width - 2;
+        if (inner_w == 0) continue;
+        drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
+        markTextLayer(
+            chrome_layer,
+            chrome_panel_id,
+            total_cols,
+            content_rows,
+            inner_x,
+            p.rect.y,
+            p.title,
+            inner_w,
+            if (panel_active) chrome_layer_active_title else chrome_layer_inactive_title,
+            p.id,
+        );
+        if (p.show_controls and p.rect.width >= 10) {
+            var controls_buf: [9]u8 = undefined;
+            const control_chars = mux.windowControlChars();
+            controls_buf = .{ '[', control_chars.minimize, ']', '[', control_chars.maximize, ']', '[', control_chars.close, ']' };
+            const controls = controls_buf[0..];
+            const controls_w: u16 = @intCast(controls.len);
+            const controls_x: u16 = p.rect.x + p.rect.width - controls_w - 1;
+            drawText(canvas, total_cols, content_rows, controls_x, p.rect.y, controls, controls_w);
+            markTextLayer(
+                chrome_layer,
+                chrome_panel_id,
+                total_cols,
+                content_rows,
+                controls_x,
+                p.rect.y,
+                controls,
+                controls_w,
+                if (panel_active) chrome_layer_active_buttons else chrome_layer_inactive_buttons,
+                p.id,
+            );
+        }
+    }
+}
+
+fn composeContentCells(
+    mux: *multiplexer.Multiplexer,
+    panes: []const PaneRenderRef,
+    total_cols: usize,
+    content_rows: usize,
+    canvas: []const u21,
+    border_conn: []const u8,
+    chrome_layer: []const u8,
+    chrome_panel_id: []const u32,
+    popup_overlay: []const bool,
+    popup_opaque_cover: []const bool,
+    curr: []RuntimeRenderCell,
+) void {
+    var row: usize = 0;
+    while (row < content_rows) : (row += 1) {
+        const row_off = row * total_cols;
+        const start = row * total_cols;
+        var x: usize = 0;
+        while (x < total_cols) : (x += 1) {
+            if (popup_overlay[row_off + x]) {
+                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
+                if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
+                    curr[row_off + x].style = s;
+                    curr[row_off + x].styled = !s.default();
+                }
+                continue;
+            }
+            if (border_conn[row_off + x] != 0) {
+                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
+                if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
+                    curr[row_off + x].style = s;
+                    curr[row_off + x].styled = !s.default();
+                }
+                continue;
+            }
+            const pane_cell = paneCellAt(panes, x, row);
+            if (pane_cell) |pc| {
+                if (pc.skip_draw) {
+                    curr[row_off + x] = .{
+                        .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
+                        .text_len = 1,
+                        .style = .{},
+                        .styled = false,
+                    };
+                } else {
+                    curr[row_off + x] = .{
+                        .text = pc.text,
+                        .text_len = pc.text_len,
+                        .style = pc.style,
+                        .styled = !pc.style.default(),
+                    };
+                }
+            } else {
+                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
+            }
+            if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
+                curr[row_off + x].style = s;
+                curr[row_off + x].styled = !s.default();
+            }
+            if (popup_opaque_cover[row_off + x]) {
+                enforceOpaqueRuntimeCellBg(&curr[row_off + x]);
+            }
         }
     }
 }
