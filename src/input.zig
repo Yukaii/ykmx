@@ -89,6 +89,7 @@ const EscapeState = enum {
     none,
     esc,
     csi,
+    csi_x10,
 };
 
 pub const Router = struct {
@@ -99,6 +100,7 @@ pub const Router = struct {
     escape_state: EscapeState = .none,
     esc_buf: [64]u8 = undefined,
     esc_len: u8 = 0,
+    esc_pending_since_ms: i64 = 0,
 
     pub fn feedByte(self: *Router, b: u8) Event {
         if (self.escape_state != .none) {
@@ -153,6 +155,7 @@ pub const Router = struct {
             self.escape_state = .esc;
             self.esc_buf[0] = b;
             self.esc_len = 1;
+            self.esc_pending_since_ms = std.time.milliTimestamp();
             return .noop;
         }
 
@@ -181,11 +184,28 @@ pub const Router = struct {
                     break :blk .{ .forward_sequence = seq };
                 },
             },
-            .csi => if (isCsiFinalByte(b)) blk: {
-                const seq = self.emitEscAsSequence();
-                self.resetEscape();
-                break :blk .{ .forward_sequence = seq };
-            } else .noop,
+            .csi => blk: {
+                // X10 mouse packet is ESC [ M Cb Cx Cy (6 bytes total).
+                // Treat ESC[M as introducer, not a final CSI.
+                if (self.esc_len == 3 and self.esc_buf[2] == 'M') {
+                    self.escape_state = .csi_x10;
+                    break :blk .noop;
+                }
+                if (isCsiFinalByte(b)) {
+                    const seq = self.emitEscAsSequence();
+                    self.resetEscape();
+                    break :blk .{ .forward_sequence = seq };
+                }
+                break :blk .noop;
+            },
+            .csi_x10 => blk: {
+                if (self.esc_len >= 6) {
+                    const seq = self.emitEscAsSequence();
+                    self.resetEscape();
+                    break :blk .{ .forward_sequence = seq };
+                }
+                break :blk .noop;
+            },
             .none => .noop,
         };
     }
@@ -202,6 +222,16 @@ pub const Router = struct {
     fn resetEscape(self: *Router) void {
         self.escape_state = .none;
         self.esc_len = 0;
+        self.esc_pending_since_ms = 0;
+    }
+
+    pub fn flushPendingEscapeIfExpired(self: *Router, now_ms: i64, timeout_ms: i64) ?ForwardSequence {
+        if (self.escape_state != .esc or self.esc_len != 1) return null;
+        if (self.esc_pending_since_ms == 0) return null;
+        if ((now_ms - self.esc_pending_since_ms) < timeout_ms) return null;
+        const seq = self.emitEscAsSequence();
+        self.resetEscape();
+        return seq;
     }
 };
 
@@ -210,6 +240,23 @@ fn isCsiFinalByte(b: u8) bool {
 }
 
 fn parseMouseSgr(seq: []const u8) ?MouseEvent {
+    // X10 mouse protocol: ESC [ M Cb Cx Cy
+    if (seq.len == 6 and std.mem.startsWith(u8, seq, "\x1b[M")) {
+        const cb = seq[3];
+        const cx = seq[4];
+        const cy = seq[5];
+        if (cb < 32 or cx < 32 or cy < 32) return null;
+        const button: u16 = @intCast(cb - 32);
+        const x: u16 = @intCast(cx - 32);
+        const y: u16 = @intCast(cy - 32);
+        return .{
+            .button = button,
+            .x = x,
+            .y = y,
+            .pressed = (button & 0x03) != 0x03,
+        };
+    }
+
     if (seq.len < 6) return null;
     if (!std.mem.startsWith(u8, seq, "\x1b[")) return null;
 
@@ -396,6 +443,18 @@ test "input router emits csi sequence as one event" {
     }
 }
 
+test "input router flushes lone ESC after timeout" {
+    const testing = std.testing;
+    var r = Router{};
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x1b));
+    const pending = r.flushPendingEscapeIfExpired(std.time.milliTimestamp(), 1000);
+    try testing.expect(pending == null);
+
+    const flushed = r.flushPendingEscapeIfExpired(r.esc_pending_since_ms + 30, 25) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("\x1b", flushed.slice());
+}
+
 test "input router parses sgr mouse sequence metadata" {
     const testing = std.testing;
     var r = Router{};
@@ -438,6 +497,31 @@ test "input router parses numeric csi mouse sequence metadata without angle pref
             try testing.expectEqual(@as(u16, 0), m.button);
             try testing.expectEqual(@as(u16, 20), m.x);
             try testing.expectEqual(@as(u16, 5), m.y);
+            try testing.expect(m.pressed);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "input router parses x10 mouse packet metadata" {
+    const testing = std.testing;
+    var r = Router{};
+
+    // ESC [ M Cb Cx Cy where values are offset by +32.
+    const bytes = [_]u8{ 0x1b, '[', 'M', 32, 42, 52 }; // button=0 x=10 y=20
+    for (bytes[0 .. bytes.len - 1]) |b| {
+        _ = r.feedByte(b);
+    }
+    const ev = r.feedByte(bytes[bytes.len - 1]);
+
+    switch (ev) {
+        .forward_sequence => |seq| {
+            try testing.expectEqual(@as(usize, 6), seq.slice().len);
+            try testing.expect(seq.mouse != null);
+            const m = seq.mouse.?;
+            try testing.expectEqual(@as(u16, 0), m.button);
+            try testing.expectEqual(@as(u16, 10), m.x);
+            try testing.expectEqual(@as(u16, 20), m.y);
             try testing.expect(m.pressed);
         },
         else => return error.TestUnexpectedResult,

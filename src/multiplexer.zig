@@ -550,6 +550,21 @@ pub const Multiplexer = struct {
         }
     }
 
+    pub fn flushPendingInputTimeouts(self: *Multiplexer) !void {
+        const seq = self.input_router.flushPendingEscapeIfExpired(std.time.milliTimestamp(), 25) orelse return;
+        if (self.popupHasFocusedInputTarget()) {
+            self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
+                error.NoFocusedPopup, error.UnknownWindow => {},
+                else => return err,
+            };
+        } else {
+            self.sendInputToFocused(seq.slice()) catch |err| switch (err) {
+                error.NoFocusedWindow, error.UnknownWindow => {},
+                else => return err,
+            };
+        }
+    }
+
     pub fn resizeActiveWindowsToLayout(self: *Multiplexer, screen: layout.Rect) !usize {
         const rects = try self.computeActiveLayout(screen);
         defer self.allocator.free(rects);
@@ -1954,15 +1969,16 @@ pub const Multiplexer = struct {
         }
         const pane_hit = try self.paneHitAt(screen, px, py);
         if (motion) {
+            // In hybrid mode, motion hover should not be forwarded to apps by
+            // default; it is noisy for terminal editors and can interrupt flow.
+            // Clicks and wheel can still be forwarded (see branches below).
+            _ = target_has_tracking;
             if (pane_hit) |hit| {
                 if (hit.on_border) {
                     self.hybrid_forward_click_active = false;
                     return true;
                 }
-                const tab = try self.workspace_mgr.activeTab();
-                const current_focus = tab.focused_index orelse 0;
-                if (hit.idx != current_focus) return true;
-                return !target_has_tracking;
+                return true;
             }
             return true;
         }
@@ -1971,11 +1987,16 @@ pub const Multiplexer = struct {
             if (hit.on_border) return true;
             const tab = try self.workspace_mgr.activeTab();
             const target_id = tab.windows.items[hit.idx].id;
-            const target_tracking = self.windowHasMouseTracking(target_id);
-            if (!target_tracking) return true;
-            try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
-            try self.markWindowDirty(target_id);
-            self.requestRedraw();
+            const current_focus = tab.focused_index orelse 0;
+            if (hit.idx != current_focus) {
+                try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
+                try self.markWindowDirty(target_id);
+                self.requestRedraw();
+                // First interaction on another pane is focus-only.
+                self.hybrid_forward_click_active = false;
+                return true;
+            }
+            // Forward wheel / non-left button to focused pane body.
             self.hybrid_forward_click_active = true;
             return false;
         }
@@ -1993,7 +2014,6 @@ pub const Multiplexer = struct {
             const tab = try self.workspace_mgr.activeTab();
             const current_focus = tab.focused_index orelse 0;
             const target_id = tab.windows.items[hit.idx].id;
-            const target_tracking = self.windowHasMouseTracking(target_id);
             try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
             try self.markWindowDirty(target_id);
             self.requestRedraw();
@@ -2003,21 +2023,12 @@ pub const Multiplexer = struct {
             }
             if (hit.idx != current_focus) {
                 // First click into another pane switches focus only.
-                if (target_tracking) {
-                    self.hybrid_forward_click_active = true;
-                    return false;
-                }
                 self.hybrid_forward_click_active = false;
                 return true;
             }
-            // Content clicks are forwarded (for shell click-to-move), while
-            // motion/non-left events remain gated by mouse-tracking capability.
-            if (target_tracking) {
-                self.hybrid_forward_click_active = true;
-                return false;
-            }
-            self.hybrid_forward_click_active = false;
-            return true;
+            // Content click on already-focused pane is forwarded.
+            self.hybrid_forward_click_active = true;
+            return false;
         }
 
         self.hybrid_forward_click_active = false;

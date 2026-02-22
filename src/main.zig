@@ -384,6 +384,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             if (n == 0) break;
             try mux.handleInputBytesWithScreen(content, input_buf[0..n]);
         }
+        try mux.flushPendingInputTimeouts();
 
         const snap = signal_mod.drain();
         const tick_result = try mux.tick(30, content, snap);
