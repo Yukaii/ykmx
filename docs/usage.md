@@ -29,10 +29,35 @@ ykmx --help
 ykmx --version
 ykmx --benchmark 300
 ykmx --smoke-zmx my-session
+ykmx ctl help
 ```
 
 - `--benchmark [N]` runs a lightweight frame timing benchmark and prints avg/p95/max.
 - `--smoke-zmx [session]` performs a temporary `zmx attach` round-trip smoke check.
+- `ctl` sends control commands to the current running ykmx session via `$YKMX_CONTROL_PIPE`.
+
+Control CLI commands:
+
+```bash
+ykmx ctl new-window
+ykmx ctl close-window
+ykmx ctl open-popup
+ykmx ctl open-panel 8 4 100 24
+ykmx ctl hide-panel 1
+ykmx ctl show-panel 1
+ykmx ctl status
+ykmx ctl list-windows
+ykmx ctl list-panels
+ykmx ctl json '{"v":1,"command":"open_popup"}'
+```
+
+Runtime exports these environment variables:
+
+- `YKMX_SESSION_ID`: current ykmx session identifier
+- `YKMX_CONTROL_PIPE`: FIFO path for control commands (for `ykmx ctl`)
+- `YKMX_STATE_FILE`: text snapshot path used by `ykmx ctl status|list-*`
+
+Both pane shells and plugin processes inherit these env vars, so external scripts and plugins can control the active session.
 
 Compatibility helpers:
 

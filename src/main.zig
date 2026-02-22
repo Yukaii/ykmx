@@ -21,6 +21,8 @@ const c = @cImport({
     @cInclude("sys/ioctl.h");
     @cInclude("termios.h");
     @cInclude("fcntl.h");
+    @cInclude("sys/stat.h");
+    @cInclude("stdlib.h");
 });
 
 const POC_ROWS: u16 = 12;
@@ -106,6 +108,10 @@ pub fn main() !void {
             try out.flush();
             return;
         }
+        if (std.mem.eql(u8, args[1], "ctl")) {
+            try runControlCli(alloc, if (args.len > 2) args[2..] else &.{});
+            return;
+        }
         if (std.mem.eql(u8, args[1], "--poc")) {
             run_poc = true;
         } else {
@@ -188,6 +194,7 @@ fn printHelp() !void {
         \\  ykmx --benchmark-layout [N]
         \\                      Run layout churn benchmark (default N=500)
         \\  ykmx --smoke-zmx [session]
+        \\  ykmx ctl <command> [args]
         \\  ykmx --version
         \\  ykmx --help
         \\
@@ -199,6 +206,9 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     signal_mod.installHandlers();
     var env = try zmx.detect(allocator);
     defer env.deinit(allocator);
+    var control = try ControlPipe.init(allocator, env.session_name);
+    defer control.deinit();
+    control.exportEnv() catch {};
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
 
@@ -387,6 +397,9 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             if (plugins.consumeUiDirtyAny()) force_redraw = true;
         }
 
+        if (try control.poll(&mux, content)) force_redraw = true;
+        control.writeState(&mux, content) catch {};
+
         const current_plugin_state = try collectPluginRuntimeState(&mux, content);
         if (plugins.hasAny()) {
             if (!pluginRuntimeStateEql(last_plugin_state, current_plugin_state)) {
@@ -429,6 +442,379 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
         }
     }
     if (plugins.hasAny()) plugins.emitShutdown();
+}
+
+const ControlCommand = struct {
+    v: ?u8 = null,
+    command: ?[]const u8 = null,
+    x: ?u16 = null,
+    y: ?u16 = null,
+    width: ?u16 = null,
+    height: ?u16 = null,
+    modal: ?bool = null,
+    transparent_background: ?bool = null,
+    show_border: ?bool = null,
+    show_controls: ?bool = null,
+    panel_id: ?u32 = null,
+    visible: ?bool = null,
+};
+
+const ControlPipe = struct {
+    allocator: std.mem.Allocator,
+    session_id: []u8,
+    path: []u8,
+    state_path: []u8,
+    read_fd: c_int,
+    write_fd: c_int,
+    buf: std.ArrayListUnmanaged(u8) = .{},
+
+    fn init(allocator: std.mem.Allocator, maybe_session_name: ?[]const u8) !ControlPipe {
+        const raw_id = maybe_session_name orelse "standalone";
+        const session_id = try sanitizeSessionId(allocator, raw_id);
+        errdefer allocator.free(session_id);
+
+        const path = try std.fmt.allocPrint(allocator, "/tmp/ykmx-{s}.ctl", .{session_id});
+        errdefer allocator.free(path);
+        const state_path = try std.fmt.allocPrint(allocator, "/tmp/ykmx-{s}.state", .{session_id});
+        errdefer allocator.free(state_path);
+
+        const c_path = try allocator.dupeZ(u8, path);
+        defer allocator.free(c_path);
+        _ = c.unlink(c_path.ptr);
+        if (c.mkfifo(c_path.ptr, 0o600) != 0) return error.ControlPipeCreateFailed;
+
+        const read_fd = c.open(c_path.ptr, c.O_RDONLY | c.O_NONBLOCK);
+        if (read_fd < 0) return error.ControlPipeOpenFailed;
+        errdefer _ = c.close(read_fd);
+
+        const write_fd = c.open(c_path.ptr, c.O_WRONLY | c.O_NONBLOCK);
+        if (write_fd < 0) return error.ControlPipeOpenFailed;
+        errdefer _ = c.close(write_fd);
+
+        return .{
+            .allocator = allocator,
+            .session_id = session_id,
+            .path = path,
+            .state_path = state_path,
+            .read_fd = read_fd,
+            .write_fd = write_fd,
+        };
+    }
+
+    fn deinit(self: *ControlPipe) void {
+        _ = c.close(self.read_fd);
+        _ = c.close(self.write_fd);
+        self.buf.deinit(self.allocator);
+        if (self.path.len > 0) {
+            if (self.allocator.dupeZ(u8, self.path)) |c_path| {
+                _ = c.unlink(c_path.ptr);
+                self.allocator.free(c_path);
+            } else |_| {}
+        }
+        self.allocator.free(self.path);
+        self.allocator.free(self.state_path);
+        self.allocator.free(self.session_id);
+        self.* = undefined;
+    }
+
+    fn exportEnv(self: *const ControlPipe) !void {
+        const session_z = try self.allocator.dupeZ(u8, self.session_id);
+        defer self.allocator.free(session_z);
+        const path_z = try self.allocator.dupeZ(u8, self.path);
+        defer self.allocator.free(path_z);
+        const state_path_z = try self.allocator.dupeZ(u8, self.state_path);
+        defer self.allocator.free(state_path_z);
+        if (c.setenv("YKMX_SESSION_ID", session_z.ptr, 1) != 0) return error.SetEnvFailed;
+        if (c.setenv("YKMX_CONTROL_PIPE", path_z.ptr, 1) != 0) return error.SetEnvFailed;
+        if (c.setenv("YKMX_STATE_FILE", state_path_z.ptr, 1) != 0) return error.SetEnvFailed;
+    }
+
+    fn poll(self: *ControlPipe, mux: *multiplexer.Multiplexer, screen: layout.Rect) !bool {
+        var changed = false;
+        var scratch: [1024]u8 = undefined;
+        while (true) {
+            const n = c.read(self.read_fd, &scratch, scratch.len);
+            if (n < 0) break;
+            if (n == 0) break;
+            try self.buf.appendSlice(self.allocator, scratch[0..@intCast(n)]);
+        }
+
+        while (std.mem.indexOfScalar(u8, self.buf.items, '\n')) |nl| {
+            const line = std.mem.trim(u8, self.buf.items[0..nl], " \t\r");
+            if (line.len > 0) {
+                changed = (try applyControlCommandLine(mux, screen, line)) or changed;
+            }
+            consumePrefix(&self.buf, nl + 1);
+        }
+        return changed;
+    }
+
+    fn writeState(self: *ControlPipe, mux: *multiplexer.Multiplexer, screen: layout.Rect) !void {
+        var text = std.ArrayListUnmanaged(u8){};
+        defer text.deinit(self.allocator);
+        const w = text.writer(self.allocator);
+
+        const layout_type = try mux.workspace_mgr.activeLayoutType();
+        const tab_count = mux.workspace_mgr.tabCount();
+        const active_tab_idx = mux.workspace_mgr.activeTabIndex() orelse 0;
+        const focused_window_idx = mux.workspace_mgr.focusedWindowIndexActive() catch null;
+        const focused_panel_id = mux.popup_mgr.focused_popup_id orelse 0;
+
+        try w.print("session_id={s}\n", .{self.session_id});
+        try w.print("layout={s}\n", .{@tagName(layout_type)});
+        try w.print("active_tab_index={}\n", .{active_tab_idx});
+        try w.print("tab_count={}\n", .{tab_count});
+        try w.print("screen={}x{}\n", .{ screen.width, screen.height });
+        try w.print("panel_count_visible={}\n", .{mux.popup_mgr.visibleCount()});
+        try w.print("focused_panel_id={}\n", .{focused_panel_id});
+
+        const tab = try mux.workspace_mgr.activeTab();
+        for (tab.windows.items, 0..) |win, i| {
+            try w.print("window id={} focused={} minimized={} title=", .{
+                win.id,
+                @as(u8, @intFromBool(focused_window_idx != null and focused_window_idx.? == i)),
+                @as(u8, @intFromBool(win.minimized)),
+            });
+            try writeQuotedString(w, win.title);
+            try w.writeByte('\n');
+        }
+
+        for (mux.popup_mgr.popups.items) |p| {
+            try w.print(
+                "panel id={} visible={} focused={} modal={} owner=",
+                .{
+                    p.id,
+                    @as(u8, @intFromBool(p.visible)),
+                    @as(u8, @intFromBool(mux.popup_mgr.focused_popup_id != null and mux.popup_mgr.focused_popup_id.? == p.id)),
+                    @as(u8, @intFromBool(p.modal)),
+                },
+            );
+            try writeQuotedString(w, p.owner_plugin_name orelse "");
+            try w.print(" rect={},{} {}x{} title=", .{ p.rect.x, p.rect.y, p.rect.width, p.rect.height });
+            try writeQuotedString(w, p.title);
+            try w.writeByte('\n');
+        }
+
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{self.state_path});
+        defer self.allocator.free(tmp_path);
+        var f = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer f.close();
+        try f.writeAll(text.items);
+        try std.fs.cwd().rename(tmp_path, self.state_path);
+    }
+};
+
+fn consumePrefix(buf: *std.ArrayListUnmanaged(u8), n: usize) void {
+    const remaining = buf.items.len - n;
+    if (remaining > 0) @memmove(buf.items[0..remaining], buf.items[n..]);
+    buf.items.len = remaining;
+}
+
+fn writeQuotedString(writer: anytype, s: []const u8) !void {
+    try writer.writeByte('"');
+    for (s) |ch| {
+        switch (ch) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            0...8, 11...12, 14...31 => try writer.print("\\u00{x:0>2}", .{ch}),
+            else => try writer.writeByte(ch),
+        }
+    }
+    try writer.writeByte('"');
+}
+
+fn sanitizeSessionId(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+    for (raw) |ch| {
+        const ok = (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9') or ch == '_' or ch == '-' or ch == '.';
+        try out.append(allocator, if (ok) ch else '_');
+    }
+    if (out.items.len == 0) try out.append(allocator, 's');
+    return out.toOwnedSlice(allocator);
+}
+
+fn applyControlCommandLine(mux: *multiplexer.Multiplexer, screen: layout.Rect, line: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const parsed = std.json.parseFromSlice(ControlCommand, arena.allocator(), line, .{}) catch return false;
+    const cmd = parsed.value.command orelse return false;
+
+    if (std.mem.eql(u8, cmd, "new_window")) {
+        _ = try mux.createShellWindow("shell");
+        _ = try mux.resizeActiveWindowsToLayout(screen);
+        return true;
+    }
+    if (std.mem.eql(u8, cmd, "close_window")) {
+        _ = mux.closeFocusedWindow() catch return false;
+        _ = try mux.resizeActiveWindowsToLayout(screen);
+        return true;
+    }
+    if (std.mem.eql(u8, cmd, "open_popup")) {
+        _ = try mux.openShellPopup("popup-shell", screen, true);
+        return true;
+    }
+    if (std.mem.eql(u8, cmd, "open_panel_rect")) {
+        const x = parsed.value.x orelse return false;
+        const y = parsed.value.y orelse return false;
+        const width = parsed.value.width orelse return false;
+        const height = parsed.value.height orelse return false;
+        _ = try mux.openShellPopupRectStyled(
+            "popup-shell",
+            screen,
+            .{ .x = x, .y = y, .width = width, .height = height },
+            parsed.value.modal orelse false,
+            .{
+                .transparent_background = parsed.value.transparent_background orelse false,
+                .show_border = parsed.value.show_border orelse true,
+                .show_controls = parsed.value.show_controls orelse false,
+            },
+            null,
+        );
+        return true;
+    }
+    if (std.mem.eql(u8, cmd, "set_panel_visibility")) {
+        const panel_id = parsed.value.panel_id orelse return false;
+        const visible = parsed.value.visible orelse return false;
+        return try mux.setPopupVisibilityByIdOwned(panel_id, visible, null);
+    }
+    return false;
+}
+
+fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 0 or std.mem.eql(u8, args[0], "help")) {
+        var buf: [1024]u8 = undefined;
+        var w = std.fs.File.stdout().writer(&buf);
+        const out = &w.interface;
+        try out.writeAll(
+            \\ykmx ctl usage:
+            \\  ykmx ctl new-window
+            \\  ykmx ctl close-window
+            \\  ykmx ctl open-popup
+            \\  ykmx ctl open-panel x y width height
+            \\  ykmx ctl hide-panel <panel_id>
+            \\  ykmx ctl show-panel <panel_id>
+            \\  ykmx ctl status
+            \\  ykmx ctl list-windows
+            \\  ykmx ctl list-panels
+            \\  ykmx ctl json '<json>'
+            \\
+            \\Uses $YKMX_CONTROL_PIPE (actions) and $YKMX_STATE_FILE (listing).
+            \\
+        );
+        try out.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, args[0], "status") or std.mem.eql(u8, args[0], "list-windows") or std.mem.eql(u8, args[0], "list-panels")) {
+        const state_path = resolveStatePathForCli(allocator) catch |err| switch (err) {
+            error.MissingControlPipeEnv => return writeControlEnvHint(),
+            else => return err,
+        };
+        defer allocator.free(state_path);
+        const content = try std.fs.cwd().readFileAlloc(allocator, state_path, 1024 * 1024);
+        defer allocator.free(content);
+
+        var buf: [4096]u8 = undefined;
+        var w = std.fs.File.stdout().writer(&buf);
+        const out = &w.interface;
+
+        if (std.mem.eql(u8, args[0], "status")) {
+            try out.writeAll(content);
+        } else {
+            var it = std.mem.splitScalar(u8, content, '\n');
+            while (it.next()) |line| {
+                if (line.len == 0) continue;
+                if (std.mem.eql(u8, args[0], "list-windows")) {
+                    if (!std.mem.startsWith(u8, line, "window ")) continue;
+                } else {
+                    if (!std.mem.startsWith(u8, line, "panel ")) continue;
+                }
+                try out.writeAll(line);
+                try out.writeByte('\n');
+            }
+        }
+        try out.flush();
+        return;
+    }
+
+    const pipe_path = std.process.getEnvVarOwned(allocator, "YKMX_CONTROL_PIPE") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return writeControlEnvHint(),
+        else => return err,
+    };
+    defer allocator.free(pipe_path);
+    const pipe_z = try allocator.dupeZ(u8, pipe_path);
+    defer allocator.free(pipe_z);
+
+    var line = std.ArrayListUnmanaged(u8){};
+    defer line.deinit(allocator);
+
+    if (std.mem.eql(u8, args[0], "json")) {
+        if (args.len < 2) return error.InvalidControlArgs;
+        try line.appendSlice(allocator, args[1]);
+    } else if (std.mem.eql(u8, args[0], "new-window")) {
+        try line.appendSlice(allocator, "{\"v\":1,\"command\":\"new_window\"}");
+    } else if (std.mem.eql(u8, args[0], "close-window")) {
+        try line.appendSlice(allocator, "{\"v\":1,\"command\":\"close_window\"}");
+    } else if (std.mem.eql(u8, args[0], "open-popup")) {
+        try line.appendSlice(allocator, "{\"v\":1,\"command\":\"open_popup\"}");
+    } else if (std.mem.eql(u8, args[0], "open-panel")) {
+        if (args.len < 5) return error.InvalidControlArgs;
+        try line.writer(allocator).print(
+            "{{\"v\":1,\"command\":\"open_panel_rect\",\"x\":{},\"y\":{},\"width\":{},\"height\":{},\"modal\":false}}",
+            .{
+                try std.fmt.parseInt(u16, args[1], 10),
+                try std.fmt.parseInt(u16, args[2], 10),
+                try std.fmt.parseInt(u16, args[3], 10),
+                try std.fmt.parseInt(u16, args[4], 10),
+            },
+        );
+    } else if (std.mem.eql(u8, args[0], "hide-panel")) {
+        if (args.len < 2) return error.InvalidControlArgs;
+        try line.writer(allocator).print(
+            "{{\"v\":1,\"command\":\"set_panel_visibility\",\"panel_id\":{},\"visible\":false}}",
+            .{try std.fmt.parseInt(u32, args[1], 10)},
+        );
+    } else if (std.mem.eql(u8, args[0], "show-panel")) {
+        if (args.len < 2) return error.InvalidControlArgs;
+        try line.writer(allocator).print(
+            "{{\"v\":1,\"command\":\"set_panel_visibility\",\"panel_id\":{},\"visible\":true}}",
+            .{try std.fmt.parseInt(u32, args[1], 10)},
+        );
+    } else {
+        return error.InvalidControlArgs;
+    }
+    try line.append(allocator, '\n');
+
+    const fd = c.open(pipe_z.ptr, c.O_WRONLY);
+    if (fd < 0) return error.ControlPipeOpenFailed;
+    defer _ = c.close(fd);
+    _ = c.write(fd, line.items.ptr, line.items.len);
+}
+
+fn writeControlEnvHint() !void {
+    var buf: [256]u8 = undefined;
+    var w = std.fs.File.stderr().writer(&buf);
+    const err_out = &w.interface;
+    try err_out.writeAll("ykmx ctl requires a running ykmx session shell (missing YKMX_CONTROL_PIPE/YKMX_STATE_FILE).\n");
+    try err_out.flush();
+}
+
+fn resolveStatePathForCli(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "YKMX_STATE_FILE")) |state_path| {
+        return state_path;
+    } else |_| {}
+
+    const pipe_path = std.process.getEnvVarOwned(allocator, "YKMX_CONTROL_PIPE") catch return error.MissingControlPipeEnv;
+    defer allocator.free(pipe_path);
+
+    if (std.mem.endsWith(u8, pipe_path, ".ctl")) {
+        return std.fmt.allocPrint(allocator, "{s}.state", .{pipe_path[0 .. pipe_path.len - 4]});
+    }
+    return std.fmt.allocPrint(allocator, "{s}.state", .{pipe_path});
 }
 
 fn collectPluginRuntimeState(
