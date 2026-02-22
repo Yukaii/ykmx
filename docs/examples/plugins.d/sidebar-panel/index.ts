@@ -79,11 +79,6 @@ async function main() {
         panelId = null;
       }
 
-      if (!panelId && !opening) {
-        await openPanel(ev.state);
-        continue;
-      }
-
       if (ev.reason === "screen") {
         await ensurePanelPosition(ev.state);
       }

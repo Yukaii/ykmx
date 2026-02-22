@@ -375,12 +375,12 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             const actions = plugins.drainActions(allocator) catch null;
             if (actions) |owned| {
                 defer {
-                    for (owned) |*action| plugin_host.PluginHost.deinitActionPayload(allocator, action);
+                    for (owned) |*sourced| plugin_host.PluginHost.deinitActionPayload(allocator, &sourced.action);
                     allocator.free(owned);
                 }
                 var changed = false;
-                for (owned) |action| {
-                    changed = (try applyPluginAction(&mux, content, action)) or changed;
+                for (owned) |sourced| {
+                    changed = (try applyPluginAction(&mux, content, sourced.plugin_name, sourced.action)) or changed;
                 }
                 if (changed) force_redraw = true;
             }
@@ -515,6 +515,7 @@ fn detectStateChangeReason(
 fn applyPluginAction(
     mux: *multiplexer.Multiplexer,
     screen: layout.Rect,
+    plugin_name: []const u8,
     action: plugin_host.PluginHost.Action,
 ) !bool {
     switch (action) {
@@ -569,22 +570,20 @@ fn applyPluginAction(
             return false;
         },
         .open_shell_panel => {
-            _ = try mux.openShellPopup("popup-shell", screen, true);
+            _ = try mux.openShellPopupOwned("popup-shell", screen, true, plugin_name);
             return true;
         },
         .close_focused_panel => {
-            try mux.closeFocusedPopup();
-            return true;
+            return try mux.closeFocusedPopupOwned(plugin_name);
         },
         .cycle_panel_focus => {
-            mux.popup_mgr.cycleFocus();
-            return true;
+            return mux.cyclePopupFocusOwned(plugin_name);
         },
         .toggle_shell_panel => {
-            if (mux.popup_mgr.count() > 0) {
-                try mux.closeFocusedPopup();
+            if (try mux.closeFocusedPopupOwned(plugin_name)) {
+                return true;
             } else {
-                _ = try mux.openShellPopup("popup-shell", screen, true);
+                _ = try mux.openShellPopupOwned("popup-shell", screen, true, plugin_name);
             }
             return true;
         },
@@ -604,27 +603,28 @@ fn applyPluginAction(
                     .show_border = payload.show_border,
                     .show_controls = payload.show_controls,
                 },
+                plugin_name,
             );
             return true;
         },
         .close_panel_by_id => |panel_id| {
-            return try mux.closePopupById(panel_id);
+            return try mux.closePopupByIdOwned(panel_id, plugin_name);
         },
         .focus_panel_by_id => |panel_id| {
-            return try mux.focusPopupById(panel_id);
+            return try mux.focusPopupByIdOwned(panel_id, plugin_name);
         },
         .move_panel_by_id => |payload| {
-            return try mux.movePopupById(payload.panel_id, payload.x, payload.y, screen);
+            return try mux.movePopupByIdOwned(payload.panel_id, payload.x, payload.y, screen, plugin_name);
         },
         .resize_panel_by_id => |payload| {
-            return try mux.resizePopupById(payload.panel_id, payload.width, payload.height, screen);
+            return try mux.resizePopupByIdOwned(payload.panel_id, payload.width, payload.height, screen, plugin_name);
         },
         .set_panel_style_by_id => |payload| {
-            return try mux.setPopupStyleById(payload.panel_id, .{
+            return try mux.setPopupStyleByIdOwned(payload.panel_id, .{
                 .transparent_background = payload.transparent_background,
                 .show_border = payload.show_border,
                 .show_controls = payload.show_controls,
-            }, screen);
+            }, screen, plugin_name);
         },
     }
 }

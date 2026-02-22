@@ -5,7 +5,8 @@ const ENABLE_PANEL_DRAG = false;
 const ENABLE_PANEL_CONTROLS = false;
 const ENABLE_PANEL_TRANSPARENT_BG = false;
 
-let panelCount = 0;
+let popupPanelId: number | null = null;
+let opening = false;
 
 async function main() {
   for await (const ev of readEvents()) {
@@ -17,16 +18,26 @@ async function main() {
     }
 
     if (isStateChangedEvent(ev)) {
-      panelCount = ev.state.panel_count;
+      if (opening && ev.state.has_focused_panel) {
+        popupPanelId = ev.state.focused_panel_id;
+        opening = false;
+      }
+      if (ev.state.panel_count === 0) {
+        popupPanelId = null;
+        opening = false;
+      }
       continue;
     }
 
     if (!isCommandEvent(ev)) continue;
 
     if (ev.command === "open_popup") {
-      if (panelCount > 0) {
-        await writeAction({ v: 1, action: "close_focused_panel" });
+      if (popupPanelId) {
+        await writeAction({ v: 1, action: "close_panel_by_id", panel_id: popupPanelId });
+        popupPanelId = null;
+        opening = false;
       } else {
+        opening = true;
         await writeAction({
           v: 1,
           action: "open_shell_panel_rect",
@@ -43,11 +54,17 @@ async function main() {
       continue;
     }
     if (ev.command === "close_popup") {
-      await writeAction({ v: 1, action: "close_focused_panel" });
+      if (popupPanelId) {
+        await writeAction({ v: 1, action: "close_panel_by_id", panel_id: popupPanelId });
+        popupPanelId = null;
+        opening = false;
+      }
       continue;
     }
     if (ev.command === "cycle_popup") {
-      await writeAction({ v: 1, action: "cycle_panel_focus" });
+      if (popupPanelId) {
+        await writeAction({ v: 1, action: "focus_panel_by_id", panel_id: popupPanelId });
+      }
     }
 
     // Reserved capability toggles for panel-like popup behavior.

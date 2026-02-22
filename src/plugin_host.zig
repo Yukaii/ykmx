@@ -115,6 +115,7 @@ pub const PluginHost = struct {
     };
 
     allocator: std.mem.Allocator,
+    plugin_name: []u8,
     child: std.process.Child,
     alive: bool = true,
     next_request_id: u64 = 1,
@@ -167,7 +168,7 @@ pub const PluginHost = struct {
         status_line: []u8,
     };
 
-    pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8, config_items: []const PluginConfigItem) !PluginHost {
+    pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8, plugin_name: []const u8, config_items: []const PluginConfigItem) !PluginHost {
         const entry = try std.fs.path.join(allocator, &.{ plugin_dir, "index.ts" });
         defer allocator.free(entry);
         std.fs.cwd().access(entry, .{}) catch return error.PluginEntryNotFound;
@@ -186,6 +187,7 @@ pub const PluginHost = struct {
 
         var host = PluginHost{
             .allocator = allocator,
+            .plugin_name = try allocator.dupe(u8, plugin_name),
             .child = child,
         };
         errdefer host.deinit();
@@ -200,6 +202,7 @@ pub const PluginHost = struct {
     }
 
     pub fn deinit(self: *PluginHost) void {
+        self.allocator.free(self.plugin_name);
         self.read_buf.deinit(self.allocator);
         for (self.pending_actions.items) |*action| deinitActionPayload(self.allocator, action);
         self.pending_actions.deinit(self.allocator);
@@ -216,6 +219,10 @@ pub const PluginHost = struct {
             _ = self.child.wait() catch {};
         }
         self.* = undefined;
+    }
+
+    pub fn pluginName(self: *const PluginHost) []const u8 {
+        return self.plugin_name;
     }
 
     pub fn emitStart(self: *PluginHost, layout_type: layout.LayoutType) !void {

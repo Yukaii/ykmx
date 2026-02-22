@@ -14,8 +14,9 @@ pub const PluginLayoutEngine = struct {
     pub fn init(allocator: std.mem.Allocator, plugin_dir: []const u8) !layout.LayoutEngine {
         const ctx = try allocator.create(Context);
         errdefer allocator.destroy(ctx);
+        const plugin_name = std.fs.path.basename(plugin_dir);
         ctx.* = .{
-            .host = try plugin_host.PluginHost.start(allocator, plugin_dir, &.{}),
+            .host = try plugin_host.PluginHost.start(allocator, plugin_dir, plugin_name, &.{}),
             .fallback = layout_native.NativeLayoutEngine.init(),
         };
 

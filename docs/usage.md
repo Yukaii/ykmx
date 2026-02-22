@@ -219,6 +219,9 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"set_panel_style_by_id","panel_id":1,"show_border":true,"show_controls":false,"transparent_background":false}`
   - `{"v":1,"action":"set_ui_bars","toolbar_line":"...","tab_line":"...","status_line":"..."}`
   - `{"v":1,"action":"clear_ui_bars"}`
+- Plugin panel actions are ownership-scoped:
+  - panels opened by plugin `A` can only be closed/focused/moved/resized/styled by plugin `A`
+  - this prevents cross-plugin panel conflicts when multiple panel plugins are active
 - Plugin errors/crashes are isolated; ykmx continues running.
 
 Desktop control buttons:

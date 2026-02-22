@@ -4,6 +4,11 @@ const input_mod = @import("input.zig");
 const plugin_host = @import("plugin_host.zig");
 
 pub const PluginManager = struct {
+    pub const SourcedAction = struct {
+        plugin_name: []const u8,
+        action: plugin_host.PluginHost.Action,
+    };
+
     pub const PluginOption = struct {
         plugin_name: []const u8,
         key: []const u8,
@@ -111,14 +116,19 @@ pub const PluginManager = struct {
         return dirty;
     }
 
-    pub fn drainActions(self: *PluginManager, allocator: std.mem.Allocator) ![]plugin_host.PluginHost.Action {
-        var merged = std.ArrayListUnmanaged(plugin_host.PluginHost.Action){};
+    pub fn drainActions(self: *PluginManager, allocator: std.mem.Allocator) ![]SourcedAction {
+        var merged = std.ArrayListUnmanaged(SourcedAction){};
         errdefer merged.deinit(allocator);
 
         for (self.hosts.items) |*host| {
             const actions = host.drainActions(allocator) catch continue;
             defer allocator.free(actions);
-            try merged.appendSlice(allocator, actions);
+            for (actions) |action| {
+                try merged.append(allocator, .{
+                    .plugin_name = host.pluginName(),
+                    .action = action,
+                });
+            }
         }
 
         return merged.toOwnedSlice(allocator);
@@ -201,7 +211,7 @@ pub const PluginManager = struct {
                 .value = try self.allocator.dupe(u8, opt.value),
             });
         }
-        const host = plugin_host.PluginHost.start(self.allocator, path, host_options.items) catch return;
+        const host = plugin_host.PluginHost.start(self.allocator, path, plugin_name, host_options.items) catch return;
         try self.hosts.append(self.allocator, host);
     }
 

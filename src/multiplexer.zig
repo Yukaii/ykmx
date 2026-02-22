@@ -183,6 +183,8 @@ pub const Multiplexer = struct {
     pub fn setPrefixPanelToggleKeys(self: *Multiplexer, sidebar_key: u8, bottom_key: u8) void {
         self.input_router.sidebar_toggle_key = sidebar_key;
         self.input_router.bottom_toggle_key = bottom_key;
+        self.setPluginPrefixedKeybinding(sidebar_key, "toggle_sidebar_panel") catch {};
+        self.setPluginPrefixedKeybinding(bottom_key, "toggle_bottom_panel") catch {};
     }
 
     pub fn mouseMode(self: *const Multiplexer) MouseMode {
@@ -241,6 +243,10 @@ pub const Multiplexer = struct {
         try self.sendInputToWindow(focused_id, bytes);
     }
 
+    fn popupHasFocusedInputTarget(self: *const Multiplexer) bool {
+        return self.popup_mgr.focusedWindowId() != null;
+    }
+
     pub fn handleInputBytes(self: *Multiplexer, bytes: []const u8) !void {
         return self.handleInputBytesWithScreen(null, bytes);
     }
@@ -258,7 +264,7 @@ pub const Multiplexer = struct {
                     if (self.handleScrollbackQueryByte(c, screen)) continue;
                     if (self.handleScrollbackNavForwardByte(c, screen)) continue;
                     var tmp = [_]u8{c};
-                    if (self.popup_mgr.hasModalOpen()) {
+                    if (self.popupHasFocusedInputTarget()) {
                         self.sendInputToFocusedPopup(&tmp) catch |err| switch (err) {
                             error.NoFocusedPopup, error.UnknownWindow => {},
                             else => return err,
@@ -301,7 +307,7 @@ pub const Multiplexer = struct {
                     if (!consumed_mouse) {
                         if (self.handleScrollbackNavSequence(seq.slice(), screen)) continue;
                         if (self.isFocusedScrolledBack()) continue;
-                        if (self.popup_mgr.hasModalOpen()) {
+                        if (self.popupHasFocusedInputTarget()) {
                             self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
                                 error.NoFocusedPopup, error.UnknownWindow => {},
                                 else => return err,
@@ -523,19 +529,11 @@ pub const Multiplexer = struct {
                     }
                 },
                 .prefixed_key => |key| {
-                    if (self.plugin_prefixed_keybindings.get(key)) |command_name| {
-                        if (self.plugin_named_command_overrides.contains(command_name)) {
-                            try self.pending_plugin_command_names.append(
-                                self.allocator,
-                                try self.allocator.dupe(u8, command_name),
-                            );
-                            continue;
-                        }
-                    }
+                    if (try self.dispatchPrefixedKeyPluginCommand(key)) continue;
                     if (self.handleScrollbackQueryByte(key, screen)) continue;
                     if (self.handleScrollbackNavForwardByte(key, screen)) continue;
                     var tmp = [_]u8{key};
-                    if (self.popup_mgr.hasModalOpen()) {
+                    if (self.popupHasFocusedInputTarget()) {
                         self.sendInputToFocusedPopup(&tmp) catch |err| switch (err) {
                             error.NoFocusedPopup, error.UnknownWindow => {},
                             else => return err,
@@ -876,7 +874,7 @@ pub const Multiplexer = struct {
     }
 
     fn isFocusedScrolledBack(self: *Multiplexer) bool {
-        const focused_id = if (self.popup_mgr.hasModalOpen())
+        const focused_id = if (self.popupHasFocusedInputTarget())
             (self.popup_mgr.focusedWindowId() orelse return false)
         else
             (self.workspace_mgr.focusedWindowIdActive() catch return false);
@@ -1214,6 +1212,24 @@ pub const Multiplexer = struct {
         try self.plugin_prefixed_keybindings.put(self.allocator, key, owned);
     }
 
+    fn dispatchPrefixedKeyPluginCommand(self: *Multiplexer, key: u8) !bool {
+        const command_name = self.plugin_prefixed_keybindings.get(key) orelse return false;
+        if (input_mod.parseCommandName(command_name)) |cmd| {
+            if (self.plugin_command_overrides.contains(cmd)) {
+                try self.pending_plugin_commands.append(self.allocator, cmd);
+                return true;
+            }
+        }
+        if (self.plugin_named_command_overrides.contains(command_name)) {
+            try self.pending_plugin_command_names.append(
+                self.allocator,
+                try self.allocator.dupe(u8, command_name),
+            );
+            return true;
+        }
+        return false;
+    }
+
     pub fn tick(
         self: *Multiplexer,
         timeout_ms: i32,
@@ -1354,6 +1370,16 @@ pub const Multiplexer = struct {
         screen: layout.Rect,
         modal: bool,
     ) !u32 {
+        return self.openShellPopupOwned(title, screen, modal, null);
+    }
+
+    pub fn openShellPopupOwned(
+        self: *Multiplexer,
+        title: []const u8,
+        screen: layout.Rect,
+        modal: bool,
+        owner_plugin_name: ?[]const u8,
+    ) !u32 {
         const popup_window_id = self.next_popup_window_id;
         self.next_popup_window_id += 1;
 
@@ -1378,6 +1404,7 @@ pub const Multiplexer = struct {
             .title = title,
             .rect = rect,
             .modal = modal,
+            .owner_plugin_name = owner_plugin_name,
             .auto_close = false,
             .kind = .persistent,
             .transparent_background = false,
@@ -1396,6 +1423,7 @@ pub const Multiplexer = struct {
         rect: layout.Rect,
         modal: bool,
         style: PopupStyle,
+        owner_plugin_name: ?[]const u8,
     ) !u32 {
         const popup_window_id = self.next_popup_window_id;
         self.next_popup_window_id += 1;
@@ -1421,6 +1449,7 @@ pub const Multiplexer = struct {
             .title = title,
             .rect = clamped,
             .modal = modal,
+            .owner_plugin_name = owner_plugin_name,
             .auto_close = false,
             .kind = .persistent,
             .transparent_background = style.transparent_background,
@@ -1463,6 +1492,11 @@ pub const Multiplexer = struct {
     }
 
     pub fn closePopupById(self: *Multiplexer, popup_id: u32) !bool {
+        return self.closePopupByIdOwned(popup_id, null);
+    }
+
+    pub fn closePopupByIdOwned(self: *Multiplexer, popup_id: u32, owner_plugin_name: ?[]const u8) !bool {
+        if (!self.popupOwnedByPlugin(popup_id, owner_plugin_name)) return false;
         const removed = self.popup_mgr.close(popup_id) orelse return false;
         self.cleanupClosedPopup(removed);
         self.requestRedraw();
@@ -1470,6 +1504,11 @@ pub const Multiplexer = struct {
     }
 
     pub fn focusPopupById(self: *Multiplexer, popup_id: u32) !bool {
+        return self.focusPopupByIdOwned(popup_id, null);
+    }
+
+    pub fn focusPopupByIdOwned(self: *Multiplexer, popup_id: u32, owner_plugin_name: ?[]const u8) !bool {
+        if (!self.popupOwnedByPlugin(popup_id, owner_plugin_name)) return false;
         if (!self.popup_mgr.focusAndRaise(popup_id)) return false;
         if (self.popup_mgr.getByIdConst(popup_id)) |p| {
             if (p.window_id) |wid| try self.markWindowDirty(wid);
@@ -1479,6 +1518,11 @@ pub const Multiplexer = struct {
     }
 
     pub fn movePopupById(self: *Multiplexer, popup_id: u32, x: u16, y: u16, screen: layout.Rect) !bool {
+        return self.movePopupByIdOwned(popup_id, x, y, screen, null);
+    }
+
+    pub fn movePopupByIdOwned(self: *Multiplexer, popup_id: u32, x: u16, y: u16, screen: layout.Rect, owner_plugin_name: ?[]const u8) !bool {
+        if (!self.popupOwnedByPlugin(popup_id, owner_plugin_name)) return false;
         const p = self.popup_mgr.getById(popup_id) orelse return false;
         p.rect = clampPopupRect(screen, .{
             .x = x,
@@ -1492,6 +1536,11 @@ pub const Multiplexer = struct {
     }
 
     pub fn resizePopupById(self: *Multiplexer, popup_id: u32, width: u16, height: u16, screen: layout.Rect) !bool {
+        return self.resizePopupByIdOwned(popup_id, width, height, screen, null);
+    }
+
+    pub fn resizePopupByIdOwned(self: *Multiplexer, popup_id: u32, width: u16, height: u16, screen: layout.Rect, owner_plugin_name: ?[]const u8) !bool {
+        if (!self.popupOwnedByPlugin(popup_id, owner_plugin_name)) return false;
         const p = self.popup_mgr.getById(popup_id) orelse return false;
         p.rect = clampPopupRect(screen, .{
             .x = p.rect.x,
@@ -1515,6 +1564,11 @@ pub const Multiplexer = struct {
     }
 
     pub fn setPopupStyleById(self: *Multiplexer, popup_id: u32, style: PopupStyle, screen: layout.Rect) !bool {
+        return self.setPopupStyleByIdOwned(popup_id, style, screen, null);
+    }
+
+    pub fn setPopupStyleByIdOwned(self: *Multiplexer, popup_id: u32, style: PopupStyle, screen: layout.Rect, owner_plugin_name: ?[]const u8) !bool {
+        if (!self.popupOwnedByPlugin(popup_id, owner_plugin_name)) return false;
         const p = self.popup_mgr.getById(popup_id) orelse return false;
         p.transparent_background = style.transparent_background;
         p.show_border = style.show_border;
@@ -1529,6 +1583,75 @@ pub const Multiplexer = struct {
         }
         self.requestRedraw();
         return true;
+    }
+
+    pub fn closeFocusedPopupOwned(self: *Multiplexer, owner_plugin_name: []const u8) !bool {
+        if (self.popup_mgr.focused_popup_id) |focused_id| {
+            if (self.popupOwnedByPlugin(focused_id, owner_plugin_name)) {
+                const removed = self.popup_mgr.close(focused_id) orelse return false;
+                self.cleanupClosedPopup(removed);
+                self.requestRedraw();
+                return true;
+            }
+        }
+        var best_idx: ?usize = null;
+        var best_z: u32 = 0;
+        for (self.popup_mgr.popups.items, 0..) |p, i| {
+            if (!self.popupOwnedByName(&p, owner_plugin_name)) continue;
+            if (best_idx == null or p.z_index >= best_z) {
+                best_idx = i;
+                best_z = p.z_index;
+            }
+        }
+        if (best_idx) |idx| {
+            const popup_id = self.popup_mgr.popups.items[idx].id;
+            const removed = self.popup_mgr.close(popup_id) orelse return false;
+            self.cleanupClosedPopup(removed);
+            self.requestRedraw();
+            return true;
+        }
+        return false;
+    }
+
+    pub fn cyclePopupFocusOwned(self: *Multiplexer, owner_plugin_name: []const u8) bool {
+        var ids = std.ArrayListUnmanaged(u32){};
+        defer ids.deinit(self.allocator);
+
+        for (self.popup_mgr.popups.items) |p| {
+            if (!self.popupOwnedByName(&p, owner_plugin_name)) continue;
+            ids.append(self.allocator, p.id) catch return false;
+        }
+        if (ids.items.len == 0) return false;
+
+        if (self.popup_mgr.focused_popup_id) |id| {
+            for (ids.items, 0..) |pid, i| {
+                if (pid != id) continue;
+                const next = ids.items[(i + 1) % ids.items.len];
+                if (self.popup_mgr.focusAndRaise(next)) {
+                    self.requestRedraw();
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        if (self.popup_mgr.focusAndRaise(ids.items[ids.items.len - 1])) {
+            self.requestRedraw();
+            return true;
+        }
+        return false;
+    }
+
+    fn popupOwnedByPlugin(self: *const Multiplexer, popup_id: u32, owner_plugin_name: ?[]const u8) bool {
+        const p = self.popup_mgr.getByIdConst(popup_id) orelse return false;
+        if (owner_plugin_name) |owner| return self.popupOwnedByName(p, owner);
+        return true;
+    }
+
+    fn popupOwnedByName(self: *const Multiplexer, p: *const popup_mod.Popup, owner_plugin_name: []const u8) bool {
+        _ = self;
+        const owner = p.owner_plugin_name orelse return false;
+        return std.mem.eql(u8, owner, owner_plugin_name);
     }
 
     pub fn closeActiveTab(self: *Multiplexer) !void {
@@ -1835,7 +1958,7 @@ pub const Multiplexer = struct {
     }
 
     fn currentMouseForwardTargetHasTracking(self: *Multiplexer) bool {
-        const target_id = if (self.popup_mgr.hasModalOpen())
+        const target_id = if (self.popupHasFocusedInputTarget())
             (self.popup_mgr.focusedWindowId() orelse return false)
         else
             (self.workspace_mgr.focusedWindowIdActive() catch return false);
@@ -2185,6 +2308,7 @@ pub const Multiplexer = struct {
 
     fn cleanupClosedPopup(self: *Multiplexer, removed: popup_mod.Popup) void {
         defer self.allocator.free(removed.title);
+        defer if (removed.owner_plugin_name) |owner| self.allocator.free(owner);
 
         if (removed.window_id) |window_id| {
             if (self.ptys.getPtr(window_id)) |p| p.deinitNoWait();
@@ -3052,6 +3176,36 @@ test "multiplexer opens shell popup" {
     try testing.expectEqual(@as(usize, 1), mux.popup_mgr.count());
     const popup_window_id = mux.focusedPopupWindowId() orelse return error.TestUnexpectedResult;
     try testing.expect(mux.ptys.contains(popup_window_id));
+}
+
+test "multiplexer plugin popup ownership isolates panel actions" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("base", &.{ "/bin/sh", "-c", "sleep 0.2" });
+
+    const popup_a = try mux.openShellPopupOwned(
+        "owned-a",
+        .{ .x = 0, .y = 0, .width = 80, .height = 24 },
+        false,
+        "plugin-a",
+    );
+    const popup_b = try mux.openShellPopupOwned(
+        "owned-b",
+        .{ .x = 0, .y = 0, .width = 80, .height = 24 },
+        false,
+        "plugin-b",
+    );
+
+    try testing.expectEqual(@as(usize, 2), mux.popup_mgr.count());
+    try testing.expect(!(try mux.closePopupByIdOwned(popup_a, "plugin-b")));
+    try testing.expect(try mux.closePopupByIdOwned(popup_a, "plugin-a"));
+    try testing.expectEqual(@as(usize, 1), mux.popup_mgr.count());
+
+    try testing.expect(try mux.focusPopupByIdOwned(popup_b, "plugin-b"));
+    try testing.expect(!(try mux.focusPopupByIdOwned(popup_b, "plugin-a")));
 }
 
 test "multiplexer Ctrl+G p toggles popup shell" {

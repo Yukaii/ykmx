@@ -24,6 +24,7 @@ pub const Popup = struct {
     id: u32,
     window_id: ?u32 = null,
     title: []u8,
+    owner_plugin_name: ?[]u8 = null,
     rect: layout.Rect,
     modal: bool,
     z_index: u32,
@@ -39,6 +40,7 @@ pub const Popup = struct {
 pub const CreateParams = struct {
     window_id: ?u32 = null,
     title: []const u8,
+    owner_plugin_name: ?[]const u8 = null,
     rect: layout.Rect,
     modal: bool = false,
     parent_id: ?u32 = null,
@@ -61,7 +63,10 @@ pub const PopupManager = struct {
     }
 
     pub fn deinit(self: *PopupManager) void {
-        for (self.popups.items) |p| self.allocator.free(p.title);
+        for (self.popups.items) |p| {
+            self.allocator.free(p.title);
+            if (p.owner_plugin_name) |owner| self.allocator.free(owner);
+        }
         self.popups.deinit(self.allocator);
         self.* = undefined;
     }
@@ -74,6 +79,7 @@ pub const PopupManager = struct {
             .id = id,
             .window_id = params.window_id,
             .title = try self.allocator.dupe(u8, params.title),
+            .owner_plugin_name = if (params.owner_plugin_name) |owner| try self.allocator.dupe(u8, owner) else null,
             .rect = params.rect,
             .modal = params.modal,
             .z_index = self.nextZIndex(),

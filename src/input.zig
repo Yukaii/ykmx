@@ -107,8 +107,8 @@ pub const Router = struct {
 
         if (self.waiting_for_command) {
             self.waiting_for_command = false;
-            if (b == self.sidebar_toggle_key) return .{ .command = .toggle_sidebar_panel };
-            if (b == self.bottom_toggle_key) return .{ .command = .toggle_bottom_panel };
+            if (b == self.sidebar_toggle_key) return .{ .prefixed_key = b };
+            if (b == self.bottom_toggle_key) return .{ .prefixed_key = b };
             return switch (b) {
                 'c' => .{ .command = .create_window },
                 'x' => .{ .command = .close_window },
@@ -339,10 +339,10 @@ test "input router parses dedicated panel toggle commands" {
     var r = Router{};
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07)); // prefix
-    try testing.expectEqual(Event{ .command = .toggle_sidebar_panel }, r.feedByte(0x13)); // Ctrl+S
+    try testing.expectEqual(Event{ .prefixed_key = 0x13 }, r.feedByte(0x13)); // Ctrl+S
 
     try testing.expectEqual(Event.noop, r.feedByte(0x07)); // prefix
-    try testing.expectEqual(Event{ .command = .toggle_bottom_panel }, r.feedByte(0x02)); // Ctrl+B
+    try testing.expectEqual(Event{ .prefixed_key = 0x02 }, r.feedByte(0x02)); // Ctrl+B
 }
 
 test "input router emits unknown prefixed key" {
