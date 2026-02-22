@@ -99,6 +99,14 @@ pub const PluginManager = struct {
         return merged.toOwnedSlice(allocator);
     }
 
+    pub fn requestLayout(self: *PluginManager, allocator: std.mem.Allocator, params: layout.LayoutParams, timeout_ms: u16) !?[]layout.Rect {
+        for (self.hosts.items) |*host| {
+            const maybe = host.requestLayout(allocator, params, timeout_ms) catch continue;
+            if (maybe) |rects| return rects;
+        }
+        return null;
+    }
+
     fn startFromPluginsDir(self: *PluginManager, plugins_dir: []const u8) !void {
         var dir = std.fs.cwd().openDir(plugins_dir, .{ .iterate = true }) catch return;
         defer dir.close();

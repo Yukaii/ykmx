@@ -2,6 +2,7 @@ const std = @import("std");
 const layout = @import("layout.zig");
 const layout_native = @import("layout_native.zig");
 const plugin_host = @import("plugin_host.zig");
+const plugin_manager = @import("plugin_manager.zig");
 
 pub const PluginLayoutEngine = struct {
     const Context = struct {
@@ -52,6 +53,47 @@ pub const PluginLayoutEngine = struct {
         const ctx = @as(*Context, @ptrCast(@alignCast(ctx_ptr orelse return)));
         _ = ctx.host.emitShutdown() catch {};
         ctx.host.deinit();
+        ctx.fallback.deinit(allocator);
+        allocator.destroy(ctx);
+    }
+};
+
+pub const PluginManagerLayoutEngine = struct {
+    const Context = struct {
+        manager: *plugin_manager.PluginManager,
+        fallback: layout.LayoutEngine,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, manager: *plugin_manager.PluginManager) !layout.LayoutEngine {
+        const ctx = try allocator.create(Context);
+        errdefer allocator.destroy(ctx);
+        ctx.* = .{
+            .manager = manager,
+            .fallback = layout_native.NativeLayoutEngine.init(),
+        };
+
+        return .{
+            .ctx = ctx,
+            .compute_fn = compute,
+            .deinit_fn = deinit,
+        };
+    }
+
+    fn compute(
+        ctx_ptr: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        params: layout.LayoutParams,
+    ) ![]layout.Rect {
+        const ctx = @as(*Context, @ptrCast(@alignCast(ctx_ptr orelse return error.InvalidPluginLayoutContext)));
+        if (try ctx.manager.requestLayout(allocator, params, 12)) |plugin_rects| {
+            if (plugin_rects.len == params.window_count) return plugin_rects;
+            allocator.free(plugin_rects);
+        }
+        return ctx.fallback.compute(allocator, params);
+    }
+
+    fn deinit(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator) void {
+        const ctx = @as(*Context, @ptrCast(@alignCast(ctx_ptr orelse return)));
         ctx.fallback.deinit(allocator);
         allocator.destroy(ctx);
     }

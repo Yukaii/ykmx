@@ -22,8 +22,9 @@ plugins_enabled=false
 # plugins_dir="/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d"
 #   - paperwm: layout only
 #   - desktop-wm: floating overlap layout + free drag/resize + window controls
-# To run desktop-wm as layout owner:
+# To run desktop-wm as layout owner (single shared plugin process for layout + pointer/actions):
 # layout_backend=plugin
+# plugins_enabled=true
 # plugin_dir="/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d/desktop-wm"
 plugin_dir="$HOME/.config/ykwm/plugins"
 plugins_dir="$HOME/.config/ykwm/plugins.d"

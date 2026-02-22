@@ -137,6 +137,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `docs/examples/plugins.d/desktop-wm/index.ts`
 - Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
+- For interactive layout plugins (drag/resize/floating state), also set `plugins_enabled=true` so the same plugin host handles both layout compute and pointer/actions.
 - Type definitions for plugin authors: `docs/examples/plugins.d/paperwm/types.ts`.
 - Helper utilities for plugin authors: `docs/examples/plugins.d/paperwm/helpers.ts`.
 - Current stdin hook protocol is NDJSON events:

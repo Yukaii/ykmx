@@ -202,7 +202,13 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
 
-    var mux = multiplexer.Multiplexer.init(allocator, try pickLayoutEngine(allocator, cfg));
+    var plugins = plugin_manager.PluginManager.init(allocator);
+    defer plugins.deinit();
+    if (cfg.plugins_enabled) {
+        _ = plugins.startAll(cfg.plugin_dir, cfg.plugins_dir) catch 0;
+    }
+
+    var mux = multiplexer.Multiplexer.init(allocator, try pickLayoutEngineRuntime(allocator, cfg, &plugins));
     defer mux.deinit();
     mux.setMouseMode(switch (cfg.mouse_mode) {
         .hybrid => .hybrid,
@@ -214,13 +220,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     try mux.workspace_mgr.setActiveLayoutDefaults(cfg.default_layout, cfg.master_count, cfg.master_ratio_permille, cfg.gap);
     _ = try mux.createShellWindow("shell-1");
     _ = try mux.createShellWindow("shell-2");
-
-    var plugins = plugin_manager.PluginManager.init(allocator);
-    defer plugins.deinit();
-    if (cfg.plugins_enabled) {
-        _ = plugins.startAll(cfg.plugin_dir, cfg.plugins_dir) catch 0;
-        if (plugins.hasAny()) plugins.emitStart(try mux.workspace_mgr.activeLayoutType());
-    }
+    if (plugins.hasAny()) plugins.emitStart(try mux.workspace_mgr.activeLayoutType());
     var last_layout = try mux.workspace_mgr.activeLayoutType();
 
     var term = try RuntimeTerminal.enter();
@@ -1731,6 +1731,22 @@ fn pickLayoutEngine(allocator: std.mem.Allocator, cfg: config.Config) !layout.La
             }
             break :blk layout_native.NativeLayoutEngine.init();
         },
+    };
+}
+
+fn pickLayoutEngineRuntime(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    plugins: *plugin_manager.PluginManager,
+) !layout.LayoutEngine {
+    return switch (cfg.layout_backend) {
+        .plugin => blk: {
+            if (plugins.hasAny()) {
+                break :blk try layout_plugin.PluginManagerLayoutEngine.init(allocator, plugins);
+            }
+            break :blk try pickLayoutEngine(allocator, cfg);
+        },
+        else => pickLayoutEngine(allocator, cfg),
     };
 }
 
