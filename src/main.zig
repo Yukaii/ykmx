@@ -21,10 +21,17 @@ const runtime_terminal = @import("runtime_terminal.zig");
 const runtime_footer = @import("runtime_footer.zig");
 const runtime_command_state = @import("runtime_command_state.zig");
 const runtime_plugin_state = @import("runtime_plugin_state.zig");
+const runtime_output = @import("runtime_output.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const POC_ROWS: u16 = 12;
 const POC_COLS: u16 = 36;
+const writeClippedLine = runtime_output.writeClippedLine;
+const writeAllBlocking = runtime_output.writeAllBlocking;
+const writeByteBlocking = runtime_output.writeByteBlocking;
+const writeCodepointBlocking = runtime_output.writeCodepointBlocking;
+const encodeCodepoint = runtime_output.encodeCodepoint;
+const writeFmtBlocking = runtime_output.writeFmtBlocking;
 const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("sys/ioctl.h");
@@ -3152,60 +3159,6 @@ fn drawTextOwnedMasked(
 
 fn putCell(canvas: []u21, cols: usize, x: usize, y: usize, ch: u21) void {
     canvas[y * cols + x] = ch;
-}
-
-fn writeClippedLine(out: *std.Io.Writer, line: []const u8, max_cols: usize) !void {
-    const clipped_len = @min(line.len, max_cols);
-    try writeAllBlocking(out, line[0..clipped_len]);
-    if (clipped_len < max_cols) {
-        var i: usize = clipped_len;
-        while (i < max_cols) : (i += 1) try writeByteBlocking(out, ' ');
-    }
-}
-
-fn writeAllBlocking(out: *std.Io.Writer, bytes: []const u8) !void {
-    var written: usize = 0;
-    var retries: usize = 0;
-    while (written < bytes.len) {
-        const n = out.write(bytes[written..]) catch |err| switch (err) {
-            error.WriteFailed => {
-                retries += 1;
-                if (retries > 2000) return err;
-                std.Thread.sleep(1 * std.time.ns_per_ms);
-                continue;
-            },
-            else => return err,
-        };
-        retries = 0;
-        written += n;
-    }
-}
-
-fn writeByteBlocking(out: *std.Io.Writer, b: u8) !void {
-    var one = [1]u8{b};
-    try writeAllBlocking(out, &one);
-}
-
-fn writeCodepointBlocking(out: *std.Io.Writer, cp: u21) !void {
-    var scratch: [4]u8 = undefined;
-    const n = std.unicode.utf8Encode(cp, &scratch) catch {
-        return writeByteBlocking(out, '?');
-    };
-    try writeAllBlocking(out, scratch[0..n]);
-}
-
-fn encodeCodepoint(dst: []u8, cp: u21) usize {
-    var scratch: [4]u8 = undefined;
-    const n = std.unicode.utf8Encode(cp, &scratch) catch return 0;
-    if (dst.len < n) return 0;
-    @memcpy(dst[0..n], scratch[0..n]);
-    return n;
-}
-
-fn writeFmtBlocking(out: *std.Io.Writer, comptime fmt: []const u8, args: anytype) !void {
-    var buf: [128]u8 = undefined;
-    const text = try std.fmt.bufPrint(&buf, fmt, args);
-    try writeAllBlocking(out, text);
 }
 
 test "workspace layout POC returns panes" {
