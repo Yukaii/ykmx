@@ -568,6 +568,7 @@ const ControlCommand = struct {
     show_controls: ?bool = null,
     panel_id: ?u32 = null,
     visible: ?bool = null,
+    cwd: ?[]const u8 = null,
 };
 
 const ControlPipe = struct {
@@ -787,11 +788,11 @@ fn applyControlCommandLine(mux: *multiplexer.Multiplexer, screen: layout.Rect, l
     if (std.mem.eql(u8, cmd, "open_popup")) {
         if (parsed.value.argv) |argv| {
             if (argv.len > 0) {
-                _ = try mux.openCommandPopup("popup-cmd", argv, screen, true, true);
+                _ = try mux.openCommandPopupInDir("popup-cmd", argv, screen, true, true, parsed.value.cwd);
                 return true;
             }
         }
-        _ = try mux.openShellPopup("popup-shell", screen, true);
+        _ = try mux.openShellPopupOwnedInDir("popup-shell", screen, true, null, parsed.value.cwd);
         return true;
     }
     if (std.mem.eql(u8, cmd, "open_panel_rect")) {
@@ -799,7 +800,7 @@ fn applyControlCommandLine(mux: *multiplexer.Multiplexer, screen: layout.Rect, l
         const y = parsed.value.y orelse return false;
         const width = parsed.value.width orelse return false;
         const height = parsed.value.height orelse return false;
-        _ = try mux.openShellPopupRectStyled(
+        _ = try mux.openShellPopupRectStyledInDir(
             "popup-shell",
             screen,
             .{ .x = x, .y = y, .width = width, .height = height },
@@ -810,6 +811,7 @@ fn applyControlCommandLine(mux: *multiplexer.Multiplexer, screen: layout.Rect, l
                 .show_controls = parsed.value.show_controls orelse false,
             },
             null,
+            parsed.value.cwd,
         );
         return true;
     }
@@ -834,8 +836,8 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
             \\ykmx ctl usage:
             \\  ykmx ctl new-window
             \\  ykmx ctl close-window
-            \\  ykmx ctl open-popup [--] <program> [args...]
-            \\  ykmx ctl open-panel x y width height
+            \\  ykmx ctl open-popup [--cwd <path>] [--] <program> [args...]
+            \\  ykmx ctl open-panel x y width height [--cwd <path>]
             \\  ykmx ctl hide-panel <panel_id>
             \\  ykmx ctl show-panel <panel_id>
             \\  ykmx ctl status
@@ -902,29 +904,68 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
     } else if (std.mem.eql(u8, args[0], "close-window")) {
         try line.appendSlice(allocator, "{\"v\":1,\"command\":\"close_window\"}");
     } else if (std.mem.eql(u8, args[0], "open-popup")) {
-        if (args.len == 1) {
-            try line.appendSlice(allocator, "{\"v\":1,\"command\":\"open_popup\"}");
-        } else {
-            const start: usize = if (std.mem.eql(u8, args[1], "--")) 2 else 1;
-            if (start >= args.len) return error.InvalidControlArgs;
-            try line.appendSlice(allocator, "{\"v\":1,\"command\":\"open_popup\",\"argv\":[");
-            for (args[start..], 0..) |arg, i| {
-                if (i > 0) try line.append(allocator, ',');
+        var cwd: ?[]const u8 = null;
+        var i: usize = 1;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--cwd")) {
+                if (i + 1 >= args.len) return error.InvalidControlArgs;
+                cwd = args[i + 1];
+                i += 2;
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--")) {
+                i += 1;
+                break;
+            }
+            break;
+        }
+        const argv = args[i..];
+
+        try line.appendSlice(allocator, "{\"v\":1,\"command\":\"open_popup\"");
+        if (cwd) |dir| {
+            try line.appendSlice(allocator, ",\"cwd\":");
+            try appendJsonString(&line, allocator, dir);
+        }
+        if (argv.len > 0) {
+            try line.appendSlice(allocator, ",\"argv\":[");
+            for (argv, 0..) |arg, j| {
+                if (j > 0) try line.append(allocator, ',');
                 try appendJsonString(&line, allocator, arg);
             }
-            try line.appendSlice(allocator, "]}");
+            try line.append(allocator, ']');
         }
+        try line.append(allocator, '}');
     } else if (std.mem.eql(u8, args[0], "open-panel")) {
         if (args.len < 5) return error.InvalidControlArgs;
-        try line.writer(allocator).print(
-            "{{\"v\":1,\"command\":\"open_panel_rect\",\"x\":{},\"y\":{},\"width\":{},\"height\":{},\"modal\":false}}",
-            .{
-                try std.fmt.parseInt(u16, args[1], 10),
-                try std.fmt.parseInt(u16, args[2], 10),
-                try std.fmt.parseInt(u16, args[3], 10),
-                try std.fmt.parseInt(u16, args[4], 10),
-            },
-        );
+        const x = try std.fmt.parseInt(u16, args[1], 10);
+        const y = try std.fmt.parseInt(u16, args[2], 10);
+        const width = try std.fmt.parseInt(u16, args[3], 10);
+        const height = try std.fmt.parseInt(u16, args[4], 10);
+
+        var cwd: ?[]const u8 = null;
+        var i: usize = 5;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--cwd")) {
+                if (i + 1 >= args.len) return error.InvalidControlArgs;
+                cwd = args[i + 1];
+                i += 2;
+                continue;
+            }
+            return error.InvalidControlArgs;
+        }
+
+        try line.appendSlice(allocator, "{\"v\":1,\"command\":\"open_panel_rect\",");
+        try line.writer(allocator).print("\"x\":{},\"y\":{},\"width\":{},\"height\":{},\"modal\":false", .{
+            x,
+            y,
+            width,
+            height,
+        });
+        if (cwd) |dir| {
+            try line.appendSlice(allocator, ",\"cwd\":");
+            try appendJsonString(&line, allocator, dir);
+        }
+        try line.append(allocator, '}');
     } else if (std.mem.eql(u8, args[0], "hide-panel")) {
         if (args.len < 2) return error.InvalidControlArgs;
         try line.writer(allocator).print(

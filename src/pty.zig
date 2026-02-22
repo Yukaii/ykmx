@@ -17,15 +17,23 @@ pub const Pty = struct {
     exited: bool = false,
 
     pub fn spawnShell(allocator: std.mem.Allocator) !Pty {
+        return spawnShellInDir(allocator, null);
+    }
+
+    pub fn spawnShellInDir(allocator: std.mem.Allocator, cwd: ?[]const u8) !Pty {
         const shell_owned = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
         defer if (shell_owned) |s| allocator.free(s);
 
         const shell = if (shell_owned) |s| s else "/bin/sh";
         const argv = [_][]const u8{ shell, "-i" };
-        return spawnCommand(allocator, &argv);
+        return spawnCommandInDir(allocator, &argv, cwd);
     }
 
     pub fn spawnCommand(allocator: std.mem.Allocator, argv: []const []const u8) !Pty {
+        return spawnCommandInDir(allocator, argv, null);
+    }
+
+    pub fn spawnCommandInDir(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !Pty {
         if (builtin.os.tag == .windows) return error.UnsupportedPlatform;
         if (argv.len == 0) return error.EmptyArgv;
 
@@ -42,6 +50,9 @@ pub const Pty = struct {
             }
         }
 
+        const c_cwd: ?[:0]u8 = if (cwd) |d| try allocator.dupeZ(u8, d) else null;
+        defer if (c_cwd) |d| allocator.free(d);
+
         var ws: c.struct_winsize = .{
             .ws_row = 24,
             .ws_col = 80,
@@ -54,6 +65,9 @@ pub const Pty = struct {
         if (pid_raw < 0) return error.ForkPtyFailed;
 
         if (pid_raw == 0) {
+            if (c_cwd) |d| {
+                if (c.chdir(d.ptr) != 0) c._exit(126);
+            }
             _ = c.execvp(c_argv[0].?, @ptrCast(c_argv.ptr));
             c._exit(127);
         }

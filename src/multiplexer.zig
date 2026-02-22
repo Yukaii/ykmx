@@ -1338,11 +1338,23 @@ pub const Multiplexer = struct {
         modal: bool,
         auto_close: bool,
     ) !u32 {
+        return self.openCommandPopupInDir(title, argv, screen, modal, auto_close, null);
+    }
+
+    pub fn openCommandPopupInDir(
+        self: *Multiplexer,
+        title: []const u8,
+        argv: []const []const u8,
+        screen: layout.Rect,
+        modal: bool,
+        auto_close: bool,
+        cwd: ?[]const u8,
+    ) !u32 {
         const popup_window_id = self.next_popup_window_id;
         self.next_popup_window_id += 1;
 
         const rect = centeredPopupRect(screen, 70, 60);
-        var p = try pty_mod.Pty.spawnCommand(self.allocator, argv);
+        var p = try pty_mod.Pty.spawnCommandInDir(self.allocator, argv, cwd);
         errdefer p.deinit();
 
         try self.ptys.put(self.allocator, popup_window_id, p);
@@ -1379,7 +1391,7 @@ pub const Multiplexer = struct {
         screen: layout.Rect,
         modal: bool,
     ) !u32 {
-        return self.openShellPopupOwned(title, screen, modal, null);
+        return self.openShellPopupOwnedInDir(title, screen, modal, null, null);
     }
 
     pub fn openShellPopupOwned(
@@ -1389,11 +1401,22 @@ pub const Multiplexer = struct {
         modal: bool,
         owner_plugin_name: ?[]const u8,
     ) !u32 {
+        return self.openShellPopupOwnedInDir(title, screen, modal, owner_plugin_name, null);
+    }
+
+    pub fn openShellPopupOwnedInDir(
+        self: *Multiplexer,
+        title: []const u8,
+        screen: layout.Rect,
+        modal: bool,
+        owner_plugin_name: ?[]const u8,
+        cwd: ?[]const u8,
+    ) !u32 {
         const popup_window_id = self.next_popup_window_id;
         self.next_popup_window_id += 1;
 
         const rect = centeredPopupRect(screen, 70, 60);
-        var p = try pty_mod.Pty.spawnShell(self.allocator);
+        var p = try pty_mod.Pty.spawnShellInDir(self.allocator, cwd);
         errdefer p.deinit();
 
         try self.ptys.put(self.allocator, popup_window_id, p);
@@ -1434,11 +1457,24 @@ pub const Multiplexer = struct {
         style: PopupStyle,
         owner_plugin_name: ?[]const u8,
     ) !u32 {
+        return self.openShellPopupRectStyledInDir(title, screen, rect, modal, style, owner_plugin_name, null);
+    }
+
+    pub fn openShellPopupRectStyledInDir(
+        self: *Multiplexer,
+        title: []const u8,
+        screen: layout.Rect,
+        rect: layout.Rect,
+        modal: bool,
+        style: PopupStyle,
+        owner_plugin_name: ?[]const u8,
+        cwd: ?[]const u8,
+    ) !u32 {
         const popup_window_id = self.next_popup_window_id;
         self.next_popup_window_id += 1;
 
         const clamped = clampPopupRect(screen, rect);
-        var p = try pty_mod.Pty.spawnShell(self.allocator);
+        var p = try pty_mod.Pty.spawnShellInDir(self.allocator, cwd);
         errdefer p.deinit();
 
         try self.ptys.put(self.allocator, popup_window_id, p);

@@ -17,12 +17,20 @@ pub const PluginManager = struct {
 
     allocator: std.mem.Allocator,
     hosts: std.ArrayListUnmanaged(plugin_host.PluginHost) = .{},
+    ui_bars_cache: ?UiBarsOwned = null,
+
+    const UiBarsOwned = struct {
+        toolbar_line: []u8,
+        tab_line: []u8,
+        status_line: []u8,
+    };
 
     pub fn init(allocator: std.mem.Allocator) PluginManager {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *PluginManager) void {
+        self.clearUiBarsCache();
         for (self.hosts.items) |*host| host.deinit();
         self.hosts.deinit(self.allocator);
         self.* = undefined;
@@ -101,17 +109,21 @@ pub const PluginManager = struct {
     }
 
     pub fn uiBars(self: *PluginManager) ?plugin_host.PluginHost.UiBarsView {
-        var selected: ?plugin_host.PluginHost.UiBarsView = null;
-        for (self.hosts.items) |*host| {
-            if (host.uiBars()) |ui| selected = ui;
-        }
-        return selected;
+        const ui = self.ui_bars_cache orelse return null;
+        return .{
+            .toolbar_line = ui.toolbar_line,
+            .tab_line = ui.tab_line,
+            .status_line = ui.status_line,
+        };
     }
 
     pub fn consumeUiDirtyAny(self: *PluginManager) bool {
         var dirty = false;
         for (self.hosts.items) |*host| {
             dirty = host.consumeUiDirty() or dirty;
+        }
+        if (dirty) {
+            self.rebuildUiBarsCache() catch {};
         }
         return dirty;
     }
@@ -278,6 +290,31 @@ pub const PluginManager = struct {
     fn lessThanCandidate(_: void, a: PluginCandidate, b: PluginCandidate) bool {
         if (a.order != b.order) return a.order < b.order;
         return std.mem.lessThan(u8, a.plugin_name, b.plugin_name);
+    }
+
+    fn rebuildUiBarsCache(self: *PluginManager) !void {
+        var selected: ?plugin_host.PluginHost.UiBarsView = null;
+        for (self.hosts.items) |*host| {
+            if (host.uiBars()) |ui| selected = ui;
+        }
+
+        self.clearUiBarsCache();
+        if (selected) |ui| {
+            self.ui_bars_cache = .{
+                .toolbar_line = try self.allocator.dupe(u8, ui.toolbar_line),
+                .tab_line = try self.allocator.dupe(u8, ui.tab_line),
+                .status_line = try self.allocator.dupe(u8, ui.status_line),
+            };
+        }
+    }
+
+    fn clearUiBarsCache(self: *PluginManager) void {
+        if (self.ui_bars_cache) |bars| {
+            self.allocator.free(bars.toolbar_line);
+            self.allocator.free(bars.tab_line);
+            self.allocator.free(bars.status_line);
+            self.ui_bars_cache = null;
+        }
     }
 };
 

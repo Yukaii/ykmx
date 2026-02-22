@@ -43,7 +43,9 @@ ykmx ctl new-window
 ykmx ctl close-window
 ykmx ctl open-popup
 ykmx ctl open-popup -- lazygit
+ykmx ctl open-popup --cwd /path/to/project
 ykmx ctl open-panel 8 4 100 24
+ykmx ctl open-panel 8 4 100 24 --cwd /path/to/project
 ykmx ctl hide-panel 1
 ykmx ctl show-panel 1
 ykmx ctl status
