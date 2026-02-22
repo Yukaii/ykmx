@@ -30,6 +30,17 @@ async function applyTheme(): Promise<void> {
 
   await writeAction({
     v: 1,
+    action: "set_chrome_style",
+    active_title_sgr: "1;37;44",
+    inactive_title_sgr: "1;30;46",
+    active_border_sgr: "37;44",
+    inactive_border_sgr: "30;46",
+    active_buttons_sgr: "1;33;44",
+    inactive_buttons_sgr: "33;46",
+  });
+
+  await writeAction({
+    v: 1,
     action: "set_ui_bars",
     toolbar_line: " Program Manager | File  Options  Window  Help ",
     tab_line: " [Desktop] [Main] [Tools] ",
@@ -43,6 +54,16 @@ async function main() {
       enabled = parseBoolLike(ev.value);
       if (!enabled) {
         await writeAction({ v: 1, action: "reset_chrome_theme" });
+        await writeAction({
+          v: 1,
+          action: "set_chrome_style",
+          active_title_sgr: "0",
+          inactive_title_sgr: "0",
+          active_border_sgr: "0",
+          inactive_border_sgr: "0",
+          active_buttons_sgr: "0",
+          inactive_buttons_sgr: "0",
+        });
         await writeAction({ v: 1, action: "clear_ui_bars" });
       }
       continue;
@@ -55,6 +76,16 @@ async function main() {
 
     if (ev.event === "on_shutdown") {
       await writeAction({ v: 1, action: "reset_chrome_theme" });
+      await writeAction({
+        v: 1,
+        action: "set_chrome_style",
+        active_title_sgr: "0",
+        inactive_title_sgr: "0",
+        active_border_sgr: "0",
+        inactive_border_sgr: "0",
+        active_buttons_sgr: "0",
+        inactive_buttons_sgr: "0",
+      });
       await writeAction({ v: 1, action: "clear_ui_bars" });
       continue;
     }

@@ -196,7 +196,29 @@ export type ActionMessage =
       border_tee_right?: string;
       border_cross?: string;
     }
-  | { v: 1; action: "reset_chrome_theme" };
+  | { v: 1; action: "reset_chrome_theme" }
+  | {
+      v: 1;
+      action: "set_chrome_style";
+      active_title_sgr?: string;
+      inactive_title_sgr?: string;
+      active_border_sgr?: string;
+      inactive_border_sgr?: string;
+      active_buttons_sgr?: string;
+      inactive_buttons_sgr?: string;
+    }
+  | {
+      v: 1;
+      action: "set_panel_chrome_style_by_id";
+      panel_id: number;
+      reset?: boolean;
+      active_title_sgr?: string;
+      inactive_title_sgr?: string;
+      active_border_sgr?: string;
+      inactive_border_sgr?: string;
+      active_buttons_sgr?: string;
+      inactive_buttons_sgr?: string;
+    };
 
 export type LayoutResponseMessage =
   | { v: 1; id: number; rects: Rect[] }

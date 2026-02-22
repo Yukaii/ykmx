@@ -250,6 +250,10 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - optional plugin config:
     - `[plugin.retro-win31-theme]`
     - `enabled=true`
+- Python runtime example plugin lives at:
+  - `docs/examples/plugins.d/python-demo/main.py`
+  - `docs/examples/plugins.d/python-demo/plugin.toml`
+  - uses `run="python3 ./main.py"` (no Bun required)
 - Runtime plugin launch:
   - if `plugin.toml` has `run="..."`: execute that command via `/bin/sh -lc` in plugin cwd
   - otherwise fallback to `bun run <plugin_dir>/index.ts`
@@ -301,8 +305,12 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"clear_ui_bars"}`
   - `{"v":1,"action":"set_chrome_theme","window_minimize_char":"-","window_maximize_char":"+","window_close_char":"x","focus_marker":"*","border_horizontal":"─","border_vertical":"│","border_corner_tl":"┌","border_corner_tr":"┐","border_corner_bl":"└","border_corner_br":"┘","border_tee_top":"┬","border_tee_bottom":"┴","border_tee_left":"├","border_tee_right":"┤","border_cross":"┼"}`
   - `{"v":1,"action":"reset_chrome_theme"}`
+  - `{"v":1,"action":"set_chrome_style","active_title_sgr":"1;37;44","inactive_title_sgr":"37;44","active_border_sgr":"37;44","inactive_border_sgr":"37;44","active_buttons_sgr":"1;33;44","inactive_buttons_sgr":"33;44"}`
+  - `{"v":1,"action":"set_panel_chrome_style_by_id","panel_id":1,"reset":false,"active_title_sgr":"1;37;45","inactive_title_sgr":"37;45","active_border_sgr":"37;45","inactive_border_sgr":"37;45","active_buttons_sgr":"1;33;45","inactive_buttons_sgr":"33;45"}`
   - `window_*_char` and `focus_marker` are single ASCII characters.
   - `border_*` fields accept any single Unicode glyph.
+  - `*_sgr` fields accept SGR parameter forms like `"1;37;44"` (or full CSI form like `"\u001b[1;37;44m"`).
+  - per-panel chrome style overrides are ownership-scoped (same ownership rule as other panel actions).
 - Plugin panel actions are ownership-scoped:
   - panels opened by plugin `A` can only be closed/focused/moved/resized/styled by plugin `A`
   - this prevents cross-plugin panel conflicts when multiple panel plugins are active

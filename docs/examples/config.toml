@@ -25,6 +25,7 @@ plugins_enabled = false
 #   - popup-controls: standalone popup keybinding registration/behavior plugin
 #   - command-palette: fzf command picker popup (dispatches selected command)
 #   - retro-win31-theme: plugin-defined chrome/border + bar theme sample
+#   - python-demo: non-Bun plugin runtime example (plugin.toml run=python3 ./main.py)
 #
 # To run desktop-wm as layout owner (single shared plugin process for layout + pointer/actions):
 # layout_backend = "plugin"

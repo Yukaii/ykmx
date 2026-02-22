@@ -1,0 +1,4 @@
+name = "python-demo"
+enabled = true
+order = 40
+run = "python3 ./main.py"

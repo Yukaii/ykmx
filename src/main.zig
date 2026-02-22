@@ -1422,7 +1422,115 @@ fn applyPluginAction(
             mux.resetChromeTheme();
             return true;
         },
+        .set_chrome_style => |payload| {
+            mux.applyChromeStyle(.{
+                .active_title = if (payload.active_title_sgr) |s| try parseSgrStyleSpec(s) else null,
+                .inactive_title = if (payload.inactive_title_sgr) |s| try parseSgrStyleSpec(s) else null,
+                .active_border = if (payload.active_border_sgr) |s| try parseSgrStyleSpec(s) else null,
+                .inactive_border = if (payload.inactive_border_sgr) |s| try parseSgrStyleSpec(s) else null,
+                .active_buttons = if (payload.active_buttons_sgr) |s| try parseSgrStyleSpec(s) else null,
+                .inactive_buttons = if (payload.inactive_buttons_sgr) |s| try parseSgrStyleSpec(s) else null,
+            });
+            return true;
+        },
+        .set_panel_chrome_style_by_id => |payload| {
+            return try mux.setPanelChromeStyleByIdOwned(
+                payload.panel_id,
+                payload.reset,
+                .{
+                    .active_title = if (payload.active_title_sgr) |s| try parseSgrStyleSpec(s) else null,
+                    .inactive_title = if (payload.inactive_title_sgr) |s| try parseSgrStyleSpec(s) else null,
+                    .active_border = if (payload.active_border_sgr) |s| try parseSgrStyleSpec(s) else null,
+                    .inactive_border = if (payload.inactive_border_sgr) |s| try parseSgrStyleSpec(s) else null,
+                    .active_buttons = if (payload.active_buttons_sgr) |s| try parseSgrStyleSpec(s) else null,
+                    .inactive_buttons = if (payload.inactive_buttons_sgr) |s| try parseSgrStyleSpec(s) else null,
+                },
+                plugin_name,
+            );
+        },
     }
+}
+
+fn parseSgrStyleSpec(spec_raw: []const u8) !ghostty_vt.Style {
+    var style: ghostty_vt.Style = .{};
+    var spec = std.mem.trim(u8, spec_raw, " \t\r\n");
+    if (spec.len == 0) return style;
+    if (std.mem.startsWith(u8, spec, "\x1b[") and std.mem.endsWith(u8, spec, "m") and spec.len >= 3) {
+        spec = spec[2 .. spec.len - 1];
+    } else if (std.mem.endsWith(u8, spec, "m") and spec.len >= 2) {
+        spec = spec[0 .. spec.len - 1];
+    }
+    if (spec.len == 0) return style;
+
+    var codes = std.ArrayListUnmanaged(u16){};
+    defer codes.deinit(std.heap.page_allocator);
+    var it = std.mem.splitScalar(u8, spec, ';');
+    while (it.next()) |part_raw| {
+        const part = std.mem.trim(u8, part_raw, " \t");
+        const code: u16 = if (part.len == 0) 0 else (std.fmt.parseInt(u16, part, 10) catch continue);
+        try codes.append(std.heap.page_allocator, code);
+    }
+
+    var i: usize = 0;
+    while (i < codes.items.len) : (i += 1) {
+        const code = codes.items[i];
+        switch (code) {
+            0 => style = .{},
+            1 => style.flags.bold = true,
+            2 => style.flags.faint = true,
+            3 => style.flags.italic = true,
+            4 => style.flags.underline = .single,
+            5 => style.flags.blink = true,
+            7 => style.flags.inverse = true,
+            8 => style.flags.invisible = true,
+            9 => style.flags.strikethrough = true,
+            21 => style.flags.underline = .double,
+            22 => {
+                style.flags.bold = false;
+                style.flags.faint = false;
+            },
+            23 => style.flags.italic = false,
+            24 => style.flags.underline = .none,
+            25 => style.flags.blink = false,
+            27 => style.flags.inverse = false,
+            28 => style.flags.invisible = false,
+            29 => style.flags.strikethrough = false,
+            30...37 => style.fg_color = .{ .palette = @intCast(code - 30) },
+            39 => style.fg_color = .none,
+            40...47 => style.bg_color = .{ .palette = @intCast(code - 40) },
+            49 => style.bg_color = .none,
+            90...97 => style.fg_color = .{ .palette = @intCast(8 + code - 90) },
+            100...107 => style.bg_color = .{ .palette = @intCast(8 + code - 100) },
+            38, 48, 58 => {
+                if (i + 1 >= codes.items.len) continue;
+                const mode = codes.items[i + 1];
+                if (mode == 5 and i + 2 < codes.items.len) {
+                    const v: u8 = @intCast(@min(codes.items[i + 2], 255));
+                    switch (code) {
+                        38 => style.fg_color = .{ .palette = v },
+                        48 => style.bg_color = .{ .palette = v },
+                        58 => style.underline_color = .{ .palette = v },
+                        else => {},
+                    }
+                    i += 2;
+                } else if (mode == 2 and i + 4 < codes.items.len) {
+                    const r: u8 = @intCast(@min(codes.items[i + 2], 255));
+                    const g: u8 = @intCast(@min(codes.items[i + 3], 255));
+                    const b: u8 = @intCast(@min(codes.items[i + 4], 255));
+                    switch (code) {
+                        38 => style.fg_color = .{ .rgb = .{ .r = r, .g = g, .b = b } },
+                        48 => style.bg_color = .{ .rgb = .{ .r = r, .g = g, .b = b } },
+                        58 => style.underline_color = .{ .rgb = .{ .r = r, .g = g, .b = b } },
+                        else => {},
+                    }
+                    i += 4;
+                }
+            },
+            59 => style.underline_color = .none,
+            else => {},
+        }
+    }
+    return style;
 }
 
 const RuntimeTerminal = struct {
@@ -1844,6 +1952,12 @@ fn renderRuntimeFrame(
     const top_window_owner = try allocator.alloc(i32, canvas_len);
     defer allocator.free(top_window_owner);
     @memset(top_window_owner, -1);
+    const chrome_layer = try allocator.alloc(u8, canvas_len);
+    defer allocator.free(chrome_layer);
+    @memset(chrome_layer, 0);
+    const chrome_panel_id = try allocator.alloc(u32, canvas_len);
+    defer allocator.free(chrome_panel_id);
+    @memset(chrome_panel_id, 0);
 
     const rects = try mux.computeActiveLayout(content);
     defer allocator.free(rects);
@@ -1872,7 +1986,9 @@ fn renderRuntimeFrame(
         if (r.width < 2 or r.height < 2) continue;
         const border = computeBorderMask(rects[0..n], i, r, content);
         const insets = computeContentInsets(rects[0..n], i, r, border);
-        drawBorder(canvas, border_conn, total_cols, content_rows, r, border, if (tab.focused_index == i) mux.focusMarker() else ' ', i, top_window_owner);
+        const is_active = tab.focused_index == i;
+        drawBorder(canvas, border_conn, total_cols, content_rows, r, border, if (is_active) mux.focusMarker() else ' ', i, top_window_owner);
+        markBorderLayerOwned(chrome_layer, chrome_panel_id, total_cols, content_rows, r, border, if (is_active) chrome_layer_active_border else chrome_layer_inactive_border, i, top_window_owner);
         const inner_x = r.x + insets.left;
         const inner_y = r.y + insets.top;
         const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
@@ -1887,9 +2003,11 @@ fn renderRuntimeFrame(
         const controls_w: u16 = @intCast(controls.len);
         const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
         drawTextOwnedMasked(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner, popup_overlay);
+        markTextOwnedMaskedLayer(chrome_layer, chrome_panel_id, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner, popup_overlay, if (is_active) chrome_layer_active_title else chrome_layer_inactive_title);
         if (r.width >= 10) {
             const controls_x: u16 = r.x + r.width - controls_w - 1;
             drawTextOwnedMasked(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner, popup_overlay);
+            markTextOwnedMaskedLayer(chrome_layer, chrome_panel_id, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner, popup_overlay, if (is_active) chrome_layer_active_buttons else chrome_layer_inactive_buttons);
         }
 
         const window_id = tab.windows.items[i].id;
@@ -1961,7 +2079,9 @@ fn renderRuntimeFrame(
         // intersections don't synthesize mixed glyphs like '┬' from underneath.
         clearBorderConnRect(border_conn, total_cols, content_rows, p.rect);
         const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
-        drawBorder(canvas, border_conn, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) mux.focusMarker() else ' ', null, null);
+        const panel_active = mux.popup_mgr.focused_popup_id == p.id;
+        drawBorder(canvas, border_conn, total_cols, content_rows, p.rect, popup_border, if (panel_active) mux.focusMarker() else ' ', null, null);
+        markBorderLayer(chrome_layer, chrome_panel_id, total_cols, content_rows, p.rect, popup_border, if (panel_active) chrome_layer_active_border else chrome_layer_inactive_border, p.id);
 
         const inner_x = p.rect.x + 1;
         const inner_y = p.rect.y + 1;
@@ -1970,6 +2090,7 @@ fn renderRuntimeFrame(
         if (inner_w == 0 or inner_h == 0) continue;
 
         drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
+        markTextLayer(chrome_layer, chrome_panel_id, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w, if (panel_active) chrome_layer_active_title else chrome_layer_inactive_title, p.id);
         markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
         markRectOverlay(popup_cover, total_cols, content_rows, p.rect);
         // Popup interiors are opaque: suppress any precomputed base-pane border
@@ -2097,10 +2218,18 @@ fn renderRuntimeFrame(
             // panes don't paint content over visible frame edges/titles.
             if (border_conn[row_off + x] != 0) {
                 curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
+                if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
+                    curr[row_off + x].style = s;
+                    curr[row_off + x].styled = !s.default();
+                }
                 continue;
             }
             if (popup_overlay[row_off + x]) {
                 curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
+                if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
+                    curr[row_off + x].style = s;
+                    curr[row_off + x].styled = !s.default();
+                }
                 continue;
             }
             const pane_cell = paneCellAt(panes[0..pane_count], x, row);
@@ -2124,6 +2253,10 @@ fn renderRuntimeFrame(
                 }
             } else {
                 curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
+            }
+            if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
+                curr[row_off + x].style = s;
+                curr[row_off + x].styled = !s.default();
             }
         }
     }
@@ -2256,6 +2389,183 @@ const BorderConn = struct {
     const L: u8 = 1 << 2;
     const R: u8 = 1 << 3;
 };
+
+const chrome_layer_none: u8 = 0;
+const chrome_layer_active_border: u8 = 1;
+const chrome_layer_inactive_border: u8 = 2;
+const chrome_layer_active_title: u8 = 3;
+const chrome_layer_inactive_title: u8 = 4;
+const chrome_layer_active_buttons: u8 = 5;
+const chrome_layer_inactive_buttons: u8 = 6;
+
+fn resolveChromeStyleAt(
+    mux: *const multiplexer.Multiplexer,
+    role: u8,
+    panel_id: u32,
+) ?ghostty_vt.Style {
+    if (role == chrome_layer_none) return null;
+    const styles = if (panel_id != 0) (mux.panelChromeStylesById(panel_id) orelse mux.chromeStyles()) else mux.chromeStyles();
+    return switch (role) {
+        chrome_layer_active_border => styles.active_border,
+        chrome_layer_inactive_border => styles.inactive_border,
+        chrome_layer_active_title => styles.active_title,
+        chrome_layer_inactive_title => styles.inactive_title,
+        chrome_layer_active_buttons => styles.active_buttons,
+        chrome_layer_inactive_buttons => styles.inactive_buttons,
+        else => null,
+    };
+}
+
+fn markLayerCell(
+    layer: []u8,
+    panel_ids: []u32,
+    cols: usize,
+    rows: usize,
+    x: usize,
+    y: usize,
+    role: u8,
+    panel_id: u32,
+) void {
+    if (x >= cols or y >= rows or role == chrome_layer_none) return;
+    const idx = y * cols + x;
+    layer[idx] = role;
+    panel_ids[idx] = panel_id;
+}
+
+fn markBorderLayer(
+    layer: []u8,
+    panel_ids: []u32,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+    border: BorderMask,
+    role: u8,
+    panel_id: u32,
+) void {
+    const x0: usize = r.x;
+    const y0: usize = r.y;
+    const x1: usize = x0 + r.width - 1;
+    const y1: usize = y0 + r.height - 1;
+    if (x1 >= cols or y1 >= rows) return;
+
+    if (border.top) {
+        var x = x0;
+        while (x <= x1) : (x += 1) markLayerCell(layer, panel_ids, cols, rows, x, y0, role, panel_id);
+    }
+    if (border.bottom) {
+        var x = x0;
+        while (x <= x1) : (x += 1) markLayerCell(layer, panel_ids, cols, rows, x, y1, role, panel_id);
+    }
+    if (border.left) {
+        var y = y0;
+        while (y <= y1) : (y += 1) markLayerCell(layer, panel_ids, cols, rows, x0, y, role, panel_id);
+    }
+    if (border.right) {
+        var y = y0;
+        while (y <= y1) : (y += 1) markLayerCell(layer, panel_ids, cols, rows, x1, y, role, panel_id);
+    }
+}
+
+fn markBorderLayerOwned(
+    layer: []u8,
+    panel_ids: []u32,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+    border: BorderMask,
+    role: u8,
+    owner_idx: usize,
+    top_window_owner: []const i32,
+) void {
+    const x0: usize = r.x;
+    const y0: usize = r.y;
+    const x1: usize = x0 + r.width - 1;
+    const y1: usize = y0 + r.height - 1;
+    if (x1 >= cols or y1 >= rows) return;
+    const owner: i32 = @intCast(owner_idx);
+
+    if (border.top) {
+        var x = x0;
+        while (x <= x1) : (x += 1) {
+            const idx = y0 * cols + x;
+            if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x, y0, role, 0);
+        }
+    }
+    if (border.bottom) {
+        var x = x0;
+        while (x <= x1) : (x += 1) {
+            const idx = y1 * cols + x;
+            if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x, y1, role, 0);
+        }
+    }
+    if (border.left) {
+        var y = y0;
+        while (y <= y1) : (y += 1) {
+            const idx = y * cols + x0;
+            if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x0, y, role, 0);
+        }
+    }
+    if (border.right) {
+        var y = y0;
+        while (y <= y1) : (y += 1) {
+            const idx = y * cols + x1;
+            if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x1, y, role, 0);
+        }
+    }
+}
+
+fn markTextLayer(
+    layer: []u8,
+    panel_ids: []u32,
+    cols: usize,
+    rows: usize,
+    x_start: u16,
+    y: u16,
+    text: []const u8,
+    max_w: u16,
+    role: u8,
+    panel_id: u32,
+) void {
+    if (y >= rows) return;
+    var x: usize = x_start;
+    const y_usize: usize = y;
+    var i: usize = 0;
+    while (i < text.len and i < max_w and x < cols) : (i += 1) {
+        markLayerCell(layer, panel_ids, cols, rows, x, y_usize, role, panel_id);
+        x += 1;
+    }
+}
+
+fn markTextOwnedMaskedLayer(
+    layer: []u8,
+    panel_ids: []u32,
+    cols: usize,
+    rows: usize,
+    x_start: u16,
+    y: u16,
+    text: []const u8,
+    max_w: u16,
+    owner_idx: usize,
+    top_window_owner: []const i32,
+    mask: []const bool,
+    role: u8,
+) void {
+    if (y >= rows) return;
+    var x: usize = x_start;
+    const y_usize: usize = y;
+    var i: usize = 0;
+    while (i < text.len and i < max_w and x < cols) : (i += 1) {
+        const idx = y_usize * cols + x;
+        if (mask[idx]) {
+            x += 1;
+            continue;
+        }
+        if (top_window_owner[idx] == @as(i32, @intCast(owner_idx))) {
+            markLayerCell(layer, panel_ids, cols, rows, x, y_usize, role, 0);
+        }
+        x += 1;
+    }
+}
 
 fn hasNeighborOnRight(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
     for (rects, 0..) |other, j| {

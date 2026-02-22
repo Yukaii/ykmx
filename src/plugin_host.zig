@@ -102,6 +102,24 @@ pub const PluginHost = struct {
             border_cross: ?u21,
         },
         reset_chrome_theme,
+        set_chrome_style: struct {
+            active_title_sgr: ?[]u8,
+            inactive_title_sgr: ?[]u8,
+            active_border_sgr: ?[]u8,
+            inactive_border_sgr: ?[]u8,
+            active_buttons_sgr: ?[]u8,
+            inactive_buttons_sgr: ?[]u8,
+        },
+        set_panel_chrome_style_by_id: struct {
+            panel_id: u32,
+            reset: bool,
+            active_title_sgr: ?[]u8,
+            inactive_title_sgr: ?[]u8,
+            active_border_sgr: ?[]u8,
+            inactive_border_sgr: ?[]u8,
+            active_buttons_sgr: ?[]u8,
+            inactive_buttons_sgr: ?[]u8,
+        },
     };
 
     pub const PointerEvent = struct {
@@ -195,6 +213,13 @@ pub const PluginHost = struct {
         border_tee_left: ?[]const u8 = null,
         border_tee_right: ?[]const u8 = null,
         border_cross: ?[]const u8 = null,
+        active_title_sgr: ?[]const u8 = null,
+        inactive_title_sgr: ?[]const u8 = null,
+        active_border_sgr: ?[]const u8 = null,
+        inactive_border_sgr: ?[]const u8 = null,
+        active_buttons_sgr: ?[]const u8 = null,
+        inactive_buttons_sgr: ?[]const u8 = null,
+        reset: ?bool = null,
     };
 
     const UiBars = struct {
@@ -714,14 +739,58 @@ pub const PluginHost = struct {
             } };
         }
         if (std.mem.eql(u8, action_name, "reset_chrome_theme")) return .reset_chrome_theme;
+        if (std.mem.eql(u8, action_name, "set_chrome_style")) {
+            return .{ .set_chrome_style = .{
+                .active_title_sgr = dupOptionalString(allocator, envelope.active_title_sgr),
+                .inactive_title_sgr = dupOptionalString(allocator, envelope.inactive_title_sgr),
+                .active_border_sgr = dupOptionalString(allocator, envelope.active_border_sgr),
+                .inactive_border_sgr = dupOptionalString(allocator, envelope.inactive_border_sgr),
+                .active_buttons_sgr = dupOptionalString(allocator, envelope.active_buttons_sgr),
+                .inactive_buttons_sgr = dupOptionalString(allocator, envelope.inactive_buttons_sgr),
+            } };
+        }
+        if (std.mem.eql(u8, action_name, "set_panel_chrome_style_by_id")) {
+            const panel_id = envelope.panel_id orelse return null;
+            return .{ .set_panel_chrome_style_by_id = .{
+                .panel_id = panel_id,
+                .reset = envelope.reset orelse false,
+                .active_title_sgr = dupOptionalString(allocator, envelope.active_title_sgr),
+                .inactive_title_sgr = dupOptionalString(allocator, envelope.inactive_title_sgr),
+                .active_border_sgr = dupOptionalString(allocator, envelope.active_border_sgr),
+                .inactive_border_sgr = dupOptionalString(allocator, envelope.inactive_border_sgr),
+                .active_buttons_sgr = dupOptionalString(allocator, envelope.active_buttons_sgr),
+                .inactive_buttons_sgr = dupOptionalString(allocator, envelope.inactive_buttons_sgr),
+            } };
+        }
         return null;
     }
 
     pub fn deinitActionPayload(allocator: std.mem.Allocator, action: *Action) void {
         switch (action.*) {
             .register_command_name => |payload| allocator.free(payload.command_name),
+            .set_chrome_style => |payload| {
+                if (payload.active_title_sgr) |s| allocator.free(s);
+                if (payload.inactive_title_sgr) |s| allocator.free(s);
+                if (payload.active_border_sgr) |s| allocator.free(s);
+                if (payload.inactive_border_sgr) |s| allocator.free(s);
+                if (payload.active_buttons_sgr) |s| allocator.free(s);
+                if (payload.inactive_buttons_sgr) |s| allocator.free(s);
+            },
+            .set_panel_chrome_style_by_id => |payload| {
+                if (payload.active_title_sgr) |s| allocator.free(s);
+                if (payload.inactive_title_sgr) |s| allocator.free(s);
+                if (payload.active_border_sgr) |s| allocator.free(s);
+                if (payload.inactive_border_sgr) |s| allocator.free(s);
+                if (payload.active_buttons_sgr) |s| allocator.free(s);
+                if (payload.inactive_buttons_sgr) |s| allocator.free(s);
+            },
             else => {},
         }
+    }
+
+    fn dupOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) ?[]u8 {
+        const v = value orelse return null;
+        return allocator.dupe(u8, v) catch null;
     }
 
     fn setUiBars(self: *PluginHost, toolbar: []const u8, tab: []const u8, status: []const u8) !void {

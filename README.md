@@ -141,6 +141,7 @@ Example plugins are in `docs/examples/plugins.d/`:
 - `bottom-panel`
 - `command-palette`
 - `retro-win31-theme`
+- `python-demo` (language-agnostic runtime via `plugin.toml run=...`)
 
 ## Project Docs
 

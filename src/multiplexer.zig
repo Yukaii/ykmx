@@ -6,6 +6,7 @@ const input_mod = @import("input.zig");
 const signal_mod = @import("signal.zig");
 const popup_mod = @import("popup.zig");
 const scrollback_mod = @import("scrollback.zig");
+const ghostty_vt = @import("ghostty-vt");
 
 pub const Multiplexer = struct {
     pub const BorderGlyphs = struct {
@@ -38,6 +39,24 @@ pub const Multiplexer = struct {
         border_tee_left: ?u21 = null,
         border_tee_right: ?u21 = null,
         border_cross: ?u21 = null,
+    };
+
+    pub const ChromeStyles = struct {
+        active_title: ?ghostty_vt.Style = null,
+        inactive_title: ?ghostty_vt.Style = null,
+        active_border: ?ghostty_vt.Style = null,
+        inactive_border: ?ghostty_vt.Style = null,
+        active_buttons: ?ghostty_vt.Style = null,
+        inactive_buttons: ?ghostty_vt.Style = null,
+    };
+
+    pub const ChromeStyleUpdate = struct {
+        active_title: ?ghostty_vt.Style = null,
+        inactive_title: ?ghostty_vt.Style = null,
+        active_border: ?ghostty_vt.Style = null,
+        inactive_border: ?ghostty_vt.Style = null,
+        active_buttons: ?ghostty_vt.Style = null,
+        inactive_buttons: ?ghostty_vt.Style = null,
     };
 
     pub const WindowChromeHit = struct {
@@ -141,6 +160,8 @@ pub const Multiplexer = struct {
     window_close_char: u8 = 'x',
     focus_marker: u8 = '*',
     border_glyphs: BorderGlyphs = .{},
+    chrome_styles: ChromeStyles = .{},
+    panel_chrome_styles: std.AutoHashMapUnmanaged(u32, ChromeStyles) = .{},
 
     pub const TickResult = struct {
         reads: usize,
@@ -200,6 +221,7 @@ pub const Multiplexer = struct {
         var keybind_it = self.plugin_prefixed_keybindings.iterator();
         while (keybind_it.next()) |entry| self.allocator.free(entry.value_ptr.*);
         self.plugin_prefixed_keybindings.deinit(self.allocator);
+        self.panel_chrome_styles.deinit(self.allocator);
 
         self.popup_mgr.deinit();
         self.workspace_mgr.deinit();
@@ -731,12 +753,22 @@ pub const Multiplexer = struct {
         return self.border_glyphs;
     }
 
+    pub fn chromeStyles(self: *const Multiplexer) ChromeStyles {
+        return self.chrome_styles;
+    }
+
+    pub fn panelChromeStylesById(self: *const Multiplexer, panel_id: u32) ?ChromeStyles {
+        return self.panel_chrome_styles.get(panel_id);
+    }
+
     pub fn resetChromeTheme(self: *Multiplexer) void {
         self.window_minimize_char = '_';
         self.window_maximize_char = '+';
         self.window_close_char = 'x';
         self.focus_marker = '*';
         self.border_glyphs = .{};
+        self.chrome_styles = .{};
+        self.panel_chrome_styles.clearRetainingCapacity();
         self.requestRedraw();
     }
 
@@ -757,6 +789,42 @@ pub const Multiplexer = struct {
         if (update.border_tee_right) |cp| self.border_glyphs.tee_right = cp;
         if (update.border_cross) |cp| self.border_glyphs.cross = cp;
         self.requestRedraw();
+    }
+
+    pub fn applyChromeStyle(self: *Multiplexer, update: ChromeStyleUpdate) void {
+        if (update.active_title) |s| self.chrome_styles.active_title = s;
+        if (update.inactive_title) |s| self.chrome_styles.inactive_title = s;
+        if (update.active_border) |s| self.chrome_styles.active_border = s;
+        if (update.inactive_border) |s| self.chrome_styles.inactive_border = s;
+        if (update.active_buttons) |s| self.chrome_styles.active_buttons = s;
+        if (update.inactive_buttons) |s| self.chrome_styles.inactive_buttons = s;
+        self.requestRedraw();
+    }
+
+    pub fn setPanelChromeStyleByIdOwned(
+        self: *Multiplexer,
+        panel_id: u32,
+        reset: bool,
+        update: ChromeStyleUpdate,
+        owner_plugin_name: ?[]const u8,
+    ) !bool {
+        if (!self.popupOwnedByPlugin(panel_id, owner_plugin_name)) return false;
+        _ = self.popup_mgr.getById(panel_id) orelse return false;
+        if (reset) {
+            _ = self.panel_chrome_styles.fetchRemove(panel_id);
+            self.requestRedraw();
+            return true;
+        }
+        const gop = try self.panel_chrome_styles.getOrPut(self.allocator, panel_id);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        if (update.active_title) |s| gop.value_ptr.active_title = s;
+        if (update.inactive_title) |s| gop.value_ptr.inactive_title = s;
+        if (update.active_border) |s| gop.value_ptr.active_border = s;
+        if (update.inactive_border) |s| gop.value_ptr.inactive_border = s;
+        if (update.active_buttons) |s| gop.value_ptr.active_buttons = s;
+        if (update.inactive_buttons) |s| gop.value_ptr.inactive_buttons = s;
+        self.requestRedraw();
+        return true;
     }
 
     pub fn windowChromeHitAt(self: *Multiplexer, screen: layout.Rect, px: u16, py: u16) !?WindowChromeHit {
@@ -2601,6 +2669,7 @@ pub const Multiplexer = struct {
     fn cleanupClosedPopup(self: *Multiplexer, removed: popup_mod.Popup) void {
         defer self.allocator.free(removed.title);
         defer if (removed.owner_plugin_name) |owner| self.allocator.free(owner);
+        _ = self.panel_chrome_styles.fetchRemove(removed.id);
 
         if (removed.window_id) |window_id| {
             if (self.ptys.getPtr(window_id)) |p| p.deinitNoWait();
