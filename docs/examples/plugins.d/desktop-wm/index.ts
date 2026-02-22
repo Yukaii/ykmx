@@ -36,6 +36,8 @@ const RESIZE_EDGE = 1;
 const frames = new Map<number, Frame>();
 let lastState: RuntimeState | null = null;
 let drag: DragState | null = null;
+let lastFocusedWindowId: number | null = null;
+let lastWindowIds: number[] = [];
 
 function renderBars(state: RuntimeState): { toolbar: string; tab: string; status: string } {
   const toolbar = `desktop-wm: floating overlap=on minimized=${state.minimized_window_count} visible=${state.visible_window_count}`;
@@ -132,6 +134,19 @@ async function maybeBringToFront(windowId: number, windowIndex: number): Promise
   }
 }
 
+async function maybeBringFocusedToFront(state: RuntimeState): Promise<void> {
+  if (!state.has_focused_window) {
+    lastFocusedWindowId = null;
+    return;
+  }
+  if (state.focused_index < 0 || state.focused_index >= lastWindowIds.length) return;
+  const focusedWindowId = lastWindowIds[state.focused_index];
+  if (!focusedWindowId) return;
+  if (focusedWindowId === lastFocusedWindowId) return;
+  lastFocusedWindowId = focusedWindowId;
+  await maybeBringToFront(focusedWindowId, state.focused_index);
+}
+
 function applyDrag(px: number, py: number): boolean {
   if (!drag || !lastState) return false;
 
@@ -164,11 +179,13 @@ async function main() {
       lastState = ev.state;
       const bars = renderBars(ev.state);
       await writeUiBars(bars.toolbar, bars.tab, bars.status);
+      await maybeBringFocusedToFront(ev.state);
       continue;
     }
 
     if (isComputeLayoutEvent(ev)) {
       const { screen, window_ids } = ev.params;
+      lastWindowIds = window_ids.slice();
       syncFrames(window_ids, screen);
       const rects = window_ids.map((id, i) => clampFrame(frames.get(id) ?? defaultFrame(screen, i), screen));
       await writeLayoutResponse(ev.id, rects);
