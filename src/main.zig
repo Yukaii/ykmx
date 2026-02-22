@@ -1059,10 +1059,10 @@ fn renderRuntimeFrame(
         const controls = "[_][+][x]";
         const controls_w: u16 = @intCast(controls.len);
         const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
-        drawTextOwned(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner);
+        drawTextOwnedMasked(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner, popup_overlay);
         if (r.width >= 10) {
             const controls_x: u16 = r.x + r.width - controls_w - 1;
-            drawTextOwned(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner);
+            drawTextOwnedMasked(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner, popup_overlay);
         }
 
         const window_id = tab.windows.items[i].id;
@@ -1896,6 +1896,35 @@ fn drawTextOwned(
     var i: usize = 0;
     while (i < text.len and i < max_w and x < cols) : (i += 1) {
         const idx = y_usize * cols + x;
+        if (top_window_owner[idx] == @as(i32, @intCast(owner_idx))) {
+            putCell(canvas, cols, x, y_usize, text[i]);
+        }
+        x += 1;
+    }
+}
+
+fn drawTextOwnedMasked(
+    canvas: []u21,
+    cols: usize,
+    rows: usize,
+    x_start: u16,
+    y: u16,
+    text: []const u8,
+    max_w: u16,
+    owner_idx: usize,
+    top_window_owner: []const i32,
+    mask: []const bool,
+) void {
+    if (y >= rows) return;
+    var x: usize = x_start;
+    const y_usize: usize = y;
+    var i: usize = 0;
+    while (i < text.len and i < max_w and x < cols) : (i += 1) {
+        const idx = y_usize * cols + x;
+        if (mask[idx]) {
+            x += 1;
+            continue;
+        }
         if (top_window_owner[idx] == @as(i32, @intCast(owner_idx))) {
             putCell(canvas, cols, x, y_usize, text[i]);
         }

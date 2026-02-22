@@ -115,9 +115,12 @@ pub const Router = struct {
                 's' => .{ .command = .toggle_sync_scroll },
                 'M' => .{ .command = .toggle_mouse_passthrough },
                 '\\' => .{ .command = .detach },
+                0x1c => .{ .command = .detach }, // Ctrl+\
                 else => .{ .forward = b },
             };
         }
+
+        if (b == 0x1c) return .{ .command = .detach }; // Ctrl+\ direct fallback
 
         if (b == self.prefix_key) {
             self.waiting_for_command = true;
@@ -227,6 +230,12 @@ test "input router parses prefixed command" {
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .create_window }, r.feedByte('c'));
+}
+
+test "input router parses detach via Ctrl+\\ byte" {
+    const testing = std.testing;
+    var r = Router{};
+    try testing.expectEqual(Event{ .command = .detach }, r.feedByte(0x1c));
 }
 
 test "input command name roundtrip" {

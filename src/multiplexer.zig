@@ -2387,6 +2387,20 @@ test "multiplexer detach command toggles detach request flag" {
     try testing.expect(!mux.consumeDetachRequested());
 }
 
+test "multiplexer detach still works with plugin popup command overrides" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    try mux.setPluginCommandOverride(.open_popup, true);
+    try mux.setPluginCommandOverride(.close_popup, true);
+    try mux.setPluginCommandOverride(.cycle_popup, true);
+
+    try mux.handleInputBytes(&.{ 0x07, '\\' });
+    try testing.expect(mux.consumeDetachRequested());
+    try testing.expect(!mux.consumeDetachRequested());
+}
+
 test "multiplexer tick surfaces detach request" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
