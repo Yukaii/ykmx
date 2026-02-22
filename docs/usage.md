@@ -198,6 +198,9 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `docs/examples/plugins.d/paperwm/index.ts`
 - Desktop floating WM example (overlap + free drag/resize + controls) lives at:
   - `docs/examples/plugins.d/desktop-wm/index.ts`
+  - optional plugin config:
+    - `[plugin.desktop-wm]`
+    - `start_maximized=true` (default `true`; set `false` for cascaded floating start)
 - Standalone popup keybinding/plugin-control example lives at:
   - `docs/examples/plugins.d/popup-controls/index.ts`
   - optional plugin config:

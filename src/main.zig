@@ -330,7 +330,6 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     _ = try mux.createTab("main");
     try mux.workspace_mgr.setActiveLayoutDefaults(cfg.default_layout, cfg.master_count, cfg.master_ratio_permille, cfg.gap);
     _ = try mux.createShellWindow("shell-1");
-    _ = try mux.createShellWindow("shell-2");
     if (plugins.hasAny()) plugins.emitStart(try mux.workspace_mgr.activeLayoutType());
     var last_layout = try mux.workspace_mgr.activeLayoutType();
 

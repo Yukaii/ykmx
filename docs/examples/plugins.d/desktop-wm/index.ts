@@ -1,5 +1,6 @@
 import {
   isComputeLayoutEvent,
+  isPluginConfigEvent,
   isPointerEvent,
   isStateChangedEvent,
   readEvents,
@@ -39,6 +40,12 @@ let lastState: RuntimeState | null = null;
 let drag: DragState | null = null;
 let lastFocusedWindowId: number | null = null;
 let lastWindowIds: number[] = [];
+let startMaximized = true;
+
+function parseBoolLike(value: string): boolean {
+  const s = value.trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
+}
 
 function trimToWidth(text: string, width: number): string {
   if (width <= 0) return "";
@@ -110,9 +117,23 @@ function syncFrames(windowIds: number[], screen: Rect): void {
   for (let i = 0; i < windowIds.length; i += 1) {
     const id = windowIds[i];
     if (!frames.has(id)) {
-      frames.set(id, defaultFrame(screen, i));
+      const base = defaultFrame(screen, i);
+      if (startMaximized) {
+        maximizedFrames.set(id, base);
+        frames.set(id, {
+          x: screen.x,
+          y: screen.y,
+          width: screen.width,
+          height: screen.height,
+        });
+      } else {
+        frames.set(id, base);
+      }
     } else {
       frames.set(id, clampFrame(frames.get(id) as Frame, screen));
+      if (maximizedFrames.has(id)) {
+        maximizedFrames.set(id, clampFrame(maximizedFrames.get(id) as Frame, screen));
+      }
     }
   }
 }
@@ -212,6 +233,13 @@ function applyDrag(px: number, py: number): boolean {
 async function main() {
   for await (const ev of readEvents()) {
     if (ev.event === "on_start") continue;
+
+    if (isPluginConfigEvent(ev)) {
+      if (ev.key === "start_maximized") {
+        startMaximized = parseBoolLike(ev.value);
+      }
+      continue;
+    }
 
     if (isStateChangedEvent(ev)) {
       lastState = ev.state;
