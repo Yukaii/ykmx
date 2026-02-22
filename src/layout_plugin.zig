@@ -63,14 +63,20 @@ pub const PluginManagerLayoutEngine = struct {
     const Context = struct {
         manager: *plugin_manager.PluginManager,
         fallback: layout.LayoutEngine,
+        preferred_layout_plugin: ?[]u8 = null,
     };
 
-    pub fn init(allocator: std.mem.Allocator, manager: *plugin_manager.PluginManager) !layout.LayoutEngine {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        manager: *plugin_manager.PluginManager,
+        preferred_layout_plugin: ?[]const u8,
+    ) !layout.LayoutEngine {
         const ctx = try allocator.create(Context);
         errdefer allocator.destroy(ctx);
         ctx.* = .{
             .manager = manager,
             .fallback = layout_native.NativeLayoutEngine.init(),
+            .preferred_layout_plugin = if (preferred_layout_plugin) |name| try allocator.dupe(u8, name) else null,
         };
 
         return .{
@@ -86,7 +92,7 @@ pub const PluginManagerLayoutEngine = struct {
         params: layout.LayoutParams,
     ) ![]layout.Rect {
         const ctx = @as(*Context, @ptrCast(@alignCast(ctx_ptr orelse return error.InvalidPluginLayoutContext)));
-        if (try ctx.manager.requestLayout(allocator, params, 12)) |plugin_rects| {
+        if (try ctx.manager.requestLayout(allocator, params, 12, ctx.preferred_layout_plugin)) |plugin_rects| {
             if (plugin_rects.len == params.window_count) return plugin_rects;
             allocator.free(plugin_rects);
         }
@@ -95,6 +101,7 @@ pub const PluginManagerLayoutEngine = struct {
 
     fn deinit(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator) void {
         const ctx = @as(*Context, @ptrCast(@alignCast(ctx_ptr orelse return)));
+        if (ctx.preferred_layout_plugin) |name| allocator.free(name);
         ctx.fallback.deinit(allocator);
         allocator.destroy(ctx);
     }

@@ -501,7 +501,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
         }
 
         if (try control.poll(&mux, content)) force_redraw = true;
-        control.writeState(&mux, content) catch {};
+        control.writeState(&mux, &plugins, content) catch {};
 
         const current_plugin_state = try collectPluginRuntimeState(&mux, content);
         if (plugins.hasAny()) {
@@ -662,7 +662,7 @@ const ControlPipe = struct {
         return changed;
     }
 
-    fn writeState(self: *ControlPipe, mux: *multiplexer.Multiplexer, screen: layout.Rect) !void {
+    fn writeState(self: *ControlPipe, mux: *multiplexer.Multiplexer, plugins: *plugin_manager.PluginManager, screen: layout.Rect) !void {
         var text = std.ArrayListUnmanaged(u8){};
         defer text.deinit(self.allocator);
         const w = text.writer(self.allocator);
@@ -680,6 +680,7 @@ const ControlPipe = struct {
         try w.print("screen={}x{}\n", .{ screen.width, screen.height });
         try w.print("panel_count_visible={}\n", .{mux.popup_mgr.visibleCount()});
         try w.print("focused_panel_id={}\n", .{focused_panel_id});
+        try w.print("plugin_hosts={}\n", .{plugins.hostCount()});
 
         const tab = try mux.workspace_mgr.activeTab();
         for (tab.windows.items, 0..) |win, i| {
@@ -705,6 +706,33 @@ const ControlPipe = struct {
             try writeQuotedString(w, p.owner_plugin_name orelse "");
             try w.print(" rect={},{} {}x{} title=", .{ p.rect.x, p.rect.y, p.rect.width, p.rect.height });
             try writeQuotedString(w, p.title);
+            try w.writeByte('\n');
+        }
+
+        for (plugins.loadReports()) |report| {
+            try w.writeAll("plugin name=");
+            try writeQuotedString(w, report.plugin_name);
+            try w.writeAll(" status=");
+            try w.writeAll(@tagName(report.status));
+            try w.writeAll(" reason=");
+            try writeQuotedString(w, report.reason);
+            try w.writeAll(" path=");
+            try writeQuotedString(w, report.path);
+            try w.writeByte('\n');
+        }
+
+        const runtime_hosts = plugins.runtimeHosts(self.allocator) catch &[_]plugin_manager.PluginManager.RuntimeHost{};
+        defer if (runtime_hosts.len > 0) self.allocator.free(runtime_hosts);
+        for (runtime_hosts) |host| {
+            try w.writeAll("plugin_runtime name=");
+            try writeQuotedString(w, host.plugin_name);
+            try w.print(" alive={} pending_actions={} reason=", .{
+                @as(u8, @intFromBool(host.alive)),
+                host.pending_actions,
+            });
+            try writeQuotedString(w, host.death_reason orelse "");
+            try w.writeAll(" stderr_tail=");
+            try writeQuotedString(w, host.stderr_tail);
             try w.writeByte('\n');
         }
 
@@ -869,6 +897,7 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
             \\  ykmx ctl status
             \\  ykmx ctl list-windows
             \\  ykmx ctl list-panels
+            \\  ykmx ctl list-plugins
             \\  ykmx ctl list-commands [--format text|json|jsonl]
             \\  ykmx ctl command <name>
             \\  ykmx ctl json '<json>'
@@ -880,7 +909,7 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     }
 
-    if (std.mem.eql(u8, args[0], "status") or std.mem.eql(u8, args[0], "list-windows") or std.mem.eql(u8, args[0], "list-panels") or std.mem.eql(u8, args[0], "list-commands")) {
+    if (std.mem.eql(u8, args[0], "status") or std.mem.eql(u8, args[0], "list-windows") or std.mem.eql(u8, args[0], "list-panels") or std.mem.eql(u8, args[0], "list-plugins") or std.mem.eql(u8, args[0], "list-commands")) {
         const state_path = resolveStatePathForCli(allocator) catch |err| switch (err) {
             error.MissingControlPipeEnv => return writeControlEnvHint(),
             else => return err,
@@ -938,6 +967,10 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 if (line.len == 0) continue;
                 if (std.mem.eql(u8, args[0], "list-windows")) {
                     if (!std.mem.startsWith(u8, line, "window ")) continue;
+                } else if (std.mem.eql(u8, args[0], "list-plugins")) {
+                    if (!std.mem.startsWith(u8, line, "plugin ")) {
+                        if (!std.mem.startsWith(u8, line, "plugin_runtime ")) continue;
+                    }
                 } else {
                     if (!std.mem.startsWith(u8, line, "panel ")) continue;
                 }
@@ -2091,6 +2124,16 @@ fn renderRuntimeFrame(
 
         drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
         markTextLayer(chrome_layer, chrome_panel_id, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w, if (panel_active) chrome_layer_active_title else chrome_layer_inactive_title, p.id);
+        if (p.show_controls and p.rect.width >= 10) {
+            var controls_buf: [9]u8 = undefined;
+            const control_chars = mux.windowControlChars();
+            controls_buf = .{ '[', control_chars.minimize, ']', '[', control_chars.maximize, ']', '[', control_chars.close, ']' };
+            const controls = controls_buf[0..];
+            const controls_w: u16 = @intCast(controls.len);
+            const controls_x: u16 = p.rect.x + p.rect.width - controls_w - 1;
+            drawText(canvas, total_cols, content_rows, controls_x, p.rect.y, controls, controls_w);
+            markTextLayer(chrome_layer, chrome_panel_id, total_cols, content_rows, controls_x, p.rect.y, controls, controls_w, if (panel_active) chrome_layer_active_buttons else chrome_layer_inactive_buttons, p.id);
+        }
         markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
         markRectOverlay(popup_cover, total_cols, content_rows, p.rect);
         // Popup interiors are opaque: suppress any precomputed base-pane border
@@ -2121,7 +2164,7 @@ fn renderRuntimeFrame(
             };
         }
     }
-    applyBorderGlyphs(canvas, border_conn, total_cols, content_rows, mux.borderGlyphs());
+    applyBorderGlyphs(canvas, border_conn, total_cols, content_rows, mux.borderGlyphs(), mux.focusMarker());
 
     // Border glyph synthesis can overwrite titlebar text/chrome because both share
     // the top border row. Repaint chrome after border pass.
@@ -2153,6 +2196,15 @@ fn renderRuntimeFrame(
         const inner_w = p.rect.width - 2;
         if (inner_w == 0) continue;
         drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
+        if (p.show_controls and p.rect.width >= 10) {
+            var controls_buf: [9]u8 = undefined;
+            const control_chars = mux.windowControlChars();
+            controls_buf = .{ '[', control_chars.minimize, ']', '[', control_chars.maximize, ']', '[', control_chars.close, ']' };
+            const controls = controls_buf[0..];
+            const controls_w: u16 = @intCast(controls.len);
+            const controls_x: u16 = p.rect.x + p.rect.width - controls_w - 1;
+            drawText(canvas, total_cols, content_rows, controls_x, p.rect.y, controls, controls_w);
+        }
     }
 
     const live_ids = try mux.liveWindowIds(allocator);
@@ -2713,6 +2765,7 @@ fn applyBorderGlyphs(
     cols: usize,
     rows: usize,
     glyphs: multiplexer.Multiplexer.BorderGlyphs,
+    focus_marker: u8,
 ) void {
     _ = rows;
     var i: usize = 0;
@@ -2720,7 +2773,7 @@ fn applyBorderGlyphs(
         const bits = conn[i];
         if (bits == 0) continue;
         // Keep focus marker on top border.
-        if (canvas[i] == '*') continue;
+        if (canvas[i] == @as(u21, focus_marker)) continue;
         canvas[i] = glyphFromConn(bits, glyphs);
     }
     _ = cols;
@@ -3270,7 +3323,7 @@ fn pickLayoutEngineRuntime(
     return switch (cfg.layout_backend) {
         .plugin => blk: {
             if (plugins.hasAny()) {
-                break :blk try layout_plugin.PluginManagerLayoutEngine.init(allocator, plugins);
+                break :blk try layout_plugin.PluginManagerLayoutEngine.init(allocator, plugins, cfg.layout_plugin);
             }
             break :blk try pickLayoutEngine(allocator, cfg);
         },
@@ -3335,6 +3388,7 @@ fn printConfigPOC(writer: *std.Io.Writer, cfg: config.Config) !void {
     try writer.print("  source={s}\n", .{cfg.source_path orelse "(defaults)"});
     try writer.print("  backend={s}\n", .{@tagName(cfg.layout_backend)});
     try writer.print("  default_layout={s}\n", .{@tagName(cfg.default_layout)});
+    try writer.print("  layout_plugin={s}\n", .{cfg.layout_plugin orelse "(auto)"});
     try writer.print("  plugins_enabled={}\n\n", .{cfg.plugins_enabled});
 }
 

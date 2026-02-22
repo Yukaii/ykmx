@@ -311,6 +311,26 @@ pub const Multiplexer = struct {
         return self.popup_mgr.focusedWindowId() != null;
     }
 
+    fn sendInputToFocusedWithPopupFallback(self: *Multiplexer, bytes: []const u8) !void {
+        if (self.popupHasFocusedInputTarget()) {
+            self.sendInputToFocusedPopup(bytes) catch |err| switch (err) {
+                error.NoFocusedPopup, error.UnknownWindow => {
+                    self.sendInputToFocused(bytes) catch |fallback_err| switch (fallback_err) {
+                        error.NoFocusedWindow, error.UnknownWindow => {},
+                        else => return fallback_err,
+                    };
+                    return;
+                },
+                else => return err,
+            };
+            return;
+        }
+        self.sendInputToFocused(bytes) catch |err| switch (err) {
+            error.NoFocusedWindow, error.UnknownWindow => {},
+            else => return err,
+        };
+    }
+
     pub fn handleInputBytes(self: *Multiplexer, bytes: []const u8) !void {
         return self.handleInputBytesWithScreen(null, bytes);
     }
@@ -328,17 +348,7 @@ pub const Multiplexer = struct {
                     if (self.handleScrollbackQueryByte(c, screen)) continue;
                     if (self.handleScrollbackNavForwardByte(c, screen)) continue;
                     var tmp = [_]u8{c};
-                    if (self.popupHasFocusedInputTarget()) {
-                        self.sendInputToFocusedPopup(&tmp) catch |err| switch (err) {
-                            error.NoFocusedPopup, error.UnknownWindow => {},
-                            else => return err,
-                        };
-                    } else {
-                        self.sendInputToFocused(&tmp) catch |err| switch (err) {
-                            error.NoFocusedWindow, error.UnknownWindow => {},
-                            else => return err,
-                        };
-                    }
+                    try self.sendInputToFocusedWithPopupFallback(&tmp);
                 },
                 .forward_sequence => |seq| {
                     if (self.handleScrollbackQuerySequence(seq.slice(), screen)) continue;
@@ -371,17 +381,7 @@ pub const Multiplexer = struct {
                     if (!consumed_mouse) {
                         if (self.handleScrollbackNavSequence(seq.slice(), screen)) continue;
                         if (self.isFocusedScrolledBack()) continue;
-                        if (self.popupHasFocusedInputTarget()) {
-                            self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
-                                error.NoFocusedPopup, error.UnknownWindow => {},
-                                else => return err,
-                            };
-                        } else {
-                            self.sendInputToFocused(seq.slice()) catch |err| switch (err) {
-                                error.NoFocusedWindow, error.UnknownWindow => {},
-                                else => return err,
-                            };
-                        }
+                        try self.sendInputToFocusedWithPopupFallback(seq.slice());
                     }
                     if (seq.mouse) |mouse| try self.pending_mouse_events.append(self.allocator, mouse);
                 },
@@ -601,17 +601,7 @@ pub const Multiplexer = struct {
                     if (self.handleScrollbackQueryByte(key, screen)) continue;
                     if (self.handleScrollbackNavForwardByte(key, screen)) continue;
                     var tmp = [_]u8{key};
-                    if (self.popupHasFocusedInputTarget()) {
-                        self.sendInputToFocusedPopup(&tmp) catch |err| switch (err) {
-                            error.NoFocusedPopup, error.UnknownWindow => {},
-                            else => return err,
-                        };
-                    } else {
-                        self.sendInputToFocused(&tmp) catch |err| switch (err) {
-                            error.NoFocusedWindow, error.UnknownWindow => {},
-                            else => return err,
-                        };
-                    }
+                    try self.sendInputToFocusedWithPopupFallback(&tmp);
                 },
                 .noop => {},
             }
@@ -620,17 +610,7 @@ pub const Multiplexer = struct {
 
     pub fn flushPendingInputTimeouts(self: *Multiplexer) !void {
         const seq = self.input_router.flushPendingEscapeIfExpired(std.time.milliTimestamp(), 25) orelse return;
-        if (self.popupHasFocusedInputTarget()) {
-            self.sendInputToFocusedPopup(seq.slice()) catch |err| switch (err) {
-                error.NoFocusedPopup, error.UnknownWindow => {},
-                else => return err,
-            };
-        } else {
-            self.sendInputToFocused(seq.slice()) catch |err| switch (err) {
-                error.NoFocusedWindow, error.UnknownWindow => {},
-                else => return err,
-            };
-        }
+        try self.sendInputToFocusedWithPopupFallback(seq.slice());
     }
 
     pub fn resizeActiveWindowsToLayout(self: *Multiplexer, screen: layout.Rect) !usize {
@@ -844,11 +824,13 @@ pub const Multiplexer = struct {
             if (!(inside_x and inside_y)) continue;
 
             const on_title_bar = py == r.y and px > r.x and px < (r.x + r.width - 1);
+            // Keep hit-testing aligned with rendering: controls are drawn only when width >= 10.
+            const controls_visible = r.width >= 10;
             // Controls render as "[?][?][?]" anchored to right border.
-            // Symbol cells are at offsets: '_' => -9, '+' => -6, 'x' => -3.
-            const on_close_button = on_title_bar and r.width >= 5 and px == (r.x + r.width - 3);
-            const on_maximize_button = on_title_bar and r.width >= 8 and px == (r.x + r.width - 6);
-            const on_minimize_button = on_title_bar and r.width >= 11 and px == (r.x + r.width - 9);
+            // Symbol cells are at offsets: min=-9, max=-6, close=-3.
+            const on_close_button = controls_visible and on_title_bar and px == (r.x + r.width - 3);
+            const on_maximize_button = controls_visible and on_title_bar and px == (r.x + r.width - 6);
+            const on_minimize_button = controls_visible and on_title_bar and px == (r.x + r.width - 9);
 
             return .{
                 .window_id = tab.windows.items[i].id,
@@ -880,7 +862,8 @@ pub const Multiplexer = struct {
         const p = self.popup_mgr.popups.items[idx];
         const window_id = p.window_id orelse 0;
         const on_title_bar = p.show_border and py == p.rect.y and px > p.rect.x and px < (p.rect.x + p.rect.width - 1);
-        const on_close_button = p.show_border and p.show_controls and on_title_bar and p.rect.width >= 5 and px == (p.rect.x + p.rect.width - 3);
+        const controls_visible = p.show_border and p.show_controls and p.rect.width >= 10;
+        const on_close_button = controls_visible and on_title_bar and px == (p.rect.x + p.rect.width - 3);
         const on_resize_left = px == p.rect.x;
         const on_resize_right = px + 1 == p.rect.x + p.rect.width;
         const on_resize_top = py == p.rect.y;
@@ -3655,6 +3638,44 @@ test "multiplexer popup chrome hit reports resize edges" {
     try testing.expect(bottom.on_resize_bottom);
 }
 
+test "multiplexer window chrome hit aligns with rendered controls at width 10" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("base", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    _ = try mux.resizeActiveWindowsToLayout(.{ .x = 0, .y = 0, .width = 10, .height = 8 });
+
+    // Width=10 should render [m][M][x] and all three hit zones should be active.
+    const y: u16 = 0;
+    const min_hit = try mux.windowChromeHitAt(.{ .x = 0, .y = 0, .width = 10, .height = 8 }, 1, y) orelse return error.TestUnexpectedResult;
+    try testing.expect(min_hit.on_minimize_button);
+    const max_hit = try mux.windowChromeHitAt(.{ .x = 0, .y = 0, .width = 10, .height = 8 }, 4, y) orelse return error.TestUnexpectedResult;
+    try testing.expect(max_hit.on_maximize_button);
+    const close_hit = try mux.windowChromeHitAt(.{ .x = 0, .y = 0, .width = 10, .height = 8 }, 7, y) orelse return error.TestUnexpectedResult;
+    try testing.expect(close_hit.on_close_button);
+}
+
+test "multiplexer popup close hit requires controls-visible width" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.popup_mgr.create(.{
+        .title = "narrow",
+        .rect = .{ .x = 5, .y = 2, .width = 9, .height = 6 },
+        .show_border = true,
+        .show_controls = true,
+    });
+
+    // Width<10 does not render controls; close hit should not trigger.
+    const hx: u16 = 5 + 9 - 3;
+    const hy: u16 = 2;
+    const hit = mux.popupChromeHitAt(hx, hy) orelse return error.TestUnexpectedResult;
+    try testing.expect(!hit.on_close_button);
+}
+
 test "multiplexer plugin override captures popup command instead of executing it" {
     const testing = std.testing;
     var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
@@ -3709,6 +3730,47 @@ test "multiplexer modal popup captures forwarded input" {
 
     try testing.expect(std.mem.indexOf(u8, popup_out, "to-popup") != null);
     try testing.expect(std.mem.indexOf(u8, base_out, "to-popup") == null);
+}
+
+test "multiplexer falls back to focused pane when popup target is stale" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    const base_win = try mux.createCommandWindow("base-cat", &.{"/bin/cat"});
+    _ = try mux.openCommandPopup(
+        "popup-cat",
+        &.{"/bin/cat"},
+        .{ .x = 0, .y = 0, .width = 100, .height = 30 },
+        true,
+        false,
+    );
+    const popup_win = mux.focusedPopupWindowId() orelse return error.TestUnexpectedResult;
+
+    // Simulate stale popup focus target (e.g. plugin/process mismatch): popup
+    // remains focused but its PTY/window backing disappeared.
+    if (mux.ptys.getPtr(popup_win)) |p| p.deinitNoWait();
+    _ = mux.ptys.fetchRemove(popup_win);
+    if (mux.stdout_buffers.getPtr(popup_win)) |b| b.deinit(testing.allocator);
+    _ = mux.stdout_buffers.fetchRemove(popup_win);
+    if (mux.scrollbacks.getPtr(popup_win)) |sb| sb.deinit();
+    _ = mux.scrollbacks.fetchRemove(popup_win);
+
+    try mux.handleInputBytes("fallback-ok\n");
+
+    var tries: usize = 0;
+    while (tries < 40) : (tries += 1) {
+        _ = try mux.pollOnce(30);
+        const out = try mux.windowOutput(base_win);
+        if (std.mem.indexOf(u8, out, "fallback-ok") != null) break;
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+
+    const base_out = try mux.windowOutput(base_win);
+    try testing.expect(std.mem.indexOf(u8, base_out, "fallback-ok") != null);
 }
 
 test "multiplexer fzf popup auto-close path cleans up exited popup window" {

@@ -4,6 +4,26 @@ const input_mod = @import("input.zig");
 const plugin_host = @import("plugin_host.zig");
 
 pub const PluginManager = struct {
+    pub const LoadStatus = enum {
+        started,
+        failed,
+    };
+
+    pub const LoadReport = struct {
+        plugin_name: []u8,
+        path: []u8,
+        status: LoadStatus,
+        reason: []u8,
+    };
+
+    pub const RuntimeHost = struct {
+        plugin_name: []const u8,
+        alive: bool,
+        pending_actions: usize,
+        death_reason: ?[]const u8,
+        stderr_tail: []const u8,
+    };
+
     pub const SourcedAction = struct {
         plugin_name: []const u8,
         action: plugin_host.PluginHost.Action,
@@ -17,6 +37,7 @@ pub const PluginManager = struct {
 
     allocator: std.mem.Allocator,
     hosts: std.ArrayListUnmanaged(plugin_host.PluginHost) = .{},
+    load_reports: std.ArrayListUnmanaged(LoadReport) = .{},
     ui_bars_cache: ?UiBarsOwned = null,
 
     const UiBarsOwned = struct {
@@ -33,6 +54,12 @@ pub const PluginManager = struct {
         self.clearUiBarsCache();
         for (self.hosts.items) |*host| host.deinit();
         self.hosts.deinit(self.allocator);
+        for (self.load_reports.items) |report| {
+            self.allocator.free(report.plugin_name);
+            self.allocator.free(report.path);
+            self.allocator.free(report.reason);
+        }
+        self.load_reports.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -62,6 +89,28 @@ pub const PluginManager = struct {
 
     pub fn hasAny(self: *const PluginManager) bool {
         return self.hosts.items.len > 0;
+    }
+
+    pub fn hostCount(self: *const PluginManager) usize {
+        return self.hosts.items.len;
+    }
+
+    pub fn loadReports(self: *const PluginManager) []const LoadReport {
+        return self.load_reports.items;
+    }
+
+    pub fn runtimeHosts(self: *const PluginManager, allocator: std.mem.Allocator) ![]RuntimeHost {
+        const out = try allocator.alloc(RuntimeHost, self.hosts.items.len);
+        for (self.hosts.items, 0..) |*host, i| {
+            out[i] = .{
+                .plugin_name = host.pluginName(),
+                .alive = host.isAlive(),
+                .pending_actions = host.pendingActionCount(),
+                .death_reason = host.deathReason(),
+                .stderr_tail = host.stderrTail(),
+            };
+        }
+        return out;
     }
 
     pub fn emitStart(self: *PluginManager, layout_type: layout.LayoutType) void {
@@ -150,8 +199,25 @@ pub const PluginManager = struct {
         return merged.toOwnedSlice(allocator);
     }
 
-    pub fn requestLayout(self: *PluginManager, allocator: std.mem.Allocator, params: layout.LayoutParams, timeout_ms: u16) !?[]layout.Rect {
+    pub fn requestLayout(
+        self: *PluginManager,
+        allocator: std.mem.Allocator,
+        params: layout.LayoutParams,
+        timeout_ms: u16,
+        preferred_plugin_name: ?[]const u8,
+    ) !?[]layout.Rect {
+        if (preferred_plugin_name) |preferred| {
+            for (self.hosts.items) |*host| {
+                if (!std.mem.eql(u8, host.pluginName(), preferred)) continue;
+                const maybe = host.requestLayout(allocator, params, timeout_ms) catch break;
+                if (maybe) |rects| return rects;
+                break;
+            }
+        }
         for (self.hosts.items) |*host| {
+            if (preferred_plugin_name) |preferred| {
+                if (std.mem.eql(u8, host.pluginName(), preferred)) continue;
+            }
             const maybe = host.requestLayout(allocator, params, timeout_ms) catch continue;
             if (maybe) |rects| return rects;
         }
@@ -241,8 +307,27 @@ pub const PluginManager = struct {
                 .value = try self.allocator.dupe(u8, opt.value),
             });
         }
-        const host = plugin_host.PluginHost.start(self.allocator, path, plugin_name, run_command, host_options.items) catch return;
+        const host = plugin_host.PluginHost.start(self.allocator, path, plugin_name, run_command, host_options.items) catch |err| {
+            self.appendLoadReport(plugin_name, path, .failed, @errorName(err)) catch {};
+            return;
+        };
         try self.hosts.append(self.allocator, host);
+        try self.appendLoadReport(plugin_name, path, .started, "ok");
+    }
+
+    fn appendLoadReport(
+        self: *PluginManager,
+        plugin_name: []const u8,
+        path: []const u8,
+        status: LoadStatus,
+        reason: []const u8,
+    ) !void {
+        try self.load_reports.append(self.allocator, .{
+            .plugin_name = try self.allocator.dupe(u8, plugin_name),
+            .path = try self.allocator.dupe(u8, path),
+            .status = status,
+            .reason = try self.allocator.dupe(u8, reason),
+        });
     }
 
     fn hasIndexTs(allocator: std.mem.Allocator, path: []const u8) bool {

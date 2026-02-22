@@ -38,6 +38,7 @@ pub const Config = struct {
     key_toggle_sidebar_panel: u8 = 0x13, // Ctrl+S
     key_toggle_bottom_panel: u8 = 0x02, // Ctrl+B
     plugins_enabled: bool = false,
+    layout_plugin: ?[]u8 = null,
     plugin_dir: ?[]u8 = null,
     plugins_dir: ?[]u8 = null,
     plugins_dirs: std.ArrayListUnmanaged([]u8) = .{},
@@ -48,6 +49,7 @@ pub const Config = struct {
         if (self.source_path) |p| allocator.free(p);
         if (self.plugin_dir) |p| allocator.free(p);
         if (self.plugins_dir) |p| allocator.free(p);
+        if (self.layout_plugin) |p| allocator.free(p);
         for (self.plugins_dirs.items) |p| allocator.free(p);
         self.plugins_dirs.deinit(allocator);
         for (self.plugin_keybindings.items) |kb| allocator.free(kb.command_name);
@@ -258,6 +260,11 @@ fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, va
         cfg.plugins_enabled = try parseBool(value);
         return;
     }
+    if (std.mem.eql(u8, key, "layout_plugin")) {
+        if (cfg.layout_plugin) |p| allocator.free(p);
+        cfg.layout_plugin = try allocator.dupe(u8, value);
+        return;
+    }
     if (std.mem.eql(u8, key, "plugin_dir")) {
         if (cfg.plugin_dir) |p| allocator.free(p);
         cfg.plugin_dir = try allocator.dupe(u8, value);
@@ -425,6 +432,7 @@ test "config parser applies known keys" {
         \\key_toggle_sidebar_panel=ctrl+s
         \\key_toggle_bottom_panel=ctrl+b
         \\plugins_enabled=1
+        \\layout_plugin=desktop-wm
         \\plugin_dir=/tmp/ykmx-plugins
         \\plugins_dir=/tmp/ykmx-plugins.d
         \\plugins_dirs=["/tmp/plugins-a","/tmp/plugins-b"]
@@ -442,6 +450,7 @@ test "config parser applies known keys" {
     try testing.expectEqual(@as(u8, 0x13), cfg.key_toggle_sidebar_panel);
     try testing.expectEqual(@as(u8, 0x02), cfg.key_toggle_bottom_panel);
     try testing.expect(cfg.plugins_enabled);
+    try testing.expectEqualStrings("desktop-wm", cfg.layout_plugin.?);
     try testing.expectEqualStrings("/tmp/ykmx-plugins", cfg.plugin_dir.?);
     try testing.expectEqualStrings("/tmp/ykmx-plugins.d", cfg.plugins_dir.?);
     try testing.expectEqual(@as(usize, 2), cfg.plugins_dirs.items.len);

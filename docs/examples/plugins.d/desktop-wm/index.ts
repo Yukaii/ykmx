@@ -33,6 +33,7 @@ type DragState =
 const MIN_W = 18;
 const MIN_H = 6;
 const RESIZE_EDGE = 1;
+const LAYOUT_LABEL = "desktop-wm";
 
 const frames = new Map<number, Frame>();
 const maximizedFrames = new Map<number, Frame>();
@@ -81,7 +82,7 @@ function renderBars(state: RuntimeState): { toolbar: string; tab: string; status
 
   const toolbar = "";
 
-  const tabLeft = `tab ${state.active_tab_index + 1}/${state.tab_count} | focus:${state.has_focused_window ? state.focused_index + 1 : 0}${focusedId ? `(#${focusedId})` : ""} | layout:${state.layout}`;
+  const tabLeft = `tab ${state.active_tab_index + 1}/${state.tab_count} | focus:${state.has_focused_window ? state.focused_index + 1 : 0}${focusedId ? `(#${focusedId})` : ""} | layout:${LAYOUT_LABEL}`;
   const tabRight = `[click title=raise] [drag=move] [edge=resize]`;
   const tab = fitLeftRight(tabLeft, tabRight, width);
 

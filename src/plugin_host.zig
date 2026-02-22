@@ -159,6 +159,8 @@ pub const PluginHost = struct {
     read_buf: std.ArrayListUnmanaged(u8) = .{},
     pending_actions: std.ArrayListUnmanaged(Action) = .{},
     config_items: std.ArrayListUnmanaged(PluginConfigItem) = .{},
+    stderr_tail: std.ArrayListUnmanaged(u8) = .{},
+    death_reason: ?[]u8 = null,
     ui_bars: ?UiBars = null,
     ui_dirty: bool = false,
 
@@ -243,18 +245,23 @@ pub const PluginHost = struct {
             const entry = try std.fs.path.join(allocator, &.{ plugin_dir, "index.ts" });
             defer allocator.free(entry);
             std.fs.cwd().access(entry, .{}) catch return error.PluginEntryNotFound;
-            try argv_list.appendSlice(allocator, &.{ "bun", "run", entry });
+            // Use cwd + stable literal script name. Passing a heap slice here can
+            // produce corrupted argv on some platforms/runtimes.
+            try argv_list.appendSlice(allocator, &.{ "bun", "run", "index.ts" });
         }
 
         var child = std.process.Child.init(argv_list.items, allocator);
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Ignore;
+        child.stderr_behavior = .Pipe;
         child.cwd = plugin_dir;
         try child.spawn();
 
         if (child.stdout) |stdout_file| {
             try setNonBlocking(stdout_file.handle);
+        }
+        if (child.stderr) |stderr_file| {
+            try setNonBlocking(stderr_file.handle);
         }
 
         var host = PluginHost{
@@ -276,6 +283,8 @@ pub const PluginHost = struct {
     pub fn deinit(self: *PluginHost) void {
         self.allocator.free(self.plugin_name);
         self.read_buf.deinit(self.allocator);
+        self.stderr_tail.deinit(self.allocator);
+        if (self.death_reason) |r| self.allocator.free(r);
         for (self.pending_actions.items) |*action| deinitActionPayload(self.allocator, action);
         self.pending_actions.deinit(self.allocator);
         for (self.config_items.items) |item| {
@@ -295,6 +304,22 @@ pub const PluginHost = struct {
 
     pub fn pluginName(self: *const PluginHost) []const u8 {
         return self.plugin_name;
+    }
+
+    pub fn isAlive(self: *const PluginHost) bool {
+        return self.alive;
+    }
+
+    pub fn pendingActionCount(self: *const PluginHost) usize {
+        return self.pending_actions.items.len;
+    }
+
+    pub fn deathReason(self: *const PluginHost) ?[]const u8 {
+        return self.death_reason;
+    }
+
+    pub fn stderrTail(self: *const PluginHost) []const u8 {
+        return self.stderr_tail.items;
     }
 
     pub fn emitStart(self: *PluginHost, layout_type: layout.LayoutType) !void {
@@ -524,12 +549,13 @@ pub const PluginHost = struct {
     fn emitLine(self: *PluginHost, line: []const u8) !void {
         if (!self.alive) return;
         const stdin_file = self.child.stdin orelse {
-            self.alive = false;
+            self.setDead("stdin_missing");
             return;
         };
         stdin_file.writeAll(line) catch |err| switch (err) {
             error.BrokenPipe, error.NotOpenForWriting => {
-                self.alive = false;
+                self.setDead(@errorName(err));
+                _ = self.readAvailableStderr() catch {};
                 return;
             },
             else => return err,
@@ -838,8 +864,9 @@ pub const PluginHost = struct {
     }
 
     fn readAvailableStdout(self: *PluginHost) !void {
+        try self.readAvailableStderr();
         const stdout_file = self.child.stdout orelse {
-            self.alive = false;
+            self.setDead("stdout_missing");
             return;
         };
 
@@ -850,11 +877,39 @@ pub const PluginHost = struct {
                 else => return err,
             };
             if (n == 0) {
-                self.alive = false;
+                // On some runtimes/platforms a nonblocking pipe read can yield 0
+                // transiently even while the child process is still alive.
+                // Treat it as "no data for now" and rely on write-side EPIPE to
+                // mark true process death.
                 break;
             }
             try self.read_buf.appendSlice(self.allocator, scratch[0..n]);
         }
+    }
+
+    fn readAvailableStderr(self: *PluginHost) !void {
+        const stderr_file = self.child.stderr orelse return;
+        var scratch: [1024]u8 = undefined;
+        while (true) {
+            const n = stderr_file.read(&scratch) catch |err| switch (err) {
+                error.WouldBlock => break,
+                else => return err,
+            };
+            if (n == 0) break;
+            try self.stderr_tail.appendSlice(self.allocator, scratch[0..n]);
+            if (self.stderr_tail.items.len > 2048) {
+                const drop = self.stderr_tail.items.len - 2048;
+                const remain = self.stderr_tail.items.len - drop;
+                if (remain > 0) @memmove(self.stderr_tail.items[0..remain], self.stderr_tail.items[drop..]);
+                self.stderr_tail.items.len = remain;
+            }
+        }
+    }
+
+    fn setDead(self: *PluginHost, reason: []const u8) void {
+        self.alive = false;
+        if (self.death_reason) |r| self.allocator.free(r);
+        self.death_reason = self.allocator.dupe(u8, reason) catch null;
     }
 
     fn consumeReadBufPrefix(self: *PluginHost, n: usize) void {
