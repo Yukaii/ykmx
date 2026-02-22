@@ -24,6 +24,8 @@ plugins_enabled = false
 #   - desktop-wm: floating overlap layout + free drag/resize + window controls
 #   - popup-controls: standalone popup keybinding registration/behavior plugin
 #   - command-palette: fzf command picker popup (dispatches selected command)
+#   - theme-switch-command-palette: fzf palette for theme command dispatch
+#   - windows31-decoration-theme: Windows 3.1 style chrome/theme commands
 #   - retro-win31-theme: plugin-defined chrome/border + bar theme sample
 #   - python-demo: non-Bun plugin runtime example (plugin.toml run=python3 ./main.py)
 #
@@ -55,7 +57,19 @@ plugins_dir = "$HOME/.config/ykmx/plugins.d"
 # popup_height = 26
 # fzf_prompt = "ykmx> "
 #
+# [plugin.theme-switch-command-palette]
+# open_command = "theme.palette.open"
+# entries = "Windows 3.1 Theme=theme.windows31.enable,Reset To Default=theme.windows31.disable"
+# popup_x = 24
+# popup_y = 6
+# popup_width = 110
+# popup_height = 24
+# fzf_prompt = "theme> "
+#
+# [plugin.windows31-decoration-theme]
+# enabled_on_start = true
+#
 # [plugin.retro-win31-theme]
 # enabled = true
 #
-# plugin_keybindings = ["ctrl+p:palette.open", "ctrl+s:panel.sidebar.toggle", "ctrl+b:panel.bottom.toggle"]
+# plugin_keybindings = ["ctrl+p:theme.palette.open", "ctrl+s:panel.sidebar.toggle", "ctrl+b:panel.bottom.toggle"]

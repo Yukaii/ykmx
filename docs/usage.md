@@ -245,6 +245,27 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
     - `popup_height=26`
     - `cwd=/path/to/project`
     - `fzf_prompt=ykmx> `
+- Theme switch command palette plugin lives at:
+  - `docs/examples/plugins.d/theme-switch-command-palette/index.ts`
+  - registers `theme.palette.open` and opens an `fzf` menu to dispatch theme commands (for example `theme.windows31.enable`)
+  - optional plugin config:
+    - `[plugin.theme-switch-command-palette]`
+    - `open_command=theme.palette.open`
+    - `entries=Windows 3.1 Theme=theme.windows31.enable,Reset To Default=theme.windows31.disable`
+    - `popup_x=24`
+    - `popup_y=6`
+    - `popup_width=110`
+    - `popup_height=24`
+    - `cwd=/path/to/project`
+    - `fzf_prompt=theme> `
+- Windows 3.1 decoration theme plugin lives at:
+  - `docs/examples/plugins.d/windows31-decoration-theme/index.ts`
+  - registers:
+    - `theme.windows31.enable`
+    - `theme.windows31.disable`
+  - optional plugin config:
+    - `[plugin.windows31-decoration-theme]`
+    - `enabled_on_start=true`
 - Retro theme example plugin (Windows 3.1-inspired chrome) lives at:
   - `docs/examples/plugins.d/retro-win31-theme/index.ts`
   - optional plugin config:

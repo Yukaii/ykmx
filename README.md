@@ -140,6 +140,8 @@ Example plugins are in `docs/examples/plugins.d/`:
 - `sidebar-panel`
 - `bottom-panel`
 - `command-palette`
+- `theme-switch-command-palette`
+- `windows31-decoration-theme`
 - `retro-win31-theme`
 - `python-demo` (language-agnostic runtime via `plugin.toml run=...`)
 
