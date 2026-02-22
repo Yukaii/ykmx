@@ -19,6 +19,7 @@ const poc_output = @import("poc_output.zig");
 const runtime_vt = @import("runtime_vt.zig");
 const runtime_terminal = @import("runtime_terminal.zig");
 const runtime_footer = @import("runtime_footer.zig");
+const runtime_command_state = @import("runtime_command_state.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const POC_ROWS: u16 = 12;
@@ -986,13 +987,13 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
             } else if (std.mem.eql(u8, format, "json")) {
                 var json = std.ArrayListUnmanaged(u8){};
                 defer json.deinit(allocator);
-                try renderCommandListJson(allocator, &json, content, false);
+                try runtime_command_state.renderCommandListJson(allocator, &json, content, false);
                 try out.writeAll(json.items);
                 try out.writeByte('\n');
             } else if (std.mem.eql(u8, format, "jsonl")) {
                 var jsonl = std.ArrayListUnmanaged(u8){};
                 defer jsonl.deinit(allocator);
-                try renderCommandListJson(allocator, &jsonl, content, true);
+                try runtime_command_state.renderCommandListJson(allocator, &jsonl, content, true);
                 try out.writeAll(jsonl.items);
                 if (jsonl.items.len == 0 or jsonl.items[jsonl.items.len - 1] != '\n') {
                     try out.writeByte('\n');
@@ -1188,86 +1189,6 @@ fn resolveStatePathForCli(allocator: std.mem.Allocator) ![]u8 {
         return std.fmt.allocPrint(allocator, "{s}.state", .{pipe_path[0 .. pipe_path.len - 4]});
     }
     return std.fmt.allocPrint(allocator, "{s}.state", .{pipe_path});
-}
-
-const CommandStateLine = struct {
-    name: []const u8,
-    source: []const u8,
-    plugin_override: bool,
-    prefixed_keys: []const u8,
-};
-
-fn parseCommandStateLine(line: []const u8) ?CommandStateLine {
-    if (!std.mem.startsWith(u8, line, "command ")) return null;
-    var name: ?[]const u8 = null;
-    var source: ?[]const u8 = null;
-    var plugin_override: ?bool = null;
-    var prefixed_keys: ?[]const u8 = null;
-
-    var parts = std.mem.splitScalar(u8, line["command ".len..], ' ');
-    while (parts.next()) |part| {
-        if (part.len == 0) continue;
-        if (std.mem.startsWith(u8, part, "name=")) {
-            name = part["name=".len..];
-        } else if (std.mem.startsWith(u8, part, "source=")) {
-            source = part["source=".len..];
-        } else if (std.mem.startsWith(u8, part, "plugin_override=")) {
-            const raw = part["plugin_override=".len..];
-            if (std.mem.eql(u8, raw, "1")) plugin_override = true else if (std.mem.eql(u8, raw, "0")) plugin_override = false;
-        } else if (std.mem.startsWith(u8, part, "prefixed_keys=")) {
-            prefixed_keys = part["prefixed_keys=".len..];
-        }
-    }
-
-    if (name == null or source == null or plugin_override == null or prefixed_keys == null) return null;
-    return .{
-        .name = name.?,
-        .source = source.?,
-        .plugin_override = plugin_override.?,
-        .prefixed_keys = prefixed_keys.?,
-    };
-}
-
-fn renderCommandListJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    content: []const u8,
-    jsonl: bool,
-) !void {
-    if (!jsonl) try out.append(allocator, '[');
-    var first = true;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        const cmd = parseCommandStateLine(line) orelse continue;
-        if (!first) {
-            if (jsonl) {
-                try out.append(allocator, '\n');
-            } else {
-                try out.append(allocator, ',');
-            }
-        }
-        first = false;
-        try out.append(allocator, '{');
-        try out.appendSlice(allocator, "\"name\":");
-        try appendJsonString(out, allocator, cmd.name);
-        try out.appendSlice(allocator, ",\"source\":");
-        try appendJsonString(out, allocator, cmd.source);
-        try out.appendSlice(allocator, ",\"plugin_override\":");
-        try out.appendSlice(allocator, if (cmd.plugin_override) "true" else "false");
-        try out.appendSlice(allocator, ",\"prefixed_keys\":[");
-        if (!std.mem.eql(u8, cmd.prefixed_keys, "-")) {
-            var keys = std.mem.splitScalar(u8, cmd.prefixed_keys, ',');
-            var first_key = true;
-            while (keys.next()) |key| {
-                if (key.len == 0) continue;
-                if (!first_key) try out.append(allocator, ',');
-                first_key = false;
-                try appendJsonString(out, allocator, key);
-            }
-        }
-        try out.appendSlice(allocator, "]}");
-    }
-    if (!jsonl) try out.append(allocator, ']');
 }
 
 fn collectPluginRuntimeState(
