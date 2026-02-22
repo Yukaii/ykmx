@@ -44,8 +44,12 @@ pub const PluginManager = struct {
         plugin_options: []const PluginOption,
     ) !usize {
         if (maybe_plugin_dir) |plugin_dir| {
-            const plugin_name = std.fs.path.basename(plugin_dir);
-            try self.tryStartHost(plugin_dir, plugin_name, plugin_options);
+            var manifest = try self.readPluginManifest(plugin_dir);
+            defer manifest.deinit(self.allocator);
+            if (manifest.enabled) {
+                const plugin_name = std.fs.path.basename(plugin_dir);
+                try self.tryStartHost(plugin_dir, plugin_name, manifest.run_command, plugin_options);
+            }
         }
         if (maybe_plugins_dir) |plugins_dir| {
             try self.startFromPluginPath(plugins_dir, plugin_options);
@@ -155,9 +159,15 @@ pub const PluginManager = struct {
     }
 
     fn startFromPluginPath(self: *PluginManager, path: []const u8, plugin_options: []const PluginOption) !void {
-        if (isPluginDir(self.allocator, path)) {
+        var manifest = try self.readPluginManifest(path);
+        defer manifest.deinit(self.allocator);
+
+        const has_index_ts = hasIndexTs(self.allocator, path);
+        const has_run = manifest.run_command != null;
+        if (has_index_ts or has_run) {
+            if (!manifest.enabled) return;
             const plugin_name = std.fs.path.basename(path);
-            try self.tryStartHost(path, plugin_name, plugin_options);
+            try self.tryStartHost(path, plugin_name, manifest.run_command, plugin_options);
             return;
         }
         try self.startFromPluginsDir(path, plugin_options);
@@ -172,6 +182,7 @@ pub const PluginManager = struct {
             for (candidates.items) |cnd| {
                 self.allocator.free(cnd.path);
                 self.allocator.free(cnd.plugin_name);
+                if (cnd.run_command) |cmd| self.allocator.free(cmd);
             }
             candidates.deinit(self.allocator);
         }
@@ -182,15 +193,15 @@ pub const PluginManager = struct {
             const full = try std.fs.path.join(self.allocator, &.{ plugins_dir, entry.name });
             errdefer self.allocator.free(full);
 
-            const index_ts = try std.fs.path.join(self.allocator, &.{ full, "index.ts" });
-            defer self.allocator.free(index_ts);
-            std.fs.cwd().access(index_ts, .{}) catch {
+            var manifest = try self.readPluginManifest(full);
+            defer manifest.deinit(self.allocator);
+            if (!manifest.enabled) {
                 self.allocator.free(full);
                 continue;
-            };
-
-            const manifest = try self.readPluginManifest(full);
-            if (!manifest.enabled) {
+            }
+            const has_index_ts = hasIndexTs(self.allocator, full);
+            const has_run = manifest.run_command != null;
+            if (!has_index_ts and !has_run) {
                 self.allocator.free(full);
                 continue;
             }
@@ -198,16 +209,23 @@ pub const PluginManager = struct {
                 .path = full,
                 .plugin_name = try self.allocator.dupe(u8, entry.name),
                 .order = manifest.order,
+                .run_command = if (manifest.run_command) |cmd| try self.allocator.dupe(u8, cmd) else null,
             });
         }
 
         std.mem.sort(PluginCandidate, candidates.items, {}, lessThanCandidate);
         for (candidates.items) |candidate| {
-            try self.tryStartHost(candidate.path, candidate.plugin_name, plugin_options);
+            try self.tryStartHost(candidate.path, candidate.plugin_name, candidate.run_command, plugin_options);
         }
     }
 
-    fn tryStartHost(self: *PluginManager, path: []const u8, plugin_name: []const u8, plugin_options: []const PluginOption) !void {
+    fn tryStartHost(
+        self: *PluginManager,
+        path: []const u8,
+        plugin_name: []const u8,
+        run_command: ?[]const u8,
+        plugin_options: []const PluginOption,
+    ) !void {
         var host_options = std.ArrayListUnmanaged(plugin_host.PluginHost.PluginConfigItem){};
         defer {
             for (host_options.items) |item| {
@@ -223,11 +241,11 @@ pub const PluginManager = struct {
                 .value = try self.allocator.dupe(u8, opt.value),
             });
         }
-        const host = plugin_host.PluginHost.start(self.allocator, path, plugin_name, host_options.items) catch return;
+        const host = plugin_host.PluginHost.start(self.allocator, path, plugin_name, run_command, host_options.items) catch return;
         try self.hosts.append(self.allocator, host);
     }
 
-    fn isPluginDir(allocator: std.mem.Allocator, path: []const u8) bool {
+    fn hasIndexTs(allocator: std.mem.Allocator, path: []const u8) bool {
         const index_ts = std.fs.path.join(allocator, &.{ path, "index.ts" }) catch return false;
         defer allocator.free(index_ts);
         std.fs.cwd().access(index_ts, .{}) catch return false;
@@ -237,12 +255,18 @@ pub const PluginManager = struct {
     const PluginManifest = struct {
         enabled: bool = true,
         order: i32 = 0,
+        run_command: ?[]u8 = null,
+
+        fn deinit(self: *const PluginManifest, allocator: std.mem.Allocator) void {
+            if (self.run_command) |cmd| allocator.free(cmd);
+        }
     };
 
     const PluginCandidate = struct {
         path: []u8,
         plugin_name: []u8,
         order: i32,
+        run_command: ?[]u8 = null,
     };
 
     fn readPluginManifest(self: *PluginManager, plugin_dir: []const u8) !PluginManifest {
@@ -252,11 +276,12 @@ pub const PluginManager = struct {
         const contents = std.fs.cwd().readFileAlloc(self.allocator, manifest_path, 128 * 1024) catch return .{};
         defer self.allocator.free(contents);
 
-        return parsePluginManifestContents(contents) catch .{};
+        return parsePluginManifestContents(self.allocator, contents) catch .{};
     }
 
-    fn parsePluginManifestContents(contents: []const u8) !PluginManifest {
+    fn parsePluginManifestContents(allocator: std.mem.Allocator, contents: []const u8) !PluginManifest {
         var manifest: PluginManifest = .{};
+        errdefer manifest.deinit(allocator);
         var it = std.mem.splitScalar(u8, contents, '\n');
         while (it.next()) |raw_line| {
             const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -269,6 +294,9 @@ pub const PluginManager = struct {
                 manifest.enabled = parseBool(value) catch manifest.enabled;
             } else if (std.mem.eql(u8, key, "order")) {
                 manifest.order = std.fmt.parseInt(i32, value, 10) catch manifest.order;
+            } else if (std.mem.eql(u8, key, "run")) {
+                if (manifest.run_command) |old| allocator.free(old);
+                manifest.run_command = if (value.len == 0) null else try allocator.dupe(u8, value);
             }
         }
         return manifest;
@@ -320,21 +348,33 @@ pub const PluginManager = struct {
 
 test "plugin manifest parser reads enabled and order" {
     const testing = std.testing;
-    const parsed = try PluginManager.parsePluginManifestContents(
+    const parsed = try PluginManager.parsePluginManifestContents(testing.allocator,
         \\enabled=false
         \\order=7
         \\name="example"
     );
+    defer parsed.deinit(testing.allocator);
     try testing.expect(!parsed.enabled);
     try testing.expectEqual(@as(i32, 7), parsed.order);
 }
 
 test "plugin manifest parser defaults on invalid values" {
     const testing = std.testing;
-    const parsed = try PluginManager.parsePluginManifestContents(
+    const parsed = try PluginManager.parsePluginManifestContents(testing.allocator,
         \\enabled=maybe
         \\order=abc
     );
+    defer parsed.deinit(testing.allocator);
     try testing.expect(parsed.enabled);
     try testing.expectEqual(@as(i32, 0), parsed.order);
+}
+
+test "plugin manifest parser reads run command" {
+    const testing = std.testing;
+    const parsed = try PluginManager.parsePluginManifestContents(testing.allocator,
+        \\run="python3 main.py"
+    );
+    defer parsed.deinit(testing.allocator);
+    try testing.expect(parsed.run_command != null);
+    try testing.expectEqualStrings("python3 main.py", parsed.run_command.?);
 }

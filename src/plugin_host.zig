@@ -84,6 +84,24 @@ pub const PluginHost = struct {
             show_border: bool,
             show_controls: bool,
         },
+        set_chrome_theme: struct {
+            window_minimize_char: ?u8,
+            window_maximize_char: ?u8,
+            window_close_char: ?u8,
+            focus_marker: ?u8,
+            border_horizontal: ?u21,
+            border_vertical: ?u21,
+            border_corner_tl: ?u21,
+            border_corner_tr: ?u21,
+            border_corner_bl: ?u21,
+            border_corner_br: ?u21,
+            border_tee_top: ?u21,
+            border_tee_bottom: ?u21,
+            border_tee_left: ?u21,
+            border_tee_right: ?u21,
+            border_cross: ?u21,
+        },
+        reset_chrome_theme,
     };
 
     pub const PointerEvent = struct {
@@ -162,6 +180,21 @@ pub const PluginHost = struct {
         toolbar_line: ?[]const u8 = null,
         tab_line: ?[]const u8 = null,
         status_line: ?[]const u8 = null,
+        window_minimize_char: ?[]const u8 = null,
+        window_maximize_char: ?[]const u8 = null,
+        window_close_char: ?[]const u8 = null,
+        focus_marker: ?[]const u8 = null,
+        border_horizontal: ?[]const u8 = null,
+        border_vertical: ?[]const u8 = null,
+        border_corner_tl: ?[]const u8 = null,
+        border_corner_tr: ?[]const u8 = null,
+        border_corner_bl: ?[]const u8 = null,
+        border_corner_br: ?[]const u8 = null,
+        border_tee_top: ?[]const u8 = null,
+        border_tee_bottom: ?[]const u8 = null,
+        border_tee_left: ?[]const u8 = null,
+        border_tee_right: ?[]const u8 = null,
+        border_cross: ?[]const u8 = null,
     };
 
     const UiBars = struct {
@@ -170,13 +203,25 @@ pub const PluginHost = struct {
         status_line: []u8,
     };
 
-    pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8, plugin_name: []const u8, config_items: []const PluginConfigItem) !PluginHost {
-        const entry = try std.fs.path.join(allocator, &.{ plugin_dir, "index.ts" });
-        defer allocator.free(entry);
-        std.fs.cwd().access(entry, .{}) catch return error.PluginEntryNotFound;
+    pub fn start(
+        allocator: std.mem.Allocator,
+        plugin_dir: []const u8,
+        plugin_name: []const u8,
+        run_command: ?[]const u8,
+        config_items: []const PluginConfigItem,
+    ) !PluginHost {
+        var argv_list = std.ArrayListUnmanaged([]const u8){};
+        defer argv_list.deinit(allocator);
+        if (run_command) |cmd| {
+            try argv_list.appendSlice(allocator, &.{ "/bin/sh", "-lc", cmd });
+        } else {
+            const entry = try std.fs.path.join(allocator, &.{ plugin_dir, "index.ts" });
+            defer allocator.free(entry);
+            std.fs.cwd().access(entry, .{}) catch return error.PluginEntryNotFound;
+            try argv_list.appendSlice(allocator, &.{ "bun", "run", entry });
+        }
 
-        var argv = [_][]const u8{ "bun", "run", entry };
-        var child = std.process.Child.init(&argv, allocator);
+        var child = std.process.Child.init(argv_list.items, allocator);
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Ignore;
@@ -649,6 +694,26 @@ pub const PluginHost = struct {
             self.ui_dirty = true;
             return null;
         }
+        if (std.mem.eql(u8, action_name, "set_chrome_theme")) {
+            return .{ .set_chrome_theme = .{
+                .window_minimize_char = parseSingleAsciiChar(envelope.window_minimize_char),
+                .window_maximize_char = parseSingleAsciiChar(envelope.window_maximize_char),
+                .window_close_char = parseSingleAsciiChar(envelope.window_close_char),
+                .focus_marker = parseSingleAsciiChar(envelope.focus_marker),
+                .border_horizontal = parseSingleCodepoint(envelope.border_horizontal),
+                .border_vertical = parseSingleCodepoint(envelope.border_vertical),
+                .border_corner_tl = parseSingleCodepoint(envelope.border_corner_tl),
+                .border_corner_tr = parseSingleCodepoint(envelope.border_corner_tr),
+                .border_corner_bl = parseSingleCodepoint(envelope.border_corner_bl),
+                .border_corner_br = parseSingleCodepoint(envelope.border_corner_br),
+                .border_tee_top = parseSingleCodepoint(envelope.border_tee_top),
+                .border_tee_bottom = parseSingleCodepoint(envelope.border_tee_bottom),
+                .border_tee_left = parseSingleCodepoint(envelope.border_tee_left),
+                .border_tee_right = parseSingleCodepoint(envelope.border_tee_right),
+                .border_cross = parseSingleCodepoint(envelope.border_cross),
+            } };
+        }
+        if (std.mem.eql(u8, action_name, "reset_chrome_theme")) return .reset_chrome_theme;
         return null;
     }
 
@@ -685,6 +750,22 @@ pub const PluginHost = struct {
         if (std.mem.eql(u8, name, "paperwm")) return .paperwm;
         if (std.mem.eql(u8, name, "fullscreen")) return .fullscreen;
         return null;
+    }
+
+    fn parseSingleCodepoint(value: ?[]const u8) ?u21 {
+        const s = value orelse return null;
+        if (s.len == 0) return null;
+        var view = std.unicode.Utf8View.init(s) catch return null;
+        var it = view.iterator();
+        const cp = it.nextCodepoint() orelse return null;
+        if (it.nextCodepoint() != null) return null;
+        return cp;
+    }
+
+    fn parseSingleAsciiChar(value: ?[]const u8) ?u8 {
+        const cp = parseSingleCodepoint(value) orelse return null;
+        if (cp > 0x7f) return null;
+        return @intCast(cp);
     }
 
     fn readAvailableStdout(self: *PluginHost) !void {

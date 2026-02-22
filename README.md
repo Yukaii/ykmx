@@ -123,7 +123,8 @@ Prefix key is `Ctrl+G`.
 
 When `plugins_enabled=true`, ykmx can run plugins as separate processes via:
 
-- `bun run <plugin_dir>/index.ts`
+- `plugin.toml` `run="..."` (generic runtime command in plugin cwd)
+- fallback: `bun run <plugin_dir>/index.ts`
 
 Supported plugin directory modes:
 
@@ -138,6 +139,8 @@ Example plugins are in `docs/examples/plugins.d/`:
 - `popup-controls`
 - `sidebar-panel`
 - `bottom-panel`
+- `command-palette`
+- `retro-win31-theme`
 
 ## Project Docs
 

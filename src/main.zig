@@ -708,6 +708,8 @@ const ControlPipe = struct {
             try w.writeByte('\n');
         }
 
+        try mux.appendCommandStateLines(&text, self.allocator);
+
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{self.state_path});
         defer self.allocator.free(tmp_path);
         var f = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
@@ -867,6 +869,7 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
             \\  ykmx ctl status
             \\  ykmx ctl list-windows
             \\  ykmx ctl list-panels
+            \\  ykmx ctl list-commands [--format text|json|jsonl]
             \\  ykmx ctl command <name>
             \\  ykmx ctl json '<json>'
             \\
@@ -877,7 +880,7 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     }
 
-    if (std.mem.eql(u8, args[0], "status") or std.mem.eql(u8, args[0], "list-windows") or std.mem.eql(u8, args[0], "list-panels")) {
+    if (std.mem.eql(u8, args[0], "status") or std.mem.eql(u8, args[0], "list-windows") or std.mem.eql(u8, args[0], "list-panels") or std.mem.eql(u8, args[0], "list-commands")) {
         const state_path = resolveStatePathForCli(allocator) catch |err| switch (err) {
             error.MissingControlPipeEnv => return writeControlEnvHint(),
             else => return err,
@@ -892,6 +895,43 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
         if (std.mem.eql(u8, args[0], "status")) {
             try out.writeAll(content);
+        } else if (std.mem.eql(u8, args[0], "list-commands")) {
+            var format: []const u8 = "text";
+            if (args.len >= 2) {
+                if (std.mem.eql(u8, args[1], "--json")) {
+                    format = "json";
+                } else if (std.mem.eql(u8, args[1], "--format")) {
+                    if (args.len < 3) return error.InvalidControlArgs;
+                    format = args[2];
+                } else {
+                    return error.InvalidControlArgs;
+                }
+            }
+
+            if (std.mem.eql(u8, format, "text")) {
+                var it = std.mem.splitScalar(u8, content, '\n');
+                while (it.next()) |line| {
+                    if (!std.mem.startsWith(u8, line, "command ")) continue;
+                    try out.writeAll(line);
+                    try out.writeByte('\n');
+                }
+            } else if (std.mem.eql(u8, format, "json")) {
+                var json = std.ArrayListUnmanaged(u8){};
+                defer json.deinit(allocator);
+                try renderCommandListJson(allocator, &json, content, false);
+                try out.writeAll(json.items);
+                try out.writeByte('\n');
+            } else if (std.mem.eql(u8, format, "jsonl")) {
+                var jsonl = std.ArrayListUnmanaged(u8){};
+                defer jsonl.deinit(allocator);
+                try renderCommandListJson(allocator, &jsonl, content, true);
+                try out.writeAll(jsonl.items);
+                if (jsonl.items.len == 0 or jsonl.items[jsonl.items.len - 1] != '\n') {
+                    try out.writeByte('\n');
+                }
+            } else {
+                return error.InvalidControlArgs;
+            }
         } else {
             var it = std.mem.splitScalar(u8, content, '\n');
             while (it.next()) |line| {
@@ -1076,6 +1116,86 @@ fn resolveStatePathForCli(allocator: std.mem.Allocator) ![]u8 {
         return std.fmt.allocPrint(allocator, "{s}.state", .{pipe_path[0 .. pipe_path.len - 4]});
     }
     return std.fmt.allocPrint(allocator, "{s}.state", .{pipe_path});
+}
+
+const CommandStateLine = struct {
+    name: []const u8,
+    source: []const u8,
+    plugin_override: bool,
+    prefixed_keys: []const u8,
+};
+
+fn parseCommandStateLine(line: []const u8) ?CommandStateLine {
+    if (!std.mem.startsWith(u8, line, "command ")) return null;
+    var name: ?[]const u8 = null;
+    var source: ?[]const u8 = null;
+    var plugin_override: ?bool = null;
+    var prefixed_keys: ?[]const u8 = null;
+
+    var parts = std.mem.splitScalar(u8, line["command ".len..], ' ');
+    while (parts.next()) |part| {
+        if (part.len == 0) continue;
+        if (std.mem.startsWith(u8, part, "name=")) {
+            name = part["name=".len..];
+        } else if (std.mem.startsWith(u8, part, "source=")) {
+            source = part["source=".len..];
+        } else if (std.mem.startsWith(u8, part, "plugin_override=")) {
+            const raw = part["plugin_override=".len..];
+            if (std.mem.eql(u8, raw, "1")) plugin_override = true else if (std.mem.eql(u8, raw, "0")) plugin_override = false;
+        } else if (std.mem.startsWith(u8, part, "prefixed_keys=")) {
+            prefixed_keys = part["prefixed_keys=".len..];
+        }
+    }
+
+    if (name == null or source == null or plugin_override == null or prefixed_keys == null) return null;
+    return .{
+        .name = name.?,
+        .source = source.?,
+        .plugin_override = plugin_override.?,
+        .prefixed_keys = prefixed_keys.?,
+    };
+}
+
+fn renderCommandListJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    content: []const u8,
+    jsonl: bool,
+) !void {
+    if (!jsonl) try out.append(allocator, '[');
+    var first = true;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const cmd = parseCommandStateLine(line) orelse continue;
+        if (!first) {
+            if (jsonl) {
+                try out.append(allocator, '\n');
+            } else {
+                try out.append(allocator, ',');
+            }
+        }
+        first = false;
+        try out.append(allocator, '{');
+        try out.appendSlice(allocator, "\"name\":");
+        try appendJsonString(out, allocator, cmd.name);
+        try out.appendSlice(allocator, ",\"source\":");
+        try appendJsonString(out, allocator, cmd.source);
+        try out.appendSlice(allocator, ",\"plugin_override\":");
+        try out.appendSlice(allocator, if (cmd.plugin_override) "true" else "false");
+        try out.appendSlice(allocator, ",\"prefixed_keys\":[");
+        if (!std.mem.eql(u8, cmd.prefixed_keys, "-")) {
+            var keys = std.mem.splitScalar(u8, cmd.prefixed_keys, ',');
+            var first_key = true;
+            while (keys.next()) |key| {
+                if (key.len == 0) continue;
+                if (!first_key) try out.append(allocator, ',');
+                first_key = false;
+                try appendJsonString(out, allocator, key);
+            }
+        }
+        try out.appendSlice(allocator, "]}");
+    }
+    if (!jsonl) try out.append(allocator, ']');
 }
 
 fn collectPluginRuntimeState(
@@ -1277,6 +1397,30 @@ fn applyPluginAction(
                 .show_border = payload.show_border,
                 .show_controls = payload.show_controls,
             }, screen, plugin_name);
+        },
+        .set_chrome_theme => |payload| {
+            mux.applyChromeTheme(.{
+                .window_minimize_char = payload.window_minimize_char,
+                .window_maximize_char = payload.window_maximize_char,
+                .window_close_char = payload.window_close_char,
+                .focus_marker = payload.focus_marker,
+                .border_horizontal = payload.border_horizontal,
+                .border_vertical = payload.border_vertical,
+                .border_corner_tl = payload.border_corner_tl,
+                .border_corner_tr = payload.border_corner_tr,
+                .border_corner_bl = payload.border_corner_bl,
+                .border_corner_br = payload.border_corner_br,
+                .border_tee_top = payload.border_tee_top,
+                .border_tee_bottom = payload.border_tee_bottom,
+                .border_tee_left = payload.border_tee_left,
+                .border_tee_right = payload.border_tee_right,
+                .border_cross = payload.border_cross,
+            });
+            return true;
+        },
+        .reset_chrome_theme => {
+            mux.resetChromeTheme();
+            return true;
         },
     }
 }
@@ -1728,7 +1872,7 @@ fn renderRuntimeFrame(
         if (r.width < 2 or r.height < 2) continue;
         const border = computeBorderMask(rects[0..n], i, r, content);
         const insets = computeContentInsets(rects[0..n], i, r, border);
-        drawBorder(canvas, border_conn, total_cols, content_rows, r, border, if (tab.focused_index == i) '*' else ' ', i, top_window_owner);
+        drawBorder(canvas, border_conn, total_cols, content_rows, r, border, if (tab.focused_index == i) mux.focusMarker() else ' ', i, top_window_owner);
         const inner_x = r.x + insets.left;
         const inner_y = r.y + insets.top;
         const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
@@ -1736,7 +1880,10 @@ fn renderRuntimeFrame(
         if (inner_w == 0 or inner_h == 0) continue;
 
         const title = tab.windows.items[i].title;
-        const controls = "[_][+][x]";
+        var controls_buf: [9]u8 = undefined;
+        const control_chars = mux.windowControlChars();
+        controls_buf = .{ '[', control_chars.minimize, ']', '[', control_chars.maximize, ']', '[', control_chars.close, ']' };
+        const controls = controls_buf[0..];
         const controls_w: u16 = @intCast(controls.len);
         const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
         drawTextOwnedMasked(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner, popup_overlay);
@@ -1814,7 +1961,7 @@ fn renderRuntimeFrame(
         // intersections don't synthesize mixed glyphs like '┬' from underneath.
         clearBorderConnRect(border_conn, total_cols, content_rows, p.rect);
         const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
-        drawBorder(canvas, border_conn, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) '*' else ' ', null, null);
+        drawBorder(canvas, border_conn, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) mux.focusMarker() else ' ', null, null);
 
         const inner_x = p.rect.x + 1;
         const inner_y = p.rect.y + 1;
@@ -1853,7 +2000,7 @@ fn renderRuntimeFrame(
             };
         }
     }
-    applyBorderGlyphs(canvas, border_conn, total_cols, content_rows);
+    applyBorderGlyphs(canvas, border_conn, total_cols, content_rows, mux.borderGlyphs());
 
     // Border glyph synthesis can overwrite titlebar text/chrome because both share
     // the top border row. Repaint chrome after border pass.
@@ -1866,7 +2013,10 @@ fn renderRuntimeFrame(
         if (inner_w == 0) continue;
 
         const title = tab.windows.items[i].title;
-        const controls = "[_][+][x]";
+        var controls_buf: [9]u8 = undefined;
+        const control_chars = mux.windowControlChars();
+        controls_buf = .{ '[', control_chars.minimize, ']', '[', control_chars.maximize, ']', '[', control_chars.close, ']' };
+        const controls = controls_buf[0..];
         const controls_w: u16 = @intCast(controls.len);
         const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
         drawTextOwnedMasked(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner, popup_cover);
@@ -2230,24 +2380,30 @@ fn cellOwnedBy(idx: usize, owner_idx: ?usize, top_window_owner: ?[]const i32) bo
     return owners[idx] == @as(i32, @intCast(owner));
 }
 
-fn glyphFromConn(bits: u8) u21 {
+fn glyphFromConn(bits: u8, glyphs: multiplexer.Multiplexer.BorderGlyphs) u21 {
     return switch (bits) {
-        BorderConn.L | BorderConn.R => '─',
-        BorderConn.U | BorderConn.D => '│',
-        BorderConn.D | BorderConn.R => '┌',
-        BorderConn.D | BorderConn.L => '┐',
-        BorderConn.U | BorderConn.R => '└',
-        BorderConn.U | BorderConn.L => '┘',
-        BorderConn.L | BorderConn.R | BorderConn.D => '┬',
-        BorderConn.L | BorderConn.R | BorderConn.U => '┴',
-        BorderConn.U | BorderConn.D | BorderConn.R => '├',
-        BorderConn.U | BorderConn.D | BorderConn.L => '┤',
-        BorderConn.U | BorderConn.D | BorderConn.L | BorderConn.R => '┼',
+        BorderConn.L | BorderConn.R => glyphs.horizontal,
+        BorderConn.U | BorderConn.D => glyphs.vertical,
+        BorderConn.D | BorderConn.R => glyphs.corner_tl,
+        BorderConn.D | BorderConn.L => glyphs.corner_tr,
+        BorderConn.U | BorderConn.R => glyphs.corner_bl,
+        BorderConn.U | BorderConn.L => glyphs.corner_br,
+        BorderConn.L | BorderConn.R | BorderConn.D => glyphs.tee_top,
+        BorderConn.L | BorderConn.R | BorderConn.U => glyphs.tee_bottom,
+        BorderConn.U | BorderConn.D | BorderConn.R => glyphs.tee_left,
+        BorderConn.U | BorderConn.D | BorderConn.L => glyphs.tee_right,
+        BorderConn.U | BorderConn.D | BorderConn.L | BorderConn.R => glyphs.cross,
         else => ' ',
     };
 }
 
-fn applyBorderGlyphs(canvas: []u21, conn: []const u8, cols: usize, rows: usize) void {
+fn applyBorderGlyphs(
+    canvas: []u21,
+    conn: []const u8,
+    cols: usize,
+    rows: usize,
+    glyphs: multiplexer.Multiplexer.BorderGlyphs,
+) void {
     _ = rows;
     var i: usize = 0;
     while (i < conn.len) : (i += 1) {
@@ -2255,7 +2411,7 @@ fn applyBorderGlyphs(canvas: []u21, conn: []const u8, cols: usize, rows: usize) 
         if (bits == 0) continue;
         // Keep focus marker on top border.
         if (canvas[i] == '*') continue;
-        canvas[i] = glyphFromConn(bits);
+        canvas[i] = glyphFromConn(bits, glyphs);
     }
     _ = cols;
 }

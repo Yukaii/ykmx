@@ -53,6 +53,9 @@ ykmx ctl show-panel 1
 ykmx ctl status
 ykmx ctl list-windows
 ykmx ctl list-panels
+ykmx ctl list-commands
+ykmx ctl list-commands --format json
+ykmx ctl list-commands --format jsonl
 ykmx ctl command panel.sidebar.toggle
 ykmx ctl json '{"v":1,"command":"open_popup"}'
 ```
@@ -64,6 +67,13 @@ Runtime exports these environment variables:
 - `YKMX_STATE_FILE`: text snapshot path used by `ykmx ctl status|list-*`
 
 Both pane shells and plugin processes inherit these env vars, so external scripts and plugins can control the active session.
+
+`ykmx ctl list-commands` includes both core and plugin-registered command names with runtime metadata:
+
+- `name=<command-name>`
+- `source=core|plugin`
+- `plugin_override=0|1`
+- `prefixed_keys=prefix+...` (comma-separated, or `-` if none)
 
 Compatibility helpers:
 
@@ -168,10 +178,12 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 
 - Enable with `plugins_enabled=true` and `plugin_dir=/abs/path/to/plugins`.
 - For multiple plugins, set `plugins_dir=/abs/path/to/plugins.d` and place each plugin at:
-  - `<plugins_dir>/<plugin-name>/index.ts`
+  - `<plugins_dir>/<plugin-name>/index.ts` (default Bun runtime path)
+  - or `<plugins_dir>/<plugin-name>/plugin.toml` with `run="..."` (language-agnostic runtime command)
   - optional `<plugins_dir>/<plugin-name>/plugin.toml` with:
     - `enabled=true|false` (default `true`)
     - `order=<int>` (default `0`, lower loads first)
+    - `run="<shell command>"` (optional, executed with `/bin/sh -lc` in plugin directory)
 - To search multiple plugin collections without editing paths, use:
   - `plugins_dirs=["/abs/path/plugins.d","/another/plugins.d"]`
 - Per-plugin config sections are supported:
@@ -221,7 +233,26 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - optional plugin config:
     - `[plugin.bottom-panel]`
     - `persistent_process=true` (hide/show while keeping PTY alive)
-- Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
+- Command palette example plugin (separate from popup-controls) lives at:
+  - `docs/examples/plugins.d/command-palette/index.ts`
+  - registers `palette.open` by default, opens an `fzf` command picker in a popup, then dispatches selected command via `ykmx ctl command <name>`
+  - optional plugin config:
+    - `[plugin.command-palette]`
+    - `open_command=palette.open`
+    - `popup_x=24`
+    - `popup_y=6`
+    - `popup_width=110`
+    - `popup_height=26`
+    - `cwd=/path/to/project`
+    - `fzf_prompt=ykmx> `
+- Retro theme example plugin (Windows 3.1-inspired chrome) lives at:
+  - `docs/examples/plugins.d/retro-win31-theme/index.ts`
+  - optional plugin config:
+    - `[plugin.retro-win31-theme]`
+    - `enabled=true`
+- Runtime plugin launch:
+  - if `plugin.toml` has `run="..."`: execute that command via `/bin/sh -lc` in plugin cwd
+  - otherwise fallback to `bun run <plugin_dir>/index.ts`
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
 - For interactive layout plugins (drag/resize/floating state), also set `plugins_enabled=true` so the same plugin host handles both layout compute and pointer/actions.
 - Type definitions for plugin authors: `docs/examples/plugins.d/paperwm/types.ts`.
@@ -268,6 +299,10 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"set_panel_style_by_id","panel_id":1,"show_border":true,"show_controls":false,"transparent_background":false}`
   - `{"v":1,"action":"set_ui_bars","toolbar_line":"...","tab_line":"...","status_line":"..."}`
   - `{"v":1,"action":"clear_ui_bars"}`
+  - `{"v":1,"action":"set_chrome_theme","window_minimize_char":"-","window_maximize_char":"+","window_close_char":"x","focus_marker":"*","border_horizontal":"─","border_vertical":"│","border_corner_tl":"┌","border_corner_tr":"┐","border_corner_bl":"└","border_corner_br":"┘","border_tee_top":"┬","border_tee_bottom":"┴","border_tee_left":"├","border_tee_right":"┤","border_cross":"┼"}`
+  - `{"v":1,"action":"reset_chrome_theme"}`
+  - `window_*_char` and `focus_marker` are single ASCII characters.
+  - `border_*` fields accept any single Unicode glyph.
 - Plugin panel actions are ownership-scoped:
   - panels opened by plugin `A` can only be closed/focused/moved/resized/styled by plugin `A`
   - this prevents cross-plugin panel conflicts when multiple panel plugins are active

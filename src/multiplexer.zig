@@ -8,6 +8,38 @@ const popup_mod = @import("popup.zig");
 const scrollback_mod = @import("scrollback.zig");
 
 pub const Multiplexer = struct {
+    pub const BorderGlyphs = struct {
+        horizontal: u21 = '─',
+        vertical: u21 = '│',
+        corner_tl: u21 = '┌',
+        corner_tr: u21 = '┐',
+        corner_bl: u21 = '└',
+        corner_br: u21 = '┘',
+        tee_top: u21 = '┬',
+        tee_bottom: u21 = '┴',
+        tee_left: u21 = '├',
+        tee_right: u21 = '┤',
+        cross: u21 = '┼',
+    };
+
+    pub const ChromeThemeUpdate = struct {
+        window_minimize_char: ?u8 = null,
+        window_maximize_char: ?u8 = null,
+        window_close_char: ?u8 = null,
+        focus_marker: ?u8 = null,
+        border_horizontal: ?u21 = null,
+        border_vertical: ?u21 = null,
+        border_corner_tl: ?u21 = null,
+        border_corner_tr: ?u21 = null,
+        border_corner_bl: ?u21 = null,
+        border_corner_br: ?u21 = null,
+        border_tee_top: ?u21 = null,
+        border_tee_bottom: ?u21 = null,
+        border_tee_left: ?u21 = null,
+        border_tee_right: ?u21 = null,
+        border_cross: ?u21 = null,
+    };
+
     pub const WindowChromeHit = struct {
         window_id: u32,
         window_index: usize,
@@ -104,6 +136,11 @@ pub const Multiplexer = struct {
     next_popup_window_id: u32 = 1_000_000,
     redraw_requested: bool = false,
     last_screen: ?layout.Rect = null,
+    window_minimize_char: u8 = '_',
+    window_maximize_char: u8 = '+',
+    window_close_char: u8 = 'x',
+    focus_marker: u8 = '*',
+    border_glyphs: BorderGlyphs = .{},
 
     pub const TickResult = struct {
         reads: usize,
@@ -678,6 +715,50 @@ pub const Multiplexer = struct {
         return self.workspace_mgr.focusedWindowIdActive();
     }
 
+    pub fn windowControlChars(self: *const Multiplexer) struct { minimize: u8, maximize: u8, close: u8 } {
+        return .{
+            .minimize = self.window_minimize_char,
+            .maximize = self.window_maximize_char,
+            .close = self.window_close_char,
+        };
+    }
+
+    pub fn focusMarker(self: *const Multiplexer) u8 {
+        return self.focus_marker;
+    }
+
+    pub fn borderGlyphs(self: *const Multiplexer) BorderGlyphs {
+        return self.border_glyphs;
+    }
+
+    pub fn resetChromeTheme(self: *Multiplexer) void {
+        self.window_minimize_char = '_';
+        self.window_maximize_char = '+';
+        self.window_close_char = 'x';
+        self.focus_marker = '*';
+        self.border_glyphs = .{};
+        self.requestRedraw();
+    }
+
+    pub fn applyChromeTheme(self: *Multiplexer, update: ChromeThemeUpdate) void {
+        if (update.window_minimize_char) |ch| self.window_minimize_char = ch;
+        if (update.window_maximize_char) |ch| self.window_maximize_char = ch;
+        if (update.window_close_char) |ch| self.window_close_char = ch;
+        if (update.focus_marker) |ch| self.focus_marker = ch;
+        if (update.border_horizontal) |cp| self.border_glyphs.horizontal = cp;
+        if (update.border_vertical) |cp| self.border_glyphs.vertical = cp;
+        if (update.border_corner_tl) |cp| self.border_glyphs.corner_tl = cp;
+        if (update.border_corner_tr) |cp| self.border_glyphs.corner_tr = cp;
+        if (update.border_corner_bl) |cp| self.border_glyphs.corner_bl = cp;
+        if (update.border_corner_br) |cp| self.border_glyphs.corner_br = cp;
+        if (update.border_tee_top) |cp| self.border_glyphs.tee_top = cp;
+        if (update.border_tee_bottom) |cp| self.border_glyphs.tee_bottom = cp;
+        if (update.border_tee_left) |cp| self.border_glyphs.tee_left = cp;
+        if (update.border_tee_right) |cp| self.border_glyphs.tee_right = cp;
+        if (update.border_cross) |cp| self.border_glyphs.cross = cp;
+        self.requestRedraw();
+    }
+
     pub fn windowChromeHitAt(self: *Multiplexer, screen: layout.Rect, px: u16, py: u16) !?WindowChromeHit {
         const rects = try self.computeActiveLayout(screen);
         defer self.allocator.free(rects);
@@ -695,7 +776,7 @@ pub const Multiplexer = struct {
             if (!(inside_x and inside_y)) continue;
 
             const on_title_bar = py == r.y and px > r.x and px < (r.x + r.width - 1);
-            // Controls render as "[_][+][x]" anchored to right border.
+            // Controls render as "[?][?][?]" anchored to right border.
             // Symbol cells are at offsets: '_' => -9, '+' => -6, 'x' => -3.
             const on_close_button = on_title_bar and r.width >= 5 and px == (r.x + r.width - 3);
             const on_maximize_button = on_title_bar and r.width >= 8 and px == (r.x + r.width - 6);
@@ -1235,6 +1316,85 @@ pub const Multiplexer = struct {
         const owned = try self.allocator.dupe(u8, command_name);
         errdefer self.allocator.free(owned);
         try self.plugin_prefixed_keybindings.put(self.allocator, key, owned);
+    }
+
+    pub fn appendCommandStateLines(
+        self: *const Multiplexer,
+        out: *std.ArrayListUnmanaged(u8),
+        allocator: std.mem.Allocator,
+    ) !void {
+        var writer = out.writer(allocator);
+        inline for (std.meta.fields(input_mod.Command)) |field| {
+            const cmd = @field(input_mod.Command, field.name);
+            try writer.print(
+                "command name={s} source=core plugin_override={} prefixed_keys=",
+                .{
+                    field.name,
+                    @as(u8, @intFromBool(self.plugin_command_overrides.contains(cmd))),
+                },
+            );
+            try self.appendPrefixedKeyListForCommandName(out, allocator, field.name, input_mod.defaultPrefixedKey(cmd));
+            try writer.writeByte('\n');
+        }
+
+        var named_it = self.plugin_named_command_overrides.iterator();
+        while (named_it.next()) |entry| {
+            const command_name = entry.key_ptr.*;
+            try writer.print(
+                "command name={s} source=plugin plugin_override=1 prefixed_keys=",
+                .{command_name},
+            );
+            try self.appendPrefixedKeyListForCommandName(out, allocator, command_name, null);
+            try writer.writeByte('\n');
+        }
+    }
+
+    fn appendPrefixedKeyListForCommandName(
+        self: *const Multiplexer,
+        out: *std.ArrayListUnmanaged(u8),
+        allocator: std.mem.Allocator,
+        command_name: []const u8,
+        default_key: ?u8,
+    ) !void {
+        var writer = out.writer(allocator);
+        var wrote_any = false;
+
+        if (default_key) |key| {
+            try writer.writeAll("prefix+");
+            try writePrefixedKeyToken(writer, key);
+            wrote_any = true;
+        }
+
+        var keybind_it = self.plugin_prefixed_keybindings.iterator();
+        while (keybind_it.next()) |entry| {
+            if (!std.mem.eql(u8, entry.value_ptr.*, command_name)) continue;
+            const key = entry.key_ptr.*;
+            if (default_key != null and default_key.? == key) continue;
+            if (wrote_any) try writer.writeByte(',');
+            try writer.writeAll("prefix+");
+            try writePrefixedKeyToken(writer, key);
+            wrote_any = true;
+        }
+
+        if (!wrote_any) try writer.writeByte('-');
+    }
+
+    fn writePrefixedKeyToken(writer: anytype, key: u8) !void {
+        switch (key) {
+            '\t' => try writer.writeAll("tab"),
+            '\r', '\n' => try writer.writeAll("enter"),
+            0x1b => try writer.writeAll("esc"),
+            ' ' => try writer.writeAll("space"),
+            0x1c => try writer.writeAll("ctrl+\\"),
+            1...8, 11...12, 14...26 => try writer.print("ctrl+{c}", .{@as(u8, 'a') + (key - 1)}),
+            else => {
+                if (key >= 33 and key <= 126) {
+                    try writer.writeByte(key);
+                } else {
+                    try writer.print("byte-{x:0>2}", .{key});
+                }
+            },
+        }
     }
 
     pub fn dispatchPluginNamedCommand(self: *Multiplexer, command_name: []const u8) !bool {

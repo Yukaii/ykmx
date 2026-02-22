@@ -45,6 +45,40 @@ pub fn parseCommandName(name: []const u8) ?Command {
     return null;
 }
 
+pub fn defaultPrefixedKey(cmd: Command) ?u8 {
+    return switch (cmd) {
+        .create_window => 'c',
+        .close_window => 'x',
+        .open_popup => 'p',
+        .close_popup => 0x1b, // ESC
+        .cycle_popup => '\t',
+        .toggle_sidebar_panel => null,
+        .toggle_bottom_panel => null,
+        .new_tab => 't',
+        .close_tab => 'w',
+        .next_tab => ']',
+        .prev_tab => '[',
+        .move_window_next_tab => 'm',
+        .next_window => 'J',
+        .prev_window => 'K',
+        .focus_left => 'h',
+        .focus_down => 'j',
+        .focus_up => 'k',
+        .focus_right => 'l',
+        .zoom_to_master => '\r',
+        .cycle_layout => ' ',
+        .resize_master_shrink => 'H',
+        .resize_master_grow => 'L',
+        .master_count_increase => 'I',
+        .master_count_decrease => 'O',
+        .scroll_page_up => 'u',
+        .scroll_page_down => 'd',
+        .toggle_sync_scroll => 's',
+        .toggle_mouse_passthrough => 'M',
+        .detach => '\\',
+    };
+}
+
 pub fn isValidCommandName(name: []const u8) bool {
     if (name.len == 0) return false;
     for (name) |c| {

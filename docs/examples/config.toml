@@ -23,6 +23,8 @@ plugins_enabled = false
 #   - paperwm: layout only
 #   - desktop-wm: floating overlap layout + free drag/resize + window controls
 #   - popup-controls: standalone popup keybinding registration/behavior plugin
+#   - command-palette: fzf command picker popup (dispatches selected command)
+#   - retro-win31-theme: plugin-defined chrome/border + bar theme sample
 #
 # To run desktop-wm as layout owner (single shared plugin process for layout + pointer/actions):
 # layout_backend = "plugin"
@@ -43,3 +45,16 @@ plugins_dir = "$HOME/.config/ykmx/plugins.d"
 # popup_y = 6
 # popup_width = 110
 # popup_height = 26
+#
+# [plugin.command-palette]
+# open_command = "palette.open"
+# popup_x = 24
+# popup_y = 6
+# popup_width = 110
+# popup_height = 26
+# fzf_prompt = "ykmx> "
+#
+# [plugin.retro-win31-theme]
+# enabled = true
+#
+# plugin_keybindings = ["ctrl+p:palette.open", "ctrl+s:panel.sidebar.toggle", "ctrl+b:panel.bottom.toggle"]

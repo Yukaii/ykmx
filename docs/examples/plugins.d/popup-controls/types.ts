@@ -176,7 +176,27 @@ export type ActionMessage =
       show_controls?: boolean;
     }
   | { v: 1; action: "set_ui_bars"; toolbar_line: string; tab_line: string; status_line: string }
-  | { v: 1; action: "clear_ui_bars" };
+  | { v: 1; action: "clear_ui_bars" }
+  | {
+      v: 1;
+      action: "set_chrome_theme";
+      window_minimize_char?: string;
+      window_maximize_char?: string;
+      window_close_char?: string;
+      focus_marker?: string;
+      border_horizontal?: string;
+      border_vertical?: string;
+      border_corner_tl?: string;
+      border_corner_tr?: string;
+      border_corner_bl?: string;
+      border_corner_br?: string;
+      border_tee_top?: string;
+      border_tee_bottom?: string;
+      border_tee_left?: string;
+      border_tee_right?: string;
+      border_cross?: string;
+    }
+  | { v: 1; action: "reset_chrome_theme" };
 
 export type LayoutResponseMessage =
   | { v: 1; id: number; rects: Rect[] }
