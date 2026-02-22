@@ -2043,38 +2043,18 @@ fn renderRuntimeFrame(
     var pane_count: usize = 0;
     var focused_cursor_abs: ?struct { row: usize, col: usize } = null;
 
-    // Pre-compute popup order and mark overlay masks before base window composition.
-    // This ensures masks are valid when marking base window chrome layers,
-    // preventing underlying chrome from leaking into popup areas.
-    var popup_order = try allocator.alloc(usize, mux.popup_mgr.popups.items.len);
+    const popup_order = try collectVisiblePopupOrder(allocator, mux);
     defer allocator.free(popup_order);
-    var popup_count: usize = 0;
-    for (mux.popup_mgr.popups.items, 0..) |p, i| {
-        if (!p.visible) continue;
-        popup_order[popup_count] = i;
-        popup_count += 1;
-    }
-    // Sort by z-index (stable insertion sort)
-    var po_i: usize = 1;
-    while (po_i < popup_count) : (po_i += 1) {
-        const key = popup_order[po_i];
-        const key_z = mux.popup_mgr.popups.items[key].z_index;
-        var j = po_i;
-        while (j > 0 and mux.popup_mgr.popups.items[popup_order[j - 1]].z_index > key_z) : (j -= 1) {
-            popup_order[j] = popup_order[j - 1];
-        }
-        popup_order[j] = key;
-    }
-    // Mark popup overlay masks before base window composition
-    for (popup_order[0..popup_count]) |popup_idx| {
-        const p = mux.popup_mgr.popups.items[popup_idx];
-        if (!p.visible) continue;
-        markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
-        markRectOverlay(popup_cover, total_cols, content_rows, p.rect);
-        if (!p.transparent_background) {
-            markRectOverlay(popup_opaque_cover, total_cols, content_rows, p.rect);
-        }
-    }
+    const popup_count = popup_order.len;
+    markPopupMasks(
+        mux,
+        popup_order,
+        total_cols,
+        content_rows,
+        popup_overlay,
+        popup_cover,
+        popup_opaque_cover,
+    );
 
     for (rects[0..n], 0..) |r, i| {
         if (r.width == 0 or r.height == 0) continue;
@@ -2614,6 +2594,56 @@ fn resolveChromeStyleAt(
         return fallback;
     }
     return null;
+}
+
+fn collectVisiblePopupOrder(
+    allocator: std.mem.Allocator,
+    mux: *const multiplexer.Multiplexer,
+) ![]usize {
+    var visible_count: usize = 0;
+    for (mux.popup_mgr.popups.items) |p| {
+        if (p.visible) visible_count += 1;
+    }
+
+    const order = try allocator.alloc(usize, visible_count);
+    var out_i: usize = 0;
+    for (mux.popup_mgr.popups.items, 0..) |p, i| {
+        if (!p.visible) continue;
+        order[out_i] = i;
+        out_i += 1;
+    }
+
+    var i: usize = 1;
+    while (i < order.len) : (i += 1) {
+        const key = order[i];
+        const key_z = mux.popup_mgr.popups.items[key].z_index;
+        var j = i;
+        while (j > 0 and mux.popup_mgr.popups.items[order[j - 1]].z_index > key_z) : (j -= 1) {
+            order[j] = order[j - 1];
+        }
+        order[j] = key;
+    }
+
+    return order;
+}
+
+fn markPopupMasks(
+    mux: *const multiplexer.Multiplexer,
+    popup_order: []const usize,
+    cols: usize,
+    rows: usize,
+    popup_overlay: []bool,
+    popup_cover: []bool,
+    popup_opaque_cover: []bool,
+) void {
+    for (popup_order) |popup_idx| {
+        const p = mux.popup_mgr.popups.items[popup_idx];
+        markPopupOverlay(popup_overlay, cols, rows, p.rect);
+        markRectOverlay(popup_cover, cols, rows, p.rect);
+        if (!p.transparent_background) {
+            markRectOverlay(popup_opaque_cover, cols, rows, p.rect);
+        }
+    }
 }
 
 fn enforceOpaquePanelChromeBg(style: ghostty_vt.Style, panel_id: u32) ghostty_vt.Style {
