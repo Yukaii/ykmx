@@ -107,6 +107,11 @@ pub const Pty = struct {
         if (c.ioctl(self.master.handle, c.TIOCSWINSZ, &ws) != 0) {
             return error.IoctlFailed;
         }
+        // Some interactive programs only recompute layout on SIGWINCH; best-effort
+        // delivery avoids stale dimensions after compositor-driven resizes.
+        const pid: c.pid_t = @intCast(self.pid);
+        _ = c.kill(pid, c.SIGWINCH);
+        _ = c.kill(-pid, c.SIGWINCH);
     }
 
     pub fn terminate(self: *Pty) !void {

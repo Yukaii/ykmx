@@ -42,12 +42,14 @@ Control CLI commands:
 ykmx ctl new-window
 ykmx ctl close-window
 ykmx ctl open-popup
+ykmx ctl open-popup -- lazygit
 ykmx ctl open-panel 8 4 100 24
 ykmx ctl hide-panel 1
 ykmx ctl show-panel 1
 ykmx ctl status
 ykmx ctl list-windows
 ykmx ctl list-panels
+ykmx ctl command panel.sidebar.toggle
 ykmx ctl json '{"v":1,"command":"open_popup"}'
 ```
 

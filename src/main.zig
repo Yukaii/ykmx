@@ -14,6 +14,7 @@ const benchmark = @import("benchmark.zig");
 const scrollback_mod = @import("scrollback.zig");
 const plugin_host = @import("plugin_host.zig");
 const plugin_manager = @import("plugin_manager.zig");
+const input_mod = @import("input.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const c = @cImport({
@@ -28,6 +29,93 @@ const c = @cImport({
 const POC_ROWS: u16 = 12;
 const POC_COLS: u16 = 36;
 const RUNTIME_VT_MAX_SCROLLBACK: usize = 20_000;
+
+const DebugTag = enum(u8) {
+    loop_size_change,
+    tick_result,
+    render_begin,
+    render_footer,
+    plugin_request_redraw,
+};
+
+const DebugTrace = struct {
+    const Entry = struct {
+        seq: u64,
+        tag: DebugTag,
+        a: i32,
+        b: i32,
+        c: i32,
+        d: i32,
+    };
+
+    const capacity: usize = 128;
+
+    entries: [capacity]Entry = undefined,
+    next: usize = 0,
+    len: usize = 0,
+    seq: u64 = 0,
+
+    fn push(self: *DebugTrace, tag: DebugTag, a: i32, b: i32, c_val: i32, d: i32) void {
+        self.entries[self.next] = .{
+            .seq = self.seq,
+            .tag = tag,
+            .a = a,
+            .b = b,
+            .c = c_val,
+            .d = d,
+        };
+        self.seq += 1;
+        self.next = (self.next + 1) % capacity;
+        if (self.len < capacity) self.len += 1;
+    }
+
+    fn dump(self: *const DebugTrace) void {
+        const header = "ykmx crash trace (latest events):\n";
+        _ = c.write(c.STDERR_FILENO, header.ptr, header.len);
+        if (self.len == 0) {
+            const none = "  (empty)\n";
+            _ = c.write(c.STDERR_FILENO, none.ptr, none.len);
+            return;
+        }
+
+        const start = if (self.len == capacity) self.next else 0;
+        var i: usize = 0;
+        while (i < self.len) : (i += 1) {
+            const idx = (start + i) % capacity;
+            const e = self.entries[idx];
+            var line_buf: [192]u8 = undefined;
+            const line = std.fmt.bufPrint(
+                &line_buf,
+                "  #{d} {s} a={d} b={d} c={d} d={d}\n",
+                .{ e.seq, debugTagName(e.tag), e.a, e.b, e.c, e.d },
+            ) catch continue;
+            _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
+        }
+    }
+};
+
+var g_debug_trace: DebugTrace = .{};
+
+fn traceEvent(tag: DebugTag, a: i32, b: i32, c_val: i32, d: i32) void {
+    g_debug_trace.push(tag, a, b, c_val, d);
+}
+
+fn debugTagName(tag: DebugTag) []const u8 {
+    return switch (tag) {
+        .loop_size_change => "loop_size_change",
+        .tick_result => "tick_result",
+        .render_begin => "render_begin",
+        .render_footer => "render_footer",
+        .plugin_request_redraw => "plugin_request_redraw",
+    };
+}
+
+fn panicWithTrace(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    g_debug_trace.dump();
+    std.debug.defaultPanic(msg, first_trace_addr);
+}
+
+pub const panic = std.debug.FullPanic(panicWithTrace);
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -276,6 +364,13 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
         if (size.cols != last_size.cols or size.rows != last_size.rows or
             content.width != last_content.width or content.height != last_content.height)
         {
+            traceEvent(
+                .loop_size_change,
+                @intCast(size.cols),
+                @intCast(size.rows),
+                @intCast(content.width),
+                @intCast(content.height),
+            );
             _ = mux.resizeActiveWindowsToLayout(content) catch {};
             force_redraw = true;
             last_size = size;
@@ -293,6 +388,13 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
         const snap = signal_mod.drain();
         const tick_result = try mux.tick(30, content, snap);
+        traceEvent(
+            .tick_result,
+            @intCast(tick_result.reads),
+            @intCast(tick_result.resized),
+            @intCast(tick_result.popup_updates),
+            @intFromBool(tick_result.redraw),
+        );
         const current_layout = try mux.workspace_mgr.activeLayoutType();
         if (current_layout != last_layout) {
             if (plugins.hasAny()) plugins.emitLayoutChanged(current_layout);
@@ -436,6 +538,13 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
         if (snap.sigwinch) force_redraw = true;
         if (force_redraw or tick_result.redraw) {
+            traceEvent(
+                .render_begin,
+                @intCast(size.cols),
+                @intCast(size.rows),
+                @intCast(content.width),
+                @intCast(content.height),
+            );
             try renderRuntimeFrame(out, allocator, &mux, &vt_state, &frame_cache, size, content, if (plugins.hasAny()) plugins.uiBars() else null);
             try out.flush();
             force_redraw = false;
@@ -447,6 +556,8 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 const ControlCommand = struct {
     v: ?u8 = null,
     command: ?[]const u8 = null,
+    command_name: ?[]const u8 = null,
+    argv: ?[]const []const u8 = null,
     x: ?u16 = null,
     y: ?u16 = null,
     width: ?u16 = null,
@@ -626,6 +737,26 @@ fn writeQuotedString(writer: anytype, s: []const u8) !void {
     try writer.writeByte('"');
 }
 
+fn appendJsonString(
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    s: []const u8,
+) !void {
+    try out.append(allocator, '"');
+    for (s) |ch| {
+        switch (ch) {
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            0...8, 11...12, 14...31 => try out.writer(allocator).print("\\u00{x:0>2}", .{ch}),
+            else => try out.append(allocator, ch),
+        }
+    }
+    try out.append(allocator, '"');
+}
+
 fn sanitizeSessionId(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(allocator);
@@ -654,6 +785,12 @@ fn applyControlCommandLine(mux: *multiplexer.Multiplexer, screen: layout.Rect, l
         return true;
     }
     if (std.mem.eql(u8, cmd, "open_popup")) {
+        if (parsed.value.argv) |argv| {
+            if (argv.len > 0) {
+                _ = try mux.openCommandPopup("popup-cmd", argv, screen, true, true);
+                return true;
+            }
+        }
         _ = try mux.openShellPopup("popup-shell", screen, true);
         return true;
     }
@@ -681,6 +818,10 @@ fn applyControlCommandLine(mux: *multiplexer.Multiplexer, screen: layout.Rect, l
         const visible = parsed.value.visible orelse return false;
         return try mux.setPopupVisibilityByIdOwned(panel_id, visible, null);
     }
+    if (std.mem.eql(u8, cmd, "dispatch_plugin_command")) {
+        const command_name = parsed.value.command_name orelse return false;
+        return try mux.dispatchPluginNamedCommand(command_name);
+    }
     return false;
 }
 
@@ -693,13 +834,14 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
             \\ykmx ctl usage:
             \\  ykmx ctl new-window
             \\  ykmx ctl close-window
-            \\  ykmx ctl open-popup
+            \\  ykmx ctl open-popup [--] <program> [args...]
             \\  ykmx ctl open-panel x y width height
             \\  ykmx ctl hide-panel <panel_id>
             \\  ykmx ctl show-panel <panel_id>
             \\  ykmx ctl status
             \\  ykmx ctl list-windows
             \\  ykmx ctl list-panels
+            \\  ykmx ctl command <name>
             \\  ykmx ctl json '<json>'
             \\
             \\Uses $YKMX_CONTROL_PIPE (actions) and $YKMX_STATE_FILE (listing).
@@ -760,7 +902,18 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
     } else if (std.mem.eql(u8, args[0], "close-window")) {
         try line.appendSlice(allocator, "{\"v\":1,\"command\":\"close_window\"}");
     } else if (std.mem.eql(u8, args[0], "open-popup")) {
-        try line.appendSlice(allocator, "{\"v\":1,\"command\":\"open_popup\"}");
+        if (args.len == 1) {
+            try line.appendSlice(allocator, "{\"v\":1,\"command\":\"open_popup\"}");
+        } else {
+            const start: usize = if (std.mem.eql(u8, args[1], "--")) 2 else 1;
+            if (start >= args.len) return error.InvalidControlArgs;
+            try line.appendSlice(allocator, "{\"v\":1,\"command\":\"open_popup\",\"argv\":[");
+            for (args[start..], 0..) |arg, i| {
+                if (i > 0) try line.append(allocator, ',');
+                try appendJsonString(&line, allocator, arg);
+            }
+            try line.appendSlice(allocator, "]}");
+        }
     } else if (std.mem.eql(u8, args[0], "open-panel")) {
         if (args.len < 5) return error.InvalidControlArgs;
         try line.writer(allocator).print(
@@ -783,6 +936,13 @@ fn runControlCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try line.writer(allocator).print(
             "{{\"v\":1,\"command\":\"set_panel_visibility\",\"panel_id\":{},\"visible\":true}}",
             .{try std.fmt.parseInt(u32, args[1], 10)},
+        );
+    } else if (std.mem.eql(u8, args[0], "command")) {
+        if (args.len < 2) return error.InvalidControlArgs;
+        if (!input_mod.isValidCommandName(args[1])) return error.InvalidControlArgs;
+        try line.writer(allocator).print(
+            "{{\"v\":1,\"command\":\"dispatch_plugin_command\",\"command_name\":\"{s}\"}}",
+            .{args[1]},
         );
     } else {
         return error.InvalidControlArgs;
@@ -922,6 +1082,8 @@ fn applyPluginAction(
             return true;
         },
         .request_redraw => {
+            traceEvent(.plugin_request_redraw, @intCast(screen.width), @intCast(screen.height), 0, 0);
+            _ = try mux.resizeActiveWindowsToLayout(screen);
             return true;
         },
         .minimize_focused_window => {
@@ -1380,8 +1542,9 @@ fn getTerminalSize() RuntimeSize {
 }
 
 fn contentRect(size: RuntimeSize) layout.Rect {
-    // Reserve three lines at bottom for minimized-toolbar + tab + status bars.
-    const usable_rows: u16 = if (size.rows > 4) size.rows - 3 else 1;
+    // Prefer reserving 3 footer lines (toolbar/tab/status), but on very short
+    // terminals skip footer reservation to keep indexing safe.
+    const usable_rows: u16 = if (size.rows > 3) size.rows - 3 else size.rows;
     return .{ .x = 0, .y = 0, .width = size.cols, .height = usable_rows };
 }
 
@@ -1714,9 +1877,23 @@ fn renderRuntimeFrame(
         }
     }
 
-    fillPlainLine(curr[content_rows * total_cols .. (content_rows + 1) * total_cols], minimized_line);
-    fillPlainLine(curr[(content_rows + 1) * total_cols .. (content_rows + 2) * total_cols], tab_line);
-    fillPlainLine(curr[(content_rows + 2) * total_cols .. (content_rows + 3) * total_cols], status_line);
+    const footer_rows = total_rows - content_rows;
+    traceEvent(
+        .render_footer,
+        @intCast(total_cols),
+        @intCast(total_rows),
+        @intCast(content_rows),
+        @intCast(footer_rows),
+    );
+    if (footer_rows > 0) {
+        fillPlainLine(curr[content_rows * total_cols .. (content_rows + 1) * total_cols], minimized_line);
+    }
+    if (footer_rows > 1) {
+        fillPlainLine(curr[(content_rows + 1) * total_cols .. (content_rows + 2) * total_cols], tab_line);
+    }
+    if (footer_rows > 2) {
+        fillPlainLine(curr[(content_rows + 2) * total_cols .. (content_rows + 3) * total_cols], status_line);
+    }
 
     var active_style: ?ghostty_vt.Style = null;
     var idx: usize = 0;
@@ -1785,12 +1962,18 @@ fn renderRuntimeFrame(
     // Footer bars are informational UI chrome; always paint them last to avoid
     // transient corruption from incremental pane diff writes during focus churn.
     try writeAllBlocking(out, "\x1b[0m");
-    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 1});
-    try writeClippedLine(out, minimized_line, total_cols);
-    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
-    try writeClippedLine(out, tab_line, total_cols);
-    try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
-    try writeClippedLine(out, status_line, total_cols);
+    if (footer_rows > 0) {
+        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 1});
+        try writeClippedLine(out, minimized_line, total_cols);
+    }
+    if (footer_rows > 1) {
+        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 2});
+        try writeClippedLine(out, tab_line, total_cols);
+    }
+    if (footer_rows > 2) {
+        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
+        try writeClippedLine(out, status_line, total_cols);
+    }
 
     @memcpy(frame_cache.cells, curr);
 
@@ -2784,4 +2967,17 @@ test "composition helpers mark and clear panel coverage correctly" {
     try testing.expectEqual(@as(u8, 0), conn[1 * cols + 2]);
     try testing.expectEqual(@as(u8, 0), conn[3 * cols + 5]);
     try testing.expectEqual(@as(u8, 0x0f), conn[0]);
+}
+
+test "contentRect never overflows total terminal rows" {
+    const testing = std.testing;
+
+    const tiny = contentRect(.{ .cols = 80, .rows = 1 });
+    try testing.expectEqual(@as(u16, 1), tiny.height);
+
+    const short = contentRect(.{ .cols = 80, .rows = 3 });
+    try testing.expectEqual(@as(u16, 3), short.height);
+
+    const normal = contentRect(.{ .cols = 80, .rows = 24 });
+    try testing.expectEqual(@as(u16, 21), normal.height);
 }

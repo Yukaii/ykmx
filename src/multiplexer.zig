@@ -1213,14 +1213,17 @@ pub const Multiplexer = struct {
         try self.plugin_prefixed_keybindings.put(self.allocator, key, owned);
     }
 
-    fn dispatchPrefixedKeyPluginCommand(self: *Multiplexer, key: u8) !bool {
-        const command_name = self.plugin_prefixed_keybindings.get(key) orelse return false;
+    pub fn dispatchPluginNamedCommand(self: *Multiplexer, command_name: []const u8) !bool {
+        if (!input_mod.isValidCommandName(command_name)) return error.InvalidCommandName;
+
         if (input_mod.parseCommandName(command_name)) |cmd| {
             if (self.plugin_command_overrides.contains(cmd)) {
                 try self.pending_plugin_commands.append(self.allocator, cmd);
                 return true;
             }
+            return false;
         }
+
         if (self.plugin_named_command_overrides.contains(command_name)) {
             try self.pending_plugin_command_names.append(
                 self.allocator,
@@ -1229,6 +1232,11 @@ pub const Multiplexer = struct {
             return true;
         }
         return false;
+    }
+
+    fn dispatchPrefixedKeyPluginCommand(self: *Multiplexer, key: u8) !bool {
+        const command_name = self.plugin_prefixed_keybindings.get(key) orelse return false;
+        return try self.dispatchPluginNamedCommand(command_name);
     }
 
     pub fn tick(
