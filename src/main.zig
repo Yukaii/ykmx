@@ -2043,6 +2043,39 @@ fn renderRuntimeFrame(
     var pane_count: usize = 0;
     var focused_cursor_abs: ?struct { row: usize, col: usize } = null;
 
+    // Pre-compute popup order and mark overlay masks before base window composition.
+    // This ensures masks are valid when marking base window chrome layers,
+    // preventing underlying chrome from leaking into popup areas.
+    var popup_order = try allocator.alloc(usize, mux.popup_mgr.popups.items.len);
+    defer allocator.free(popup_order);
+    var popup_count: usize = 0;
+    for (mux.popup_mgr.popups.items, 0..) |p, i| {
+        if (!p.visible) continue;
+        popup_order[popup_count] = i;
+        popup_count += 1;
+    }
+    // Sort by z-index (stable insertion sort)
+    var po_i: usize = 1;
+    while (po_i < popup_count) : (po_i += 1) {
+        const key = popup_order[po_i];
+        const key_z = mux.popup_mgr.popups.items[key].z_index;
+        var j = po_i;
+        while (j > 0 and mux.popup_mgr.popups.items[popup_order[j - 1]].z_index > key_z) : (j -= 1) {
+            popup_order[j] = popup_order[j - 1];
+        }
+        popup_order[j] = key;
+    }
+    // Mark popup overlay masks before base window composition
+    for (popup_order[0..popup_count]) |popup_idx| {
+        const p = mux.popup_mgr.popups.items[popup_idx];
+        if (!p.visible) continue;
+        markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
+        markRectOverlay(popup_cover, total_cols, content_rows, p.rect);
+        if (!p.transparent_background) {
+            markRectOverlay(popup_opaque_cover, total_cols, content_rows, p.rect);
+        }
+    }
+
     for (rects[0..n], 0..) |r, i| {
         if (r.width == 0 or r.height == 0) continue;
         var yy: usize = r.y;
@@ -2062,7 +2095,7 @@ fn renderRuntimeFrame(
         const insets = computeContentInsets(rects[0..n], i, r, border);
         const is_active = tab.focused_index == i;
         drawBorder(canvas, border_conn, total_cols, content_rows, r, border, if (is_active) mux.focusMarker() else ' ', i, top_window_owner);
-        markBorderLayerOwned(chrome_layer, chrome_panel_id, total_cols, content_rows, r, border, if (is_active) chrome_layer_active_border else chrome_layer_inactive_border, i, top_window_owner);
+        markBorderLayerOwned(chrome_layer, chrome_panel_id, total_cols, content_rows, r, border, if (is_active) chrome_layer_active_border else chrome_layer_inactive_border, i, top_window_owner, popup_opaque_cover);
         const inner_x = r.x + insets.left;
         const inner_y = r.y + insets.top;
         const inner_w = if (r.width > insets.left + insets.right) r.width - insets.left - insets.right else 0;
@@ -2121,25 +2154,7 @@ fn renderRuntimeFrame(
         }
     }
 
-    var popup_order = try allocator.alloc(usize, mux.popup_mgr.popups.items.len);
-    defer allocator.free(popup_order);
-    var popup_count: usize = 0;
-    for (mux.popup_mgr.popups.items, 0..) |p, i| {
-        if (!p.visible) continue;
-        popup_order[popup_count] = i;
-        popup_count += 1;
-    }
-    var po_i: usize = 1;
-    while (po_i < popup_count) : (po_i += 1) {
-        const key = popup_order[po_i];
-        const key_z = mux.popup_mgr.popups.items[key].z_index;
-        var j = po_i;
-        while (j > 0 and mux.popup_mgr.popups.items[popup_order[j - 1]].z_index > key_z) : (j -= 1) {
-            popup_order[j] = popup_order[j - 1];
-        }
-        popup_order[j] = key;
-    }
-
+    // Render popups on top of base windows
     for (popup_order[0..popup_count]) |popup_idx| {
         const p = mux.popup_mgr.popups.items[popup_idx];
         const window_id = p.window_id orelse continue;
@@ -2175,19 +2190,9 @@ fn renderRuntimeFrame(
             drawText(canvas, total_cols, content_rows, controls_x, p.rect.y, controls, controls_w);
             markTextLayer(chrome_layer, chrome_panel_id, total_cols, content_rows, controls_x, p.rect.y, controls, controls_w, if (panel_active) chrome_layer_active_buttons else chrome_layer_inactive_buttons, p.id);
         }
-        markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
-        markRectOverlay(popup_cover, total_cols, content_rows, p.rect);
-        if (!p.transparent_background) {
-            markRectOverlay(popup_opaque_cover, total_cols, content_rows, p.rect);
-        }
         // Popup interiors are opaque: suppress any precomputed base-pane border
         // connectors under the popup content area so they never bleed through.
         clearBorderConnInsideRect(border_conn, total_cols, content_rows, p.rect);
-        // Clear underlying chrome layer markings in the popup interior to prevent
-        // background color leaks from underlying panel chrome styles.
-        if (!p.transparent_background) {
-            clearChromeLayerInsideRect(chrome_layer, chrome_panel_id, total_cols, content_rows, p.rect);
-        }
 
         const output = mux.windowOutput(window_id) catch "";
         const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
@@ -2700,6 +2705,7 @@ fn markBorderLayerOwned(
     role: u8,
     owner_idx: usize,
     top_window_owner: []const i32,
+    popup_opaque_cover: []const bool,
 ) void {
     const x0: usize = r.x;
     const y0: usize = r.y;
@@ -2712,6 +2718,7 @@ fn markBorderLayerOwned(
         var x = x0;
         while (x <= x1) : (x += 1) {
             const idx = y0 * cols + x;
+            if (popup_opaque_cover[idx]) continue;
             if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x, y0, role, 0);
         }
     }
@@ -2719,6 +2726,7 @@ fn markBorderLayerOwned(
         var x = x0;
         while (x <= x1) : (x += 1) {
             const idx = y1 * cols + x;
+            if (popup_opaque_cover[idx]) continue;
             if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x, y1, role, 0);
         }
     }
@@ -2726,6 +2734,7 @@ fn markBorderLayerOwned(
         var y = y0;
         while (y <= y1) : (y += 1) {
             const idx = y * cols + x0;
+            if (popup_opaque_cover[idx]) continue;
             if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x0, y, role, 0);
         }
     }
@@ -2733,6 +2742,7 @@ fn markBorderLayerOwned(
         var y = y0;
         while (y <= y1) : (y += 1) {
             const idx = y * cols + x1;
+            if (popup_opaque_cover[idx]) continue;
             if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x1, y, role, 0);
         }
     }
@@ -3054,31 +3064,6 @@ fn clearBorderConnInsideRect(
         var x = x0;
         while (x < x1) : (x += 1) {
             conn[y * cols + x] = 0;
-        }
-    }
-}
-
-fn clearChromeLayerInsideRect(
-    layer: []u8,
-    panel_ids: []u32,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-) void {
-    if (r.width < 3 or r.height < 3) return;
-    const x0: usize = r.x + 1;
-    const y0: usize = r.y + 1;
-    const x1: usize = r.x + r.width - 1;
-    const y1: usize = r.y + r.height - 1;
-    if (x0 >= cols or y0 >= rows) return;
-    if (x1 > cols or y1 > rows) return;
-
-    var y = y0;
-    while (y < y1) : (y += 1) {
-        var x = x0;
-        while (x < x1) : (x += 1) {
-            layer[y * cols + x] = 0;
-            panel_ids[y * cols + x] = 0;
         }
     }
 }
