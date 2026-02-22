@@ -1987,6 +1987,7 @@ pub const Multiplexer = struct {
             if (hit.on_border) return true;
             const tab = try self.workspace_mgr.activeTab();
             const target_id = tab.windows.items[hit.idx].id;
+            const target_tracking = self.windowHasMouseTracking(target_id);
             const current_focus = tab.focused_index orelse 0;
             if (hit.idx != current_focus) {
                 try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
@@ -1996,7 +1997,11 @@ pub const Multiplexer = struct {
                 self.hybrid_forward_click_active = false;
                 return true;
             }
-            // Forward wheel / non-left button to focused pane body.
+            // Forward wheel/non-left only when target app explicitly enabled mouse tracking.
+            if (!target_tracking) {
+                self.hybrid_forward_click_active = false;
+                return true;
+            }
             self.hybrid_forward_click_active = true;
             return false;
         }
@@ -2014,6 +2019,7 @@ pub const Multiplexer = struct {
             const tab = try self.workspace_mgr.activeTab();
             const current_focus = tab.focused_index orelse 0;
             const target_id = tab.windows.items[hit.idx].id;
+            const target_tracking = self.windowHasMouseTracking(target_id);
             try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
             try self.markWindowDirty(target_id);
             self.requestRedraw();
@@ -2026,7 +2032,11 @@ pub const Multiplexer = struct {
                 self.hybrid_forward_click_active = false;
                 return true;
             }
-            // Content click on already-focused pane is forwarded.
+            // Content click on focused pane is forwarded only for mouse-tracking apps.
+            if (!target_tracking) {
+                self.hybrid_forward_click_active = false;
+                return true;
+            }
             self.hybrid_forward_click_active = true;
             return false;
         }

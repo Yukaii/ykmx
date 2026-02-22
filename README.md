@@ -2,6 +2,8 @@
 
 Experimental terminal multiplexer in Zig, designed for modern terminal workflows (Ghostty + `zmx`) with tiling layouts, tabs, popups, mouse interactions, and plugin-extensible behavior.
 
+[![asciicast](https://asciinema.org/a/792060.svg)](https://asciinema.org/a/792060)
+
 ## Current Status
 
 - Active prototype (`0.1.0-dev`)
