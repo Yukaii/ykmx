@@ -2135,10 +2135,10 @@ fn markPopupMasks(
 ) void {
     for (popup_order) |popup_idx| {
         const p = mux.popup_mgr.popups.items[popup_idx];
-        markPopupOverlay(popup_overlay, cols, rows, p.rect);
-        markRectOverlay(popup_cover, cols, rows, p.rect);
+        render_compositor.markPopupOverlay(popup_overlay, cols, rows, p.rect);
+        render_compositor.markRectOverlay(popup_cover, cols, rows, p.rect);
         if (!p.transparent_background) {
-            markRectOverlay(popup_opaque_cover, cols, rows, p.rect);
+            render_compositor.markRectOverlay(popup_opaque_cover, cols, rows, p.rect);
         }
     }
 }
@@ -2281,7 +2281,7 @@ fn composePopups(
         const inner_y = p.rect.y + 1;
         const inner_w = p.rect.width - 2;
         if (inner_w == 0 or inner_h == 0) continue;
-        clearBorderConnInsideRect(border_conn, total_cols, content_rows, p.rect);
+        render_compositor.clearBorderConnInsideRect(border_conn, total_cols, content_rows, p.rect);
 
         const output = mux.windowOutput(window_id) catch "";
         const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
@@ -2420,9 +2420,9 @@ fn renderPopupChrome(
     clear_rect: bool,
 ) u16 {
     if (clear_rect) {
-        clearCanvasRect(canvas, total_cols, content_rows, p.rect);
-        clearBorderConnRect(border_conn, total_cols, content_rows, p.rect);
-        clearChromeLayerRect(chrome_layer, chrome_panel_id, total_cols, content_rows, p.rect);
+        render_compositor.clearCanvasRect(canvas, total_cols, content_rows, p.rect);
+        render_compositor.clearBorderConnRect(border_conn, total_cols, content_rows, p.rect);
+        render_compositor.clearChromeLayerRect(chrome_layer, chrome_panel_id, total_cols, content_rows, p.rect);
     }
 
     const panel_active = mux.popup_mgr.focused_popup_id == p.id;
@@ -2934,146 +2934,6 @@ fn drawPopupBorderDirect(
 
     if (focus_marker) |m| {
         if (x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, m);
-    }
-}
-
-fn markPopupOverlay(
-    overlay: []bool,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-) void {
-    if (r.width < 2 or r.height < 2) return;
-    const x0: usize = r.x;
-    const y0: usize = r.y;
-    const x1: usize = x0 + r.width - 1;
-    const y1: usize = y0 + r.height - 1;
-    if (x0 >= cols or y0 >= rows) return;
-    if (x1 >= cols or y1 >= rows) return;
-
-    var x = x0;
-    while (x <= x1) : (x += 1) {
-        overlay[y0 * cols + x] = true;
-        overlay[y1 * cols + x] = true;
-    }
-    var y = y0;
-    while (y <= y1) : (y += 1) {
-        overlay[y * cols + x0] = true;
-        overlay[y * cols + x1] = true;
-    }
-}
-
-fn markRectOverlay(
-    overlay: []bool,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-) void {
-    if (r.width == 0 or r.height == 0) return;
-    const x0: usize = r.x;
-    const y0: usize = r.y;
-    const x1: usize = @min(@as(usize, r.x + r.width), cols);
-    const y1: usize = @min(@as(usize, r.y + r.height), rows);
-    if (x0 >= x1 or y0 >= y1) return;
-
-    var y = y0;
-    while (y < y1) : (y += 1) {
-        var x = x0;
-        while (x < x1) : (x += 1) {
-            overlay[y * cols + x] = true;
-        }
-    }
-}
-
-fn clearBorderConnInsideRect(
-    conn: []u8,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-) void {
-    if (r.width < 3 or r.height < 3) return;
-    const x0: usize = r.x + 1;
-    const y0: usize = r.y + 1;
-    const x1: usize = r.x + r.width - 1;
-    const y1: usize = r.y + r.height - 1;
-    if (x0 >= cols or y0 >= rows) return;
-    if (x1 > cols or y1 > rows) return;
-
-    var y = y0;
-    while (y < y1) : (y += 1) {
-        var x = x0;
-        while (x < x1) : (x += 1) {
-            conn[y * cols + x] = 0;
-        }
-    }
-}
-
-fn clearCanvasRect(
-    canvas: []u21,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-) void {
-    if (r.width == 0 or r.height == 0) return;
-    const x0: usize = r.x;
-    const y0: usize = r.y;
-    const x1: usize = @min(@as(usize, r.x + r.width), cols);
-    const y1: usize = @min(@as(usize, r.y + r.height), rows);
-    if (x0 >= x1 or y0 >= y1) return;
-
-    var y = y0;
-    while (y < y1) : (y += 1) {
-        var x = x0;
-        while (x < x1) : (x += 1) {
-            canvas[y * cols + x] = ' ';
-        }
-    }
-}
-
-fn clearBorderConnRect(
-    conn: []u8,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-) void {
-    if (r.width == 0 or r.height == 0) return;
-    const x0: usize = r.x;
-    const y0: usize = r.y;
-    const x1: usize = @min(@as(usize, r.x + r.width), cols);
-    const y1: usize = @min(@as(usize, r.y + r.height), rows);
-    if (x0 >= x1 or y0 >= y1) return;
-
-    var y = y0;
-    while (y < y1) : (y += 1) {
-        var x = x0;
-        while (x < x1) : (x += 1) {
-            conn[y * cols + x] = 0;
-        }
-    }
-}
-
-fn clearChromeLayerRect(
-    layer: []u8,
-    panel_ids: []u32,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-) void {
-    if (r.width == 0 or r.height == 0) return;
-    const x0: usize = r.x;
-    const y0: usize = r.y;
-    const x1: usize = @min(@as(usize, r.x + r.width), cols);
-    const y1: usize = @min(@as(usize, r.y + r.height), rows);
-    if (x0 >= x1 or y0 >= y1) return;
-
-    var y = y0;
-    while (y < y1) : (y += 1) {
-        var x = x0;
-        while (x < x1) : (x += 1) {
-            const idx = y * cols + x;
-            layer[idx] = chrome_layer_none;
-            panel_ids[idx] = 0;
-        }
     }
 }
 
@@ -3642,7 +3502,7 @@ test "composition helpers mark and clear panel coverage correctly" {
     @memset(overlay, false);
 
     const r: layout.Rect = .{ .x = 2, .y = 1, .width = 4, .height = 3 };
-    markRectOverlay(overlay, cols, rows, r);
+    render_compositor.markRectOverlay(overlay, cols, rows, r);
     try testing.expect(overlay[1 * cols + 2]);
     try testing.expect(overlay[3 * cols + 5]);
     try testing.expect(!overlay[0]);
@@ -3650,7 +3510,7 @@ test "composition helpers mark and clear panel coverage correctly" {
     const conn = try testing.allocator.alloc(u8, len);
     defer testing.allocator.free(conn);
     @memset(conn, 0x0f);
-    clearBorderConnRect(conn, cols, rows, r);
+    render_compositor.clearBorderConnRect(conn, cols, rows, r);
     try testing.expectEqual(@as(u8, 0), conn[1 * cols + 2]);
     try testing.expectEqual(@as(u8, 0), conn[3 * cols + 5]);
     try testing.expectEqual(@as(u8, 0x0f), conn[0]);
