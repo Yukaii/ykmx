@@ -14,6 +14,12 @@ pub const MouseMode = enum {
 };
 
 pub const Config = struct {
+    pub const PluginSetting = struct {
+        plugin_name: []u8,
+        key: []u8,
+        value: []u8,
+    };
+
     source_path: ?[]u8 = null,
     layout_backend: LayoutBackend = .native,
     default_layout: layout.LayoutType = .vertical_stack,
@@ -27,6 +33,7 @@ pub const Config = struct {
     plugin_dir: ?[]u8 = null,
     plugins_dir: ?[]u8 = null,
     plugins_dirs: std.ArrayListUnmanaged([]u8) = .{},
+    plugin_settings: std.ArrayListUnmanaged(PluginSetting) = .{},
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         if (self.source_path) |p| allocator.free(p);
@@ -34,6 +41,12 @@ pub const Config = struct {
         if (self.plugins_dir) |p| allocator.free(p);
         for (self.plugins_dirs.items) |p| allocator.free(p);
         self.plugins_dirs.deinit(allocator);
+        for (self.plugin_settings.items) |s| {
+            allocator.free(s.plugin_name);
+            allocator.free(s.key);
+            allocator.free(s.value);
+        }
+        self.plugin_settings.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -91,9 +104,13 @@ fn discoverDefaultConfigPath(allocator: std.mem.Allocator) !?[]u8 {
 
 pub fn parseContents(allocator: std.mem.Allocator, cfg: *Config, contents: []const u8) !void {
     var pending_key: ?[]u8 = null;
+    var pending_section: ?[]u8 = null;
     var pending_value = std.ArrayListUnmanaged(u8){};
+    var section_plugin: ?[]u8 = null;
     defer {
         if (pending_key) |k| allocator.free(k);
+        if (pending_section) |s| allocator.free(s);
+        if (section_plugin) |s| allocator.free(s);
         pending_value.deinit(allocator);
     }
 
@@ -107,11 +124,32 @@ pub fn parseContents(allocator: std.mem.Allocator, cfg: *Config, contents: []con
             try pending_value.appendSlice(allocator, line);
             if (line[line.len - 1] == ']') {
                 const key = pending_key.?;
+                const section = pending_section;
                 pending_key = null;
+                pending_section = null;
                 defer allocator.free(key);
+                defer if (section) |s| allocator.free(s);
                 const value = trimQuotes(std.mem.trim(u8, pending_value.items, " \t"));
-                try applyKeyValue(allocator, cfg, key, value);
+                if (section) |plugin_name| {
+                    try setPluginSetting(allocator, cfg, plugin_name, key, value);
+                } else {
+                    try applyKeyValue(allocator, cfg, key, value);
+                }
                 pending_value.clearRetainingCapacity();
+            }
+            continue;
+        }
+
+        if (line[0] == '[' and line[line.len - 1] == ']') {
+            if (section_plugin) |old| allocator.free(old);
+            section_plugin = null;
+
+            const name = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+            if (std.mem.startsWith(u8, name, "plugin.")) {
+                const plugin_name = std.mem.trim(u8, name["plugin.".len..], " \t");
+                if (plugin_name.len > 0) {
+                    section_plugin = try allocator.dupe(u8, plugin_name);
+                }
             }
             continue;
         }
@@ -121,14 +159,40 @@ pub fn parseContents(allocator: std.mem.Allocator, cfg: *Config, contents: []con
         const raw_value = std.mem.trim(u8, line[eq_idx + 1 ..], " \t");
         if (raw_value.len > 0 and raw_value[0] == '[' and raw_value[raw_value.len - 1] != ']') {
             pending_key = try allocator.dupe(u8, key);
+            pending_section = if (section_plugin) |s| try allocator.dupe(u8, s) else null;
             try pending_value.appendSlice(allocator, raw_value);
             continue;
         }
         const value = trimQuotes(raw_value);
-        try applyKeyValue(allocator, cfg, key, value);
+        if (section_plugin) |plugin_name| {
+            try setPluginSetting(allocator, cfg, plugin_name, key, value);
+        } else {
+            try applyKeyValue(allocator, cfg, key, value);
+        }
     }
 
     if (pending_key != null) return error.InvalidConfigLine;
+}
+
+fn setPluginSetting(
+    allocator: std.mem.Allocator,
+    cfg: *Config,
+    plugin_name: []const u8,
+    key: []const u8,
+    value: []const u8,
+) !void {
+    for (cfg.plugin_settings.items) |*s| {
+        if (!std.mem.eql(u8, s.plugin_name, plugin_name)) continue;
+        if (!std.mem.eql(u8, s.key, key)) continue;
+        allocator.free(s.value);
+        s.value = try allocator.dupe(u8, value);
+        return;
+    }
+    try cfg.plugin_settings.append(allocator, .{
+        .plugin_name = try allocator.dupe(u8, plugin_name),
+        .key = try allocator.dupe(u8, key),
+        .value = try allocator.dupe(u8, value),
+    });
 }
 
 fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, value: []const u8) !void {
@@ -263,6 +327,7 @@ fn trimQuotes(value: []const u8) []const u8 {
 test "config parser applies known keys" {
     const testing = std.testing;
     var cfg = Config{};
+    defer cfg.deinit(testing.allocator);
 
     try parseContents(testing.allocator, &cfg,
         \\layout_backend=opentui
@@ -298,6 +363,7 @@ test "config parser applies known keys" {
 test "config parser accepts plugins_dirs csv" {
     const testing = std.testing;
     var cfg = Config{};
+    defer cfg.deinit(testing.allocator);
 
     try parseContents(testing.allocator, &cfg, "plugins_dirs=/a,/b,/c\n");
     try testing.expectEqual(@as(usize, 3), cfg.plugins_dirs.items.len);
@@ -309,6 +375,7 @@ test "config parser accepts plugins_dirs csv" {
 test "config parser accepts multiline plugins_dirs array" {
     const testing = std.testing;
     var cfg = Config{};
+    defer cfg.deinit(testing.allocator);
 
     try parseContents(testing.allocator, &cfg,
         \\plugins_dirs=[
@@ -321,9 +388,37 @@ test "config parser accepts multiline plugins_dirs array" {
     try testing.expectEqualStrings("/x/b", cfg.plugins_dirs.items[1]);
 }
 
+test "config parser supports per-plugin section settings" {
+    const testing = std.testing;
+    var cfg = Config{};
+    defer cfg.deinit(testing.allocator);
+
+    try parseContents(testing.allocator, &cfg,
+        \\[plugin.sidebar-panel]
+        \\side=right
+        \\width=40
+        \\[plugin.bottom-panel]
+        \\height=12
+    );
+    try testing.expectEqual(@as(usize, 3), cfg.plugin_settings.items.len);
+
+    var found_side = false;
+    var found_width = false;
+    var found_height = false;
+    for (cfg.plugin_settings.items) |s| {
+        if (std.mem.eql(u8, s.plugin_name, "sidebar-panel") and std.mem.eql(u8, s.key, "side") and std.mem.eql(u8, s.value, "right")) found_side = true;
+        if (std.mem.eql(u8, s.plugin_name, "sidebar-panel") and std.mem.eql(u8, s.key, "width") and std.mem.eql(u8, s.value, "40")) found_width = true;
+        if (std.mem.eql(u8, s.plugin_name, "bottom-panel") and std.mem.eql(u8, s.key, "height") and std.mem.eql(u8, s.value, "12")) found_height = true;
+    }
+    try testing.expect(found_side);
+    try testing.expect(found_width);
+    try testing.expect(found_height);
+}
+
 test "config parser accepts paperwm layout type" {
     const testing = std.testing;
     var cfg = Config{};
+    defer cfg.deinit(testing.allocator);
 
     try parseContents(testing.allocator, &cfg, "default_layout=paperwm\n");
     try testing.expectEqual(layout.LayoutType.paperwm, cfg.default_layout);
@@ -332,6 +427,7 @@ test "config parser accepts paperwm layout type" {
 test "config parser accepts plugin layout backend" {
     const testing = std.testing;
     var cfg = Config{};
+    defer cfg.deinit(testing.allocator);
 
     try parseContents(testing.allocator, &cfg, "layout_backend=plugin\n");
     try testing.expectEqual(LayoutBackend.plugin, cfg.layout_backend);

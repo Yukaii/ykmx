@@ -4,6 +4,10 @@ const input_mod = @import("input.zig");
 const posix = std.posix;
 
 pub const PluginHost = struct {
+    pub const PluginConfigItem = struct {
+        key: []u8,
+        value: []u8,
+    };
     pub const UiBarsView = struct {
         toolbar_line: []const u8,
         tab_line: []const u8,
@@ -115,6 +119,7 @@ pub const PluginHost = struct {
     next_request_id: u64 = 1,
     read_buf: std.ArrayListUnmanaged(u8) = .{},
     pending_actions: std.ArrayListUnmanaged(Action) = .{},
+    config_items: std.ArrayListUnmanaged(PluginConfigItem) = .{},
     ui_bars: ?UiBars = null,
     ui_dirty: bool = false,
 
@@ -161,7 +166,7 @@ pub const PluginHost = struct {
         status_line: []u8,
     };
 
-    pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8) !PluginHost {
+    pub fn start(allocator: std.mem.Allocator, plugin_dir: []const u8, config_items: []const PluginConfigItem) !PluginHost {
         const entry = try std.fs.path.join(allocator, &.{ plugin_dir, "index.ts" });
         defer allocator.free(entry);
         std.fs.cwd().access(entry, .{}) catch return error.PluginEntryNotFound;
@@ -178,15 +183,29 @@ pub const PluginHost = struct {
             try setNonBlocking(stdout_file.handle);
         }
 
-        return .{
+        var host = PluginHost{
             .allocator = allocator,
             .child = child,
         };
+        errdefer host.deinit();
+
+        for (config_items) |item| {
+            try host.config_items.append(allocator, .{
+                .key = try allocator.dupe(u8, item.key),
+                .value = try allocator.dupe(u8, item.value),
+            });
+        }
+        return host;
     }
 
     pub fn deinit(self: *PluginHost) void {
         self.read_buf.deinit(self.allocator);
         self.pending_actions.deinit(self.allocator);
+        for (self.config_items.items) |item| {
+            self.allocator.free(item.key);
+            self.allocator.free(item.value);
+        }
+        self.config_items.deinit(self.allocator);
         self.clearUiBars();
         if (self.alive) {
             _ = self.child.kill() catch {};
@@ -203,6 +222,19 @@ pub const PluginHost = struct {
             &buf,
             "{{\"v\":1,\"event\":\"on_start\",\"layout\":\"{s}\"}}\n",
             .{@tagName(layout_type)},
+        );
+        try self.emitLine(line);
+        for (self.config_items.items) |item| {
+            try self.emitPluginConfig(item.key, item.value);
+        }
+    }
+
+    fn emitPluginConfig(self: *PluginHost, key: []const u8, value: []const u8) !void {
+        var buf: [320]u8 = undefined;
+        const line = try std.fmt.bufPrint(
+            &buf,
+            "{{\"v\":1,\"event\":\"on_plugin_config\",\"key\":\"{s}\",\"value\":\"{s}\"}}\n",
+            .{ key, value },
         );
         try self.emitLine(line);
     }

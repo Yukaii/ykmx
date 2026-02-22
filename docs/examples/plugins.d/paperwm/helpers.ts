@@ -2,6 +2,7 @@ import type {
   ActionMessage,
   LayoutResponseMessage,
   OnComputeLayoutEvent,
+  OnPluginConfigEvent,
   OnStateChangedEvent,
   OnPointerEvent,
   OnCommandEvent,
@@ -19,6 +20,10 @@ export function isComputeLayoutEvent(ev: PluginEvent): ev is OnComputeLayoutEven
 
 export function isStateChangedEvent(ev: PluginEvent): ev is OnStateChangedEvent {
   return ev.event === "on_state_changed";
+}
+
+export function isPluginConfigEvent(ev: PluginEvent): ev is OnPluginConfigEvent {
+  return ev.event === "on_plugin_config";
 }
 
 export function isTickEvent(ev: PluginEvent): ev is OnTickEvent {

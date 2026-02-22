@@ -65,6 +65,7 @@ export type TickStats = {
 
 export type OnStartEvent = { v: 1; event: "on_start"; layout: LayoutType };
 export type OnLayoutChangedEvent = { v: 1; event: "on_layout_changed"; layout: LayoutType };
+export type OnPluginConfigEvent = { v: 1; event: "on_plugin_config"; key: string; value: string };
 export type OnShutdownEvent = { v: 1; event: "on_shutdown" };
 
 export type OnStateChangedEvent = {
@@ -123,6 +124,7 @@ export type OnCommandEvent = { v: 1; event: "on_command"; command: CommandName }
 export type PluginEvent =
   | OnStartEvent
   | OnLayoutChangedEvent
+  | OnPluginConfigEvent
   | OnShutdownEvent
   | OnStateChangedEvent
   | OnTickEvent

@@ -15,7 +15,7 @@ pub const PluginLayoutEngine = struct {
         const ctx = try allocator.create(Context);
         errdefer allocator.destroy(ctx);
         ctx.* = .{
-            .host = try plugin_host.PluginHost.start(allocator, plugin_dir),
+            .host = try plugin_host.PluginHost.start(allocator, plugin_dir, &.{}),
             .fallback = layout_native.NativeLayoutEngine.init(),
         };
 

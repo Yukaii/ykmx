@@ -138,8 +138,20 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 - Enable with `plugins_enabled=true` and `plugin_dir=/abs/path/to/plugins`.
 - For multiple plugins, set `plugins_dir=/abs/path/to/plugins.d` and place each plugin at:
   - `<plugins_dir>/<plugin-name>/index.ts`
+  - optional `<plugins_dir>/<plugin-name>/plugin.toml` with:
+    - `enabled=true|false` (default `true`)
+    - `order=<int>` (default `0`, lower loads first)
 - To search multiple plugin collections without editing paths, use:
   - `plugins_dirs=["/abs/path/plugins.d","/another/plugins.d"]`
+- Per-plugin config sections are supported:
+  - `[plugin.<plugin-name>]`
+  - keys are delivered to that plugin as `on_plugin_config` events
+  - example:
+    - `[plugin.sidebar-panel]`
+    - `side=right`
+    - `width=42`
+    - `[plugin.bottom-panel]`
+    - `height=8`
 - Each `plugins_dirs` entry can be either:
   - a plugin root directory containing subfolders (`<dir>/<plugin-name>/index.ts`)
   - or a direct plugin directory containing `index.ts`
@@ -150,6 +162,10 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `docs/examples/plugins.d/desktop-wm/index.ts`
 - Standalone popup keybinding/plugin-control example lives at:
   - `docs/examples/plugins.d/popup-controls/index.ts`
+- Sidebar panel example lives at:
+  - `docs/examples/plugins.d/sidebar-panel/index.ts`
+- Bottom panel example lives at:
+  - `docs/examples/plugins.d/bottom-panel/index.ts`
 - Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
 - For interactive layout plugins (drag/resize/floating state), also set `plugins_enabled=true` so the same plugin host handles both layout compute and pointer/actions.
@@ -158,6 +174,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 - Current stdin hook protocol is NDJSON events:
   - `{"v":1,"event":"on_start","layout":"..."}`
   - `{"v":1,"event":"on_layout_changed","layout":"..."}`
+  - `{"v":1,"event":"on_plugin_config","key":"...","value":"..."}`
   - `{"v":1,"event":"on_state_changed","reason":"...","state":{...}}`
   - `{"v":1,"event":"on_tick","stats":{...},"state":{...}}`
   - `{"v":1,"event":"on_pointer","pointer":{...},"hit":{...}}`

@@ -734,30 +734,32 @@ Initial focus is core stability (PTY, layout, rendering, tabs, zmx integration).
 
 #### Phase P1: Typed Developer Experience (next immediate)
 
-- [ ] Publish `@ykmx/plugin-sdk` package (or in-repo module export) from `docs/examples/plugin/types.ts`.
-- [ ] Add event/action type guards and helpers:
+- [ ] Publish `@ykmx/plugin-sdk` package (or in-repo module export) from `docs/examples/plugins.d/*/types.ts`.
+- [x] Add event/action type guards and helpers:
   - `isComputeLayoutEvent`
   - `isStateChangedEvent`
   - `isTickEvent`
   - `writeAction`
   - `writeLayoutResponse`
-- [ ] Add protocol version constant and compatibility helpers (`v1` validation).
+- [x] Add pointer and command event helpers (`isPointerEvent`, `isCommandEvent`) for interactive plugins.
+- [ ] Add protocol version constant and compatibility helpers (`v1` validation + schema guard helpers).
 - [ ] Add example plugin test harness that replays recorded NDJSON events.
 
 #### Phase P2: Multi-Plugin Runtime
 
-- [ ] Add `plugins_dir` config for loading multiple plugins.
-- [ ] Add per-plugin directory convention:
+- [x] Add `plugins_dir` config for loading multiple plugins.
+- [x] Add `plugins_dirs` config (multiple roots, array/csv, multiline arrays supported).
+- [x] Add per-plugin directory convention:
   - `<plugins_dir>/<plugin-name>/index.ts`
-  - `<plugins_dir>/<plugin-name>/plugin.toml`
+  - `<plugins_dir>/<plugin-name>/plugin.toml` (optional)
 - [ ] Add plugin manifest fields:
   - `name`
   - `version`
-  - `enabled`
-  - `order`
+  - `enabled` (implemented)
+  - `order` (implemented)
   - `capabilities`
-- [ ] Implement deterministic load order and fan-out dispatch.
-- [ ] Define action conflict policy (first-wins / last-wins / priority-based).
+- [x] Implement deterministic load order and fan-out dispatch.
+- [ ] Define and enforce explicit action conflict policy (currently effective behavior is load-order sequential application / last-applied wins for mutating conflicts).
 
 #### Phase P3: Capability and Isolation Hardening
 
@@ -777,6 +779,23 @@ Initial focus is core stability (PTY, layout, rendering, tabs, zmx integration).
   - multi-plugin startup
   - mixed layout/action plugin interactions
   - fallback correctness under plugin crash/timeout
+
+### Plugin Runtime (current state snapshot)
+
+- [x] Out-of-process Bun plugin host (`bun run <plugin>/index.ts`) with crash isolation.
+- [x] Multi-plugin startup from `plugin_dir`, `plugins_dir`, and `plugins_dirs`.
+- [x] Plugin command registration and dispatch (`register_command`, `on_command`).
+- [x] Panel primitives exposed to plugins (open/focus/move/resize/style/close).
+- [x] Pointer hit payload includes panel chrome/resize/body hit regions.
+- [x] Example plugins in-repo:
+  - `paperwm` (layout)
+  - `desktop-wm` (floating desktop windowing)
+  - `popup-controls` (standalone panel command policy)
+- [ ] Remaining high-value gaps:
+  - plugin manifest support (`plugin.toml`)
+  - capability enforcement
+  - timeout budget + circuit breaker
+  - integration test harness for plugin protocol and multi-plugin conflict scenarios
 
 ## Technical Decisions
 

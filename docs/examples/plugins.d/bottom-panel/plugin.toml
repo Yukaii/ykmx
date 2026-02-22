@@ -1,0 +1,4 @@
+name = "bottom-panel"
+version = "0.1.0"
+enabled = true
+order = 20

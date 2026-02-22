@@ -205,7 +205,16 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     var plugins = plugin_manager.PluginManager.init(allocator);
     defer plugins.deinit();
     if (cfg.plugins_enabled) {
-        _ = plugins.startAll(cfg.plugin_dir, cfg.plugins_dir, cfg.plugins_dirs.items) catch 0;
+        var plugin_options = try allocator.alloc(plugin_manager.PluginManager.PluginOption, cfg.plugin_settings.items.len);
+        defer allocator.free(plugin_options);
+        for (cfg.plugin_settings.items, 0..) |s, i| {
+            plugin_options[i] = .{
+                .plugin_name = s.plugin_name,
+                .key = s.key,
+                .value = s.value,
+            };
+        }
+        _ = plugins.startAll(cfg.plugin_dir, cfg.plugins_dir, cfg.plugins_dirs.items, plugin_options) catch 0;
     }
 
     var mux = multiplexer.Multiplexer.init(allocator, try pickLayoutEngineRuntime(allocator, cfg, &plugins));
