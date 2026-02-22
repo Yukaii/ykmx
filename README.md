@@ -88,15 +88,15 @@ Config is loaded from the first existing file:
 Minimal example:
 
 ```toml
-layout_backend=native
-default_layout=vertical_stack
+layout_backend="native"
+default_layout="vertical_stack"
 master_count=1
 master_ratio_permille=600
 gap=1
 
 show_tab_bar=true
 show_status_bar=true
-mouse_mode=hybrid
+mouse_mode="hybrid"
 
 plugins_enabled=false
 plugin_dir="$HOME/.config/ykmx/plugins"
