@@ -2300,6 +2300,17 @@ fn writeFrameToTerminal(
 ) !void {
     if (resized) try writeAllBlocking(out, "\x1b[2J");
 
+    try writeContentDiff(out, frame_cache, curr, resized, total_cols);
+    try paintFooterBars(out, total_cols, content_rows, footer_rows, minimized_line, tab_line, status_line);
+}
+
+fn writeContentDiff(
+    out: *std.Io.Writer,
+    frame_cache: *RuntimeFrameCache,
+    curr: []const RuntimeRenderCell,
+    resized: bool,
+    total_cols: usize,
+) !void {
     var active_style: ?ghostty_vt.Style = null;
     var idx: usize = 0;
     while (idx < curr.len) : (idx += 1) {
@@ -2369,7 +2380,17 @@ fn writeFrameToTerminal(
         idx = run_end - 1;
     }
     if (active_style != null) try writeAllBlocking(out, "\x1b[0m");
+}
 
+fn paintFooterBars(
+    out: *std.Io.Writer,
+    total_cols: usize,
+    content_rows: usize,
+    footer_rows: usize,
+    minimized_line: []const u8,
+    tab_line: []const u8,
+    status_line: []const u8,
+) !void {
     try writeAllBlocking(out, "\x1b[0m");
     if (footer_rows > 0) {
         try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 1});
