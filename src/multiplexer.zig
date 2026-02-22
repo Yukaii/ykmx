@@ -136,6 +136,7 @@ pub const Multiplexer = struct {
     shutdown_requested: bool = false,
     sync_scroll_enabled: bool = false,
     sync_scroll_source_window_id: ?u32 = null,
+    scroll_nav_enabled: bool = false,
     scrollback_query_mode: bool = false,
     scrollback_query_len: u16 = 0,
     scrollback_query_buf: [256]u8 = [_]u8{0} ** 256,
@@ -310,6 +311,20 @@ pub const Multiplexer = struct {
 
     fn popupHasFocusedInputTarget(self: *const Multiplexer) bool {
         return self.popup_mgr.focusedWindowId() != null;
+    }
+
+    fn focusedWindowIdForScroll(self: *Multiplexer) ?u32 {
+        if (self.popup_mgr.focusedWindowId()) |wid| return wid;
+        return self.workspace_mgr.focusedWindowIdActive() catch null;
+    }
+
+    fn isPopupWindowId(self: *const Multiplexer, window_id: u32) bool {
+        for (self.popup_mgr.popups.items) |p| {
+            if (p.window_id) |wid| {
+                if (wid == window_id) return true;
+            }
+        }
+        return false;
     }
 
     fn sendInputToFocusedWithPopupFallback(self: *Multiplexer, bytes: []const u8) !void {
@@ -583,8 +598,10 @@ pub const Multiplexer = struct {
                             self.scrollPageDownFocused(lines);
                         },
                         .toggle_sync_scroll => {
-                            try self.setVisibleScrollOffsetFromSource(screen, 0);
-                            try self.setSyncScrollEnabled(!self.sync_scroll_enabled, screen);
+                            // Sync behavior is disabled; this key toggles local
+                            // scrollback navigation mode instead.
+                            self.scroll_nav_enabled = !self.scroll_nav_enabled;
+                            try self.setSyncScrollEnabled(false, screen);
                             self.requestRedraw();
                         },
                         .toggle_mouse_passthrough => {
@@ -891,7 +908,8 @@ pub const Multiplexer = struct {
     }
 
     pub fn syncScrollEnabled(self: *const Multiplexer) bool {
-        return self.sync_scroll_enabled;
+        _ = self;
+        return false;
     }
 
     pub fn minimizeFocusedWindow(self: *Multiplexer, screen: ?layout.Rect) !bool {
@@ -964,13 +982,13 @@ pub const Multiplexer = struct {
     }
 
     pub fn focusedScrollOffset(self: *Multiplexer) usize {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return 0;
+        const focused_id = self.focusedWindowIdForScroll() orelse return 0;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return 0;
         return sb.scroll_offset;
     }
 
     pub fn scrollPageUpFocused(self: *Multiplexer, lines: usize) void {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scrollPageUp(lines);
         self.sync_scroll_source_window_id = focused_id;
@@ -979,7 +997,7 @@ pub const Multiplexer = struct {
     }
 
     pub fn scrollPageDownFocused(self: *Multiplexer, lines: usize) void {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scrollPageDown(lines);
         self.sync_scroll_source_window_id = focused_id;
@@ -988,7 +1006,7 @@ pub const Multiplexer = struct {
     }
 
     pub fn scrollHalfPageUpFocused(self: *Multiplexer, lines: usize) void {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scrollHalfPageUp(lines);
         self.sync_scroll_source_window_id = focused_id;
@@ -997,7 +1015,7 @@ pub const Multiplexer = struct {
     }
 
     pub fn scrollHalfPageDownFocused(self: *Multiplexer, lines: usize) void {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scrollHalfPageDown(lines);
         self.sync_scroll_source_window_id = focused_id;
@@ -1010,7 +1028,7 @@ pub const Multiplexer = struct {
         query: []const u8,
         direction: scrollback_mod.SearchDirection,
     ) ?scrollback_mod.SearchResult {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return null;
+        const focused_id = self.focusedWindowIdForScroll() orelse return null;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return null;
         const found = sb.search(query, direction) orelse return null;
         sb.jumpToLine(found.line_index);
@@ -1021,30 +1039,20 @@ pub const Multiplexer = struct {
     }
 
     fn setSyncScrollEnabled(self: *Multiplexer, enabled: bool, screen: ?layout.Rect) !void {
-        self.sync_scroll_enabled = enabled;
-        if (enabled) {
-            const focused_id = self.workspace_mgr.focusedWindowIdActive() catch {
-                self.sync_scroll_source_window_id = null;
-                return;
-            };
-            self.sync_scroll_source_window_id = focused_id;
-            try self.propagateSyncScrollFromFocused(screen);
-        } else {
-            self.sync_scroll_source_window_id = null;
-        }
+        _ = enabled;
+        _ = screen;
+        self.sync_scroll_enabled = false;
+        self.sync_scroll_source_window_id = null;
     }
 
     fn isFocusedScrolledBack(self: *Multiplexer) bool {
-        const focused_id = if (self.popupHasFocusedInputTarget())
-            (self.popup_mgr.focusedWindowId() orelse return false)
-        else
-            (self.workspace_mgr.focusedWindowIdActive() catch return false);
+        const focused_id = self.focusedWindowIdForScroll() orelse return false;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return false;
         return sb.scroll_offset > 0;
     }
 
     fn scrollNavArmed(self: *Multiplexer) bool {
-        return self.sync_scroll_enabled or self.isFocusedScrolledBack();
+        return self.scroll_nav_enabled or self.isFocusedScrolledBack();
     }
 
     fn handleScrollbackQueryByte(
@@ -1158,7 +1166,7 @@ pub const Multiplexer = struct {
     }
 
     fn moveSelectionCursorXFocused(self: *Multiplexer, delta: i32) void {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         const cur = self.selection_cursor_x.get(focused_id) orelse 0;
         const next: usize = if (delta < 0)
             (if (cur == 0) 0 else cur - 1)
@@ -1169,14 +1177,14 @@ pub const Multiplexer = struct {
     }
 
     fn setSelectionCursorXFocused(self: *Multiplexer, x: usize) void {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         self.selection_cursor_x.put(self.allocator, focused_id, x) catch return;
         self.requestRedraw();
     }
 
     fn moveSelectionCursorYFocused(self: *Multiplexer, delta: i32, view_rows: usize) void {
         if (view_rows == 0) return;
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         const cur = self.selectionCursorY(focused_id, view_rows);
         var next = cur;
         if (delta < 0) {
@@ -1199,7 +1207,7 @@ pub const Multiplexer = struct {
     }
 
     fn setSelectionCursorXToLineEndFocused(self: *Multiplexer, view_rows: usize) void {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         if (view_rows == 0 or sb.lines.items.len == 0) {
             self.setSelectionCursorXFocused(0);
@@ -1237,7 +1245,7 @@ pub const Multiplexer = struct {
     }
 
     fn scrollToTopFocused(self: *Multiplexer, screen: ?layout.Rect) void {
-        const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const focused_id = self.focusedWindowIdForScroll() orelse return;
         const sb = self.scrollbacks.getPtr(focused_id) orelse return;
         sb.scroll_offset = sb.lines.items.len;
         self.sync_scroll_source_window_id = focused_id;
@@ -1249,11 +1257,12 @@ pub const Multiplexer = struct {
         if (self.sync_scroll_enabled) {
             self.setVisibleScrollOffsetFromSource(screen, 0) catch {};
         } else {
-            const focused_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+            const focused_id = self.focusedWindowIdForScroll() orelse return;
             const sb = self.scrollbacks.getPtr(focused_id) orelse return;
             sb.scroll_offset = 0;
             self.selection_cursor_y.put(self.allocator, focused_id, 0) catch {};
         }
+        self.scroll_nav_enabled = false;
         self.scrollback_query_mode = false;
         self.scrollback_query_len = 0;
         self.requestRedraw();
@@ -1261,13 +1270,23 @@ pub const Multiplexer = struct {
 
     fn propagateSyncScrollFromFocused(self: *Multiplexer, screen: ?layout.Rect) !void {
         if (!self.sync_scroll_enabled) return;
-        const source_id = self.workspace_mgr.focusedWindowIdActive() catch return;
+        const source_id = self.focusedWindowIdForScroll() orelse return;
+        // Popup scrollback should stay local to the focused popup panel.
+        // Do not fan out to other panes/panels even when sync mode is enabled.
+        if (self.isPopupWindowId(source_id)) return;
         const source_sb = self.scrollbacks.getPtr(source_id) orelse return;
         try self.setVisibleScrollOffsetFromSource(screen, source_sb.scroll_offset);
         self.sync_scroll_source_window_id = source_id;
     }
 
     fn setVisibleScrollOffsetFromSource(self: *Multiplexer, screen: ?layout.Rect, offset: usize) !void {
+        if (self.popup_mgr.focusedWindowId()) |popup_wid| {
+            if (self.scrollbacks.getPtr(popup_wid)) |sb| {
+                sb.scroll_offset = @min(offset, sb.lines.items.len);
+            }
+            return;
+        }
+
         const tab = try self.workspace_mgr.activeTab();
 
         if (screen) |s| {
@@ -3944,7 +3963,39 @@ test "multiplexer search jumps scroll offset to matched line" {
     try testing.expect(mux.focusedScrollOffset() > 0);
 }
 
-test "multiplexer sync-scroll toggles and propagates across visible panes" {
+test "multiplexer popup-focused scroll does not move other panels" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("base", &.{ "/bin/sh", "-c", "printf 'base\n'" });
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 100, .height = 30 };
+    _ = try mux.resizeActiveWindowsToLayout(screen);
+
+    const popup_a = try mux.openCommandPopup("A", &.{ "/bin/sh", "-c", "sleep 1" }, screen, false, false);
+    const popup_b = try mux.openCommandPopup("B", &.{ "/bin/sh", "-c", "sleep 1" }, screen, false, false);
+
+    const win_a = (mux.popup_mgr.getById(popup_a) orelse return error.TestUnexpectedResult).window_id orelse return error.TestUnexpectedResult;
+    const win_b = (mux.popup_mgr.getById(popup_b) orelse return error.TestUnexpectedResult).window_id orelse return error.TestUnexpectedResult;
+
+    if (mux.scrollbacks.getPtr(win_a)) |sb| try sb.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    if (mux.scrollbacks.getPtr(win_b)) |sb| try sb.append("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n");
+
+    const focused_popup_wid = mux.popup_mgr.focusedWindowId() orelse return error.TestUnexpectedResult;
+    const other_popup_wid: u32 = if (focused_popup_wid == win_a) win_b else win_a;
+
+    mux.scrollPageUpFocused(5);
+
+    const focused_off = mux.windowScrollOffset(focused_popup_wid) orelse 0;
+    const other_off = mux.windowScrollOffset(other_popup_wid) orelse 0;
+    try testing.expect(focused_off > 0);
+    try testing.expectEqual(@as(usize, 0), other_off);
+}
+
+test "multiplexer sync-scroll toggle is disabled and panes stay independent" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
 
@@ -3962,18 +4013,18 @@ test "multiplexer sync-scroll toggles and propagates across visible panes" {
 
     const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 12 };
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
-    try testing.expect(mux.syncScrollEnabled());
+    try testing.expect(!mux.syncScrollEnabled());
 
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'u' });
 
     const left_off = mux.windowScrollOffset(left_id) orelse return error.TestUnexpectedResult;
     const right_off = mux.windowScrollOffset(right_id) orelse return error.TestUnexpectedResult;
     try testing.expect(left_off > 0);
-    try testing.expectEqual(left_off, right_off);
+    try testing.expectEqual(@as(usize, 0), right_off);
 
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
     try testing.expect(!mux.syncScrollEnabled());
-    try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(left_id).?);
+    try testing.expect(mux.windowScrollOffset(left_id).? > 0);
     try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(right_id).?);
 
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'J' });
@@ -3983,7 +4034,7 @@ test "multiplexer sync-scroll toggles and propagates across visible panes" {
     try testing.expect(left_after != right_after);
 }
 
-test "multiplexer sync-scroll respects tab boundaries" {
+test "multiplexer disabled sync-scroll leaves other tabs untouched" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
 
@@ -4090,7 +4141,7 @@ test "multiplexer scrollback navigation mode supports vim and ctrl paging keys" 
     try testing.expect(std.mem.indexOf(u8, out, "j") == null);
 }
 
-test "multiplexer sync-scroll accepts nav controls immediately at offset zero" {
+test "multiplexer sync toggle key enables local nav mode only" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
 
@@ -4099,25 +4150,23 @@ test "multiplexer sync-scroll accepts nav controls immediately at offset zero" {
 
     _ = try mux.createTab("dev");
     const a = try mux.createCommandWindow("a", &.{"/bin/cat"});
-    const b = try mux.createCommandWindow("b", &.{"/bin/cat"});
+    _ = try mux.createCommandWindow("b", &.{"/bin/cat"});
     try mux.scrollbacks.getPtr(a).?.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
-    try mux.scrollbacks.getPtr(b).?.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
 
     const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 12 };
-    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' }); // enable sync
-    try testing.expect(mux.syncScrollEnabled());
-    try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(a).?);
-    try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(b).?);
+    try testing.expect(!mux.syncScrollEnabled());
+    try testing.expect(!mux.scroll_nav_enabled);
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
+    try testing.expect(!mux.syncScrollEnabled());
+    try testing.expect(mux.scroll_nav_enabled);
 
+    // With nav mode armed at offset zero, vim-style nav should scroll locally.
     try mux.handleInputBytesWithScreen(screen, "k");
     try testing.expect(mux.windowScrollOffset(a).? > 0);
-    try testing.expectEqual(mux.windowScrollOffset(a).?, mux.windowScrollOffset(b).?);
 
-    // In nav mode, non-prefixed input is consumed (not forwarded).
-    try mux.handleInputBytesWithScreen(screen, "xyz");
-    _ = try mux.pollOnce(20);
-    const out_a = try mux.windowOutput(a);
-    try testing.expect(std.mem.indexOf(u8, out_a, "xyz") == null);
+    // Toggle again to disable local nav mode.
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
+    try testing.expect(!mux.scroll_nav_enabled);
 }
 
 test "multiplexer nav mode supports g G slash n N q and Esc" {
