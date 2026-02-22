@@ -4,6 +4,7 @@ import type {
   OnComputeLayoutEvent,
   OnStateChangedEvent,
   OnPointerEvent,
+  OnCommandEvent,
   OnTickEvent,
   PluginEvent,
   PluginOutput,
@@ -26,6 +27,10 @@ export function isTickEvent(ev: PluginEvent): ev is OnTickEvent {
 
 export function isPointerEvent(ev: PluginEvent): ev is OnPointerEvent {
   return ev.event === "on_pointer";
+}
+
+export function isCommandEvent(ev: PluginEvent): ev is OnCommandEvent {
+  return ev.event === "on_command";
 }
 
 export async function writeOutput(msg: PluginOutput): Promise<void> {

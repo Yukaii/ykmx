@@ -85,9 +85,9 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G Space` cycle layout
 - `Ctrl+G H` / `Ctrl+G L` shrink/grow master area ratio
 - `Ctrl+G I` / `Ctrl+G O` increase/decrease master pane count
-- `Ctrl+G p` toggle popup shell (floating terminal window)
-- `Ctrl+G Escape` close focused popup immediately
-- `Ctrl+G Tab` cycle popup focus
+- `Ctrl+G p` toggle popup shell (default core behavior, plugin-overridable)
+- `Ctrl+G Escape` close focused popup immediately (plugin-overridable)
+- `Ctrl+G Tab` cycle popup focus (plugin-overridable)
 - `Ctrl+G u` / `Ctrl+G d` page up/down scrollback
 - `Ctrl+G s` toggle synchronized scroll across visible panes in active tab
 - `Ctrl+G M` cycle mouse mode (`hybrid` -> `passthrough` -> `compositor`)
@@ -131,10 +131,13 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 - Enable with `plugins_enabled=true` and `plugin_dir=/abs/path/to/plugins`.
 - For multiple plugins, set `plugins_dir=/abs/path/to/plugins.d` and place each plugin at:
   - `<plugins_dir>/<plugin-name>/index.ts`
+- Use either `plugin_dir` or `plugins_dir` for a given plugin path; avoid loading the same plugin from both.
 - In this repository, the PaperWM example plugin lives at:
   - `docs/examples/plugins.d/paperwm/index.ts`
 - Desktop floating WM example (overlap + free drag/resize + controls) lives at:
   - `docs/examples/plugins.d/desktop-wm/index.ts`
+- Standalone popup keybinding/plugin-control example lives at:
+  - `docs/examples/plugins.d/popup-controls/index.ts`
 - Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
 - For interactive layout plugins (drag/resize/floating state), also set `plugins_enabled=true` so the same plugin host handles both layout compute and pointer/actions.
@@ -146,6 +149,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"event":"on_state_changed","reason":"...","state":{...}}`
   - `{"v":1,"event":"on_tick","stats":{...},"state":{...}}`
   - `{"v":1,"event":"on_pointer","pointer":{...},"hit":{...}}`
+  - `{"v":1,"event":"on_command","command":"open_popup|..."}`
   - `{"v":1,"event":"on_shutdown"}`
 - `state` currently includes layout, window/focus info, tab info, master settings, mouse mode, sync-scroll flag, and current screen rect.
 - For plugin layout backend, ykwm also sends:
@@ -165,6 +169,11 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"move_window_by_id_to_index","window_id":123,"index":1}`
   - `{"v":1,"action":"close_focused_window"}`
   - `{"v":1,"action":"restore_window_by_id","window_id":123}`
+  - `{"v":1,"action":"register_command","command":"open_popup","enabled":true}`
+  - `{"v":1,"action":"open_shell_popup"}`
+  - `{"v":1,"action":"close_focused_popup"}`
+  - `{"v":1,"action":"cycle_popup_focus"}`
+  - `{"v":1,"action":"toggle_shell_popup"}`
   - `{"v":1,"action":"set_ui_bars","toolbar_line":"...","tab_line":"...","status_line":"..."}`
   - `{"v":1,"action":"clear_ui_bars"}`
 - Plugin errors/crashes are isolated; ykwm continues running.

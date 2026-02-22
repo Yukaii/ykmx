@@ -1,5 +1,6 @@
 const std = @import("std");
 const layout = @import("layout.zig");
+const input_mod = @import("input.zig");
 const plugin_host = @import("plugin_host.zig");
 
 pub const PluginManager = struct {
@@ -67,6 +68,12 @@ pub const PluginManager = struct {
     pub fn emitPointer(self: *PluginManager, pointer: plugin_host.PluginHost.PointerEvent, hit: ?plugin_host.PluginHost.PointerHit) void {
         for (self.hosts.items) |*host| {
             _ = host.emitPointer(pointer, hit) catch {};
+        }
+    }
+
+    pub fn emitCommand(self: *PluginManager, cmd: input_mod.Command) void {
+        for (self.hosts.items) |*host| {
+            _ = host.emitCommand(cmd) catch {};
         }
     }
 

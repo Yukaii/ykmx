@@ -30,6 +30,19 @@ pub const Command = enum {
     detach,
 };
 
+pub fn commandName(cmd: Command) []const u8 {
+    return @tagName(cmd);
+}
+
+pub fn parseCommandName(name: []const u8) ?Command {
+    inline for (std.meta.fields(Command)) |field| {
+        if (std.mem.eql(u8, name, field.name)) {
+            return @field(Command, field.name);
+        }
+    }
+    return null;
+}
+
 pub const Event = union(enum) {
     forward: u8,
     forward_sequence: ForwardSequence,
@@ -214,6 +227,14 @@ test "input router parses prefixed command" {
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .create_window }, r.feedByte('c'));
+}
+
+test "input command name roundtrip" {
+    const testing = std.testing;
+    const cmd: Command = .open_popup;
+    const name = commandName(cmd);
+    try testing.expectEqualStrings("open_popup", name);
+    try testing.expectEqual(cmd, parseCommandName(name) orelse return error.TestUnexpectedResult);
 }
 
 test "input router parses layout cycle command" {

@@ -310,6 +310,9 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                     } else null,
                 );
             }
+            while (mux.consumeOldestPendingPluginCommand()) |cmd| {
+                plugins.emitCommand(cmd);
+            }
         }
         if (plugins.hasAny()) {
             const actions = plugins.drainActions(allocator) catch null;
@@ -488,6 +491,30 @@ fn applyPluginAction(
         },
         .restore_window_by_id => |window_id| {
             return try mux.restoreWindowById(window_id, screen);
+        },
+        .register_command => |payload| {
+            try mux.setPluginCommandOverride(payload.command, payload.enabled);
+            return false;
+        },
+        .open_shell_popup => {
+            _ = try mux.openShellPopup("popup-shell", screen, true);
+            return true;
+        },
+        .close_focused_popup => {
+            try mux.closeFocusedPopup();
+            return true;
+        },
+        .cycle_popup_focus => {
+            mux.popup_mgr.cycleFocus();
+            return true;
+        },
+        .toggle_shell_popup => {
+            if (mux.popup_mgr.count() > 0) {
+                try mux.closeFocusedPopup();
+            } else {
+                _ = try mux.openShellPopup("popup-shell", screen, true);
+            }
+            return true;
         },
     }
 }

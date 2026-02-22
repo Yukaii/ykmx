@@ -1,5 +1,6 @@
 const std = @import("std");
 const layout = @import("layout.zig");
+const input_mod = @import("input.zig");
 const posix = std.posix;
 
 pub const PluginHost = struct {
@@ -49,6 +50,11 @@ pub const PluginHost = struct {
         move_window_by_id_to_index: struct { window_id: u32, index: usize },
         close_focused_window,
         restore_window_by_id: u32,
+        register_command: struct { command: input_mod.Command, enabled: bool },
+        open_shell_popup,
+        close_focused_popup,
+        cycle_popup_focus,
+        toggle_shell_popup,
     };
 
     pub const PointerEvent = struct {
@@ -97,6 +103,8 @@ pub const PluginHost = struct {
         v: ?u8 = null,
         action: ?[]const u8 = null,
         layout: ?[]const u8 = null,
+        command: ?[]const u8 = null,
+        enabled: ?bool = null,
         value: ?u16 = null,
         index: ?usize = null,
         window_id: ?u32 = null,
@@ -256,6 +264,16 @@ pub const PluginHost = struct {
                 "{{\"v\":1,\"event\":\"on_pointer\",\"pointer\":{{\"x\":{},\"y\":{},\"button\":{},\"pressed\":{},\"motion\":{}}}}}\n",
                 .{ pointer.x, pointer.y, pointer.button, pointer.pressed, pointer.motion },
             );
+        try self.emitLine(line);
+    }
+
+    pub fn emitCommand(self: *PluginHost, cmd: input_mod.Command) !void {
+        var buf: [160]u8 = undefined;
+        const line = try std.fmt.bufPrint(
+            &buf,
+            "{{\"v\":1,\"event\":\"on_command\",\"command\":\"{s}\"}}\n",
+            .{input_mod.commandName(cmd)},
+        );
         try self.emitLine(line);
     }
 
@@ -456,6 +474,18 @@ pub const PluginHost = struct {
             const window_id = envelope.window_id orelse return null;
             return .{ .restore_window_by_id = window_id };
         }
+        if (std.mem.eql(u8, action_name, "register_command")) {
+            const command_name = envelope.command orelse return null;
+            const command = input_mod.parseCommandName(command_name) orelse return null;
+            return .{ .register_command = .{
+                .command = command,
+                .enabled = envelope.enabled orelse true,
+            } };
+        }
+        if (std.mem.eql(u8, action_name, "open_shell_popup")) return .open_shell_popup;
+        if (std.mem.eql(u8, action_name, "close_focused_popup")) return .close_focused_popup;
+        if (std.mem.eql(u8, action_name, "cycle_popup_focus")) return .cycle_popup_focus;
+        if (std.mem.eql(u8, action_name, "toggle_shell_popup")) return .toggle_shell_popup;
         if (std.mem.eql(u8, action_name, "set_ui_bars")) {
             const toolbar = envelope.toolbar_line orelse return null;
             const tab = envelope.tab_line orelse return null;

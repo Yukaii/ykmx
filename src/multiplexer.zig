@@ -72,6 +72,8 @@ pub const Multiplexer = struct {
     scrollback_last_query_buf: [256]u8 = [_]u8{0} ** 256,
     scrollback_last_direction: scrollback_mod.SearchDirection = .backward,
     pending_mouse_events: std.ArrayListUnmanaged(input_mod.MouseEvent) = .{},
+    pending_plugin_commands: std.ArrayListUnmanaged(input_mod.Command) = .{},
+    plugin_command_overrides: std.AutoHashMapUnmanaged(input_mod.Command, void) = .{},
     drag_state: DragState = .{},
     hybrid_forward_click_active: bool = false,
     hybrid_chrome_capture_active: bool = false,
@@ -128,6 +130,8 @@ pub const Multiplexer = struct {
         self.da_parse_states.deinit(self.allocator);
         self.mouse_tracking_enabled.deinit(self.allocator);
         self.pending_mouse_events.deinit(self.allocator);
+        self.pending_plugin_commands.deinit(self.allocator);
+        self.plugin_command_overrides.deinit(self.allocator);
 
         self.popup_mgr.deinit();
         self.workspace_mgr.deinit();
@@ -276,204 +280,210 @@ pub const Multiplexer = struct {
                     }
                     if (seq.mouse) |mouse| try self.pending_mouse_events.append(self.allocator, mouse);
                 },
-                .command => |cmd| switch (cmd) {
-                    .create_window => {
-                        _ = try self.createShellWindow("shell");
-                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                        _ = try self.markActiveWindowsDirty();
-                        self.requestRedraw();
-                    },
-                    .close_window => {
-                        _ = try self.closeFocusedWindow();
-                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                        _ = try self.markActiveWindowsDirty();
-                        self.requestRedraw();
-                    },
-                    .open_popup => {
-                        if (self.popup_mgr.count() > 0) {
+                .command => |cmd| {
+                    if (self.plugin_command_overrides.contains(cmd)) {
+                        try self.pending_plugin_commands.append(self.allocator, cmd);
+                        continue;
+                    }
+                    switch (cmd) {
+                        .create_window => {
+                            _ = try self.createShellWindow("shell");
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
+                        },
+                        .close_window => {
+                            _ = try self.closeFocusedWindow();
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                            self.requestRedraw();
+                        },
+                        .open_popup => {
+                            if (self.popup_mgr.count() > 0) {
+                                try self.closeFocusedPopup();
+                            } else {
+                                const s = screen orelse layout.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
+                                _ = try self.openShellPopup("popup-shell", s, true);
+                            }
+                            self.requestRedraw();
+                        },
+                        .close_popup => {
                             try self.closeFocusedPopup();
-                        } else {
-                            const s = screen orelse layout.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
-                            _ = try self.openShellPopup("popup-shell", s, true);
-                        }
-                        self.requestRedraw();
-                    },
-                    .close_popup => {
-                        try self.closeFocusedPopup();
-                        self.requestRedraw();
-                    },
-                    .cycle_popup => {
-                        self.popup_mgr.cycleFocus();
-                        self.requestRedraw();
-                    },
-                    .new_tab => {
-                        const n = self.workspace_mgr.tabCount();
-                        var name_buf: [32]u8 = undefined;
-                        const name = try std.fmt.bufPrint(&name_buf, "tab-{d}", .{n + 1});
-                        const idx = try self.createTab(name);
-                        try self.switchTab(idx);
-                        _ = try self.createShellWindow("shell");
-                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                        _ = try self.markActiveWindowsDirty();
-                        self.requestRedraw();
-                    },
-                    .close_tab => {
-                        self.closeActiveTab() catch |err| {
-                            if (err != error.CannotCloseLastTab) return err;
-                        };
-                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                        _ = try self.markActiveWindowsDirty();
-                        self.requestRedraw();
-                    },
-                    .next_tab => {
-                        const n = self.workspace_mgr.tabCount();
-                        if (n > 0) {
-                            const current = self.workspace_mgr.activeTabIndex() orelse 0;
-                            try self.switchTab((current + 1) % n);
+                            self.requestRedraw();
+                        },
+                        .cycle_popup => {
+                            self.popup_mgr.cycleFocus();
+                            self.requestRedraw();
+                        },
+                        .new_tab => {
+                            const n = self.workspace_mgr.tabCount();
+                            var name_buf: [32]u8 = undefined;
+                            const name = try std.fmt.bufPrint(&name_buf, "tab-{d}", .{n + 1});
+                            const idx = try self.createTab(name);
+                            try self.switchTab(idx);
+                            _ = try self.createShellWindow("shell");
                             if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
-                        }
-                    },
-                    .prev_tab => {
-                        const n = self.workspace_mgr.tabCount();
-                        if (n > 0) {
-                            const current = self.workspace_mgr.activeTabIndex() orelse 0;
-                            const prev = if (current == 0) n - 1 else current - 1;
-                            try self.switchTab(prev);
+                        },
+                        .close_tab => {
+                            self.closeActiveTab() catch |err| {
+                                if (err != error.CannotCloseLastTab) return err;
+                            };
                             if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
-                        }
-                    },
-                    .move_window_next_tab => {
-                        const n = self.workspace_mgr.tabCount();
-                        if (n > 1) {
-                            const current = self.workspace_mgr.activeTabIndex() orelse 0;
-                            const dst = (current + 1) % n;
-                            try self.workspace_mgr.moveFocusedWindowToTab(dst);
-                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                            _ = try self.markActiveWindowsDirty();
-                            self.requestRedraw();
-                        }
-                    },
-                    .next_window => {
-                        try self.workspace_mgr.focusNextWindowActive();
-                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
-                        _ = try self.markActiveWindowsDirty();
-                        self.requestRedraw();
-                    },
-                    .prev_window => {
-                        try self.workspace_mgr.focusPrevWindowActive();
-                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
-                        _ = try self.markActiveWindowsDirty();
-                        self.requestRedraw();
-                    },
-                    .focus_left => {
-                        if (screen) |s| {
-                            try self.focusDirectional(s, .left);
-                        } else {
-                            try self.workspace_mgr.focusPrevWindowActive();
-                            _ = try self.markActiveWindowsDirty();
-                            self.requestRedraw();
-                        }
-                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
-                    },
-                    .focus_down => {
-                        if (screen) |s| {
-                            try self.focusDirectional(s, .down);
-                        } else {
+                        },
+                        .next_tab => {
+                            const n = self.workspace_mgr.tabCount();
+                            if (n > 0) {
+                                const current = self.workspace_mgr.activeTabIndex() orelse 0;
+                                try self.switchTab((current + 1) % n);
+                                if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                                _ = try self.markActiveWindowsDirty();
+                                self.requestRedraw();
+                            }
+                        },
+                        .prev_tab => {
+                            const n = self.workspace_mgr.tabCount();
+                            if (n > 0) {
+                                const current = self.workspace_mgr.activeTabIndex() orelse 0;
+                                const prev = if (current == 0) n - 1 else current - 1;
+                                try self.switchTab(prev);
+                                if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                                _ = try self.markActiveWindowsDirty();
+                                self.requestRedraw();
+                            }
+                        },
+                        .move_window_next_tab => {
+                            const n = self.workspace_mgr.tabCount();
+                            if (n > 1) {
+                                const current = self.workspace_mgr.activeTabIndex() orelse 0;
+                                const dst = (current + 1) % n;
+                                try self.workspace_mgr.moveFocusedWindowToTab(dst);
+                                if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                                _ = try self.markActiveWindowsDirty();
+                                self.requestRedraw();
+                            }
+                        },
+                        .next_window => {
                             try self.workspace_mgr.focusNextWindowActive();
+                            if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
-                        }
-                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
-                    },
-                    .focus_up => {
-                        if (screen) |s| {
-                            try self.focusDirectional(s, .up);
-                        } else {
+                        },
+                        .prev_window => {
                             try self.workspace_mgr.focusPrevWindowActive();
+                            if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
-                        }
-                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
-                    },
-                    .focus_right => {
-                        if (screen) |s| {
-                            try self.focusDirectional(s, .right);
-                        } else {
-                            try self.workspace_mgr.focusNextWindowActive();
+                        },
+                        .focus_left => {
+                            if (screen) |s| {
+                                try self.focusDirectional(s, .left);
+                            } else {
+                                try self.workspace_mgr.focusPrevWindowActive();
+                                _ = try self.markActiveWindowsDirty();
+                                self.requestRedraw();
+                            }
+                            if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
+                        },
+                        .focus_down => {
+                            if (screen) |s| {
+                                try self.focusDirectional(s, .down);
+                            } else {
+                                try self.workspace_mgr.focusNextWindowActive();
+                                _ = try self.markActiveWindowsDirty();
+                                self.requestRedraw();
+                            }
+                            if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
+                        },
+                        .focus_up => {
+                            if (screen) |s| {
+                                try self.focusDirectional(s, .up);
+                            } else {
+                                try self.workspace_mgr.focusPrevWindowActive();
+                                _ = try self.markActiveWindowsDirty();
+                                self.requestRedraw();
+                            }
+                            if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
+                        },
+                        .focus_right => {
+                            if (screen) |s| {
+                                try self.focusDirectional(s, .right);
+                            } else {
+                                try self.workspace_mgr.focusNextWindowActive();
+                                _ = try self.markActiveWindowsDirty();
+                                self.requestRedraw();
+                            }
+                            if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
+                        },
+                        .zoom_to_master => {
+                            _ = try self.workspace_mgr.zoomFocusedToMasterActive();
+                            if (screen) |s| {
+                                _ = try self.resizeActiveWindowsToLayout(s);
+                            }
                             _ = try self.markActiveWindowsDirty();
                             self.requestRedraw();
-                        }
-                        if (self.sync_scroll_enabled) try self.propagateSyncScrollFromFocused(screen);
-                    },
-                    .zoom_to_master => {
-                        _ = try self.workspace_mgr.zoomFocusedToMasterActive();
-                        if (screen) |s| {
-                            _ = try self.resizeActiveWindowsToLayout(s);
-                        }
-                        _ = try self.markActiveWindowsDirty();
-                        self.requestRedraw();
-                    },
-                    .cycle_layout => {
-                        _ = try self.workspace_mgr.cycleActiveLayout();
-                        if (screen) |s| {
-                            _ = try self.resizeActiveWindowsToLayout(s);
-                        }
-                        _ = try self.markActiveWindowsDirty();
-                    },
-                    .resize_master_shrink => {
-                        const current = try self.workspace_mgr.activeMasterRatioPermille();
-                        const next = if (current <= 100) 100 else current - 50;
-                        try self.workspace_mgr.setActiveMasterRatioPermille(next);
-                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                        _ = try self.markActiveWindowsDirty();
-                    },
-                    .resize_master_grow => {
-                        const current = try self.workspace_mgr.activeMasterRatioPermille();
-                        const next = if (current >= 900) 900 else current + 50;
-                        try self.workspace_mgr.setActiveMasterRatioPermille(next);
-                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                        _ = try self.markActiveWindowsDirty();
-                    },
-                    .master_count_increase => {
-                        const current = try self.workspace_mgr.activeMasterCount();
-                        try self.workspace_mgr.setActiveMasterCount(current + 1);
-                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                        _ = try self.markActiveWindowsDirty();
-                    },
-                    .master_count_decrease => {
-                        const current = try self.workspace_mgr.activeMasterCount();
-                        try self.workspace_mgr.setActiveMasterCount(if (current <= 1) 1 else current - 1);
-                        if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
-                        _ = try self.markActiveWindowsDirty();
-                    },
-                    .scroll_page_up => {
-                        const lines: usize = if (screen) |s| s.height else 24;
-                        self.scrollPageUpFocused(lines);
-                    },
-                    .scroll_page_down => {
-                        const lines: usize = if (screen) |s| s.height else 24;
-                        self.scrollPageDownFocused(lines);
-                    },
-                    .toggle_sync_scroll => {
-                        try self.setVisibleScrollOffsetFromSource(screen, 0);
-                        try self.setSyncScrollEnabled(!self.sync_scroll_enabled, screen);
-                        self.requestRedraw();
-                    },
-                    .toggle_mouse_passthrough => {
-                        self.mouse_mode = switch (self.mouse_mode) {
-                            .hybrid => .passthrough,
-                            .passthrough => .compositor,
-                            .compositor => .hybrid,
-                        };
-                        self.requestRedraw();
-                    },
-                    .detach => {
-                        self.detach_requested = true;
-                    },
+                        },
+                        .cycle_layout => {
+                            _ = try self.workspace_mgr.cycleActiveLayout();
+                            if (screen) |s| {
+                                _ = try self.resizeActiveWindowsToLayout(s);
+                            }
+                            _ = try self.markActiveWindowsDirty();
+                        },
+                        .resize_master_shrink => {
+                            const current = try self.workspace_mgr.activeMasterRatioPermille();
+                            const next = if (current <= 100) 100 else current - 50;
+                            try self.workspace_mgr.setActiveMasterRatioPermille(next);
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                        },
+                        .resize_master_grow => {
+                            const current = try self.workspace_mgr.activeMasterRatioPermille();
+                            const next = if (current >= 900) 900 else current + 50;
+                            try self.workspace_mgr.setActiveMasterRatioPermille(next);
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                        },
+                        .master_count_increase => {
+                            const current = try self.workspace_mgr.activeMasterCount();
+                            try self.workspace_mgr.setActiveMasterCount(current + 1);
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                        },
+                        .master_count_decrease => {
+                            const current = try self.workspace_mgr.activeMasterCount();
+                            try self.workspace_mgr.setActiveMasterCount(if (current <= 1) 1 else current - 1);
+                            if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
+                            _ = try self.markActiveWindowsDirty();
+                        },
+                        .scroll_page_up => {
+                            const lines: usize = if (screen) |s| s.height else 24;
+                            self.scrollPageUpFocused(lines);
+                        },
+                        .scroll_page_down => {
+                            const lines: usize = if (screen) |s| s.height else 24;
+                            self.scrollPageDownFocused(lines);
+                        },
+                        .toggle_sync_scroll => {
+                            try self.setVisibleScrollOffsetFromSource(screen, 0);
+                            try self.setSyncScrollEnabled(!self.sync_scroll_enabled, screen);
+                            self.requestRedraw();
+                        },
+                        .toggle_mouse_passthrough => {
+                            self.mouse_mode = switch (self.mouse_mode) {
+                                .hybrid => .passthrough,
+                                .passthrough => .compositor,
+                                .compositor => .hybrid,
+                            };
+                            self.requestRedraw();
+                        },
+                        .detach => {
+                            self.detach_requested = true;
+                        },
+                    }
                 },
                 .noop => {},
             }
@@ -1065,6 +1075,19 @@ pub const Multiplexer = struct {
     pub fn consumeLastMouseEvent(self: *Multiplexer) ?input_mod.MouseEvent {
         if (self.pending_mouse_events.items.len == 0) return null;
         return self.pending_mouse_events.orderedRemove(0);
+    }
+
+    pub fn consumeOldestPendingPluginCommand(self: *Multiplexer) ?input_mod.Command {
+        if (self.pending_plugin_commands.items.len == 0) return null;
+        return self.pending_plugin_commands.orderedRemove(0);
+    }
+
+    pub fn setPluginCommandOverride(self: *Multiplexer, cmd: input_mod.Command, enabled: bool) !void {
+        if (enabled) {
+            try self.plugin_command_overrides.put(self.allocator, cmd, {});
+        } else {
+            _ = self.plugin_command_overrides.fetchRemove(cmd);
+        }
     }
 
     pub fn tick(
@@ -2781,6 +2804,27 @@ test "multiplexer Ctrl+G p toggles popup shell" {
 
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'p' });
     try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
+}
+
+test "multiplexer plugin override captures popup command instead of executing it" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("base", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    try mux.setPluginCommandOverride(.open_popup, true);
+
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 24 };
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'p' });
+
+    try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
+    try testing.expectEqual(input_mod.Command.open_popup, mux.consumeOldestPendingPluginCommand() orelse return error.TestUnexpectedResult);
+    try testing.expect(mux.consumeOldestPendingPluginCommand() == null);
+
+    try mux.setPluginCommandOverride(.open_popup, false);
+    try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'p' });
+    try testing.expectEqual(@as(usize, 1), mux.popup_mgr.count());
 }
 
 test "multiplexer modal popup captures forwarded input" {

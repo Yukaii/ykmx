@@ -1,5 +1,33 @@
 export type LayoutType = "vertical_stack" | "horizontal_stack" | "grid" | "paperwm" | "fullscreen";
 export type MouseMode = "hybrid" | "passthrough" | "compositor";
+export type CommandName =
+  | "create_window"
+  | "close_window"
+  | "open_popup"
+  | "close_popup"
+  | "cycle_popup"
+  | "new_tab"
+  | "close_tab"
+  | "next_tab"
+  | "prev_tab"
+  | "move_window_next_tab"
+  | "next_window"
+  | "prev_window"
+  | "focus_left"
+  | "focus_down"
+  | "focus_up"
+  | "focus_right"
+  | "zoom_to_master"
+  | "cycle_layout"
+  | "resize_master_shrink"
+  | "resize_master_grow"
+  | "master_count_increase"
+  | "master_count_decrease"
+  | "scroll_page_up"
+  | "scroll_page_down"
+  | "toggle_sync_scroll"
+  | "toggle_mouse_passthrough"
+  | "detach";
 
 export type Rect = { x: number; y: number; width: number; height: number };
 
@@ -101,6 +129,12 @@ export type OnPointerEvent = {
   };
 };
 
+export type OnCommandEvent = {
+  v: 1;
+  event: "on_command";
+  command: CommandName;
+};
+
 export type PluginEvent =
   | OnStartEvent
   | OnLayoutChangedEvent
@@ -108,7 +142,8 @@ export type PluginEvent =
   | OnStateChangedEvent
   | OnTickEvent
   | OnComputeLayoutEvent
-  | OnPointerEvent;
+  | OnPointerEvent
+  | OnCommandEvent;
 
 export type ActionMessage =
   | { v: 1; action: "cycle_layout" }
@@ -121,6 +156,11 @@ export type ActionMessage =
   | { v: 1; action: "move_window_by_id_to_index"; window_id: number; index: number }
   | { v: 1; action: "close_focused_window" }
   | { v: 1; action: "restore_window_by_id"; window_id: number }
+  | { v: 1; action: "register_command"; command: CommandName; enabled?: boolean }
+  | { v: 1; action: "open_shell_popup" }
+  | { v: 1; action: "close_focused_popup" }
+  | { v: 1; action: "cycle_popup_focus" }
+  | { v: 1; action: "toggle_shell_popup" }
   | { v: 1; action: "set_ui_bars"; toolbar_line: string; tab_line: string; status_line: string }
   | { v: 1; action: "clear_ui_bars" };
 
