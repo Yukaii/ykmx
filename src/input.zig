@@ -173,11 +173,16 @@ fn isCsiFinalByte(b: u8) bool {
 
 fn parseMouseSgr(seq: []const u8) ?MouseEvent {
     if (seq.len < 6) return null;
-    if (!std.mem.startsWith(u8, seq, "\x1b[<")) return null;
+    if (!std.mem.startsWith(u8, seq, "\x1b[")) return null;
 
     const final = seq[seq.len - 1];
     if (final != 'M' and final != 'm') return null;
-    const payload = seq[3 .. seq.len - 1];
+    var payload = seq[2 .. seq.len - 1];
+    if (payload.len == 0) return null;
+    // SGR mouse extension uses "<b;x;y", while some terminals emit
+    // numeric CSI form "b;x;y" (urxvt-style 1015).
+    if (payload[0] == '<') payload = payload[1..];
+    if (payload.len == 0) return null;
 
     var parts = std.mem.splitScalar(u8, payload, ';');
     const b_str = parts.next() orelse return null;
@@ -337,6 +342,30 @@ test "input router parses sgr mouse sequence metadata" {
             try testing.expectEqual(@as(u16, 0), m.button);
             try testing.expectEqual(@as(u16, 10), m.x);
             try testing.expectEqual(@as(u16, 20), m.y);
+            try testing.expect(m.pressed);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "input router parses numeric csi mouse sequence metadata without angle prefix" {
+    const testing = std.testing;
+    var r = Router{};
+
+    const bytes = "\x1b[0;20;5M";
+    for (bytes[0 .. bytes.len - 1]) |b| {
+        _ = r.feedByte(b);
+    }
+    const ev = r.feedByte(bytes[bytes.len - 1]);
+
+    switch (ev) {
+        .forward_sequence => |seq| {
+            try testing.expectEqualStrings(bytes, seq.slice());
+            try testing.expect(seq.mouse != null);
+            const m = seq.mouse.?;
+            try testing.expectEqual(@as(u16, 0), m.button);
+            try testing.expectEqual(@as(u16, 20), m.x);
+            try testing.expectEqual(@as(u16, 5), m.y);
             try testing.expect(m.pressed);
         },
         else => return error.TestUnexpectedResult,

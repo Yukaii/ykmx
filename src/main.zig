@@ -276,7 +276,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             last_layout = current_layout;
         }
         if (plugins.hasAny()) {
-            if (mux.consumeLastMouseEvent()) |mouse| {
+            while (mux.consumeLastMouseEvent()) |mouse| {
                 const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
                 const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
                 const hit = mux.windowChromeHitAt(content, px, py) catch null;

@@ -71,9 +71,10 @@ pub const Multiplexer = struct {
     scrollback_last_query_len: u16 = 0,
     scrollback_last_query_buf: [256]u8 = [_]u8{0} ** 256,
     scrollback_last_direction: scrollback_mod.SearchDirection = .backward,
-    last_mouse_event: ?input_mod.MouseEvent = null,
+    pending_mouse_events: std.ArrayListUnmanaged(input_mod.MouseEvent) = .{},
     drag_state: DragState = .{},
     hybrid_forward_click_active: bool = false,
+    hybrid_chrome_capture_active: bool = false,
     mouse_mode: MouseMode = .hybrid,
     next_popup_window_id: u32 = 1_000_000,
     redraw_requested: bool = false,
@@ -126,6 +127,7 @@ pub const Multiplexer = struct {
         self.dirty_windows.deinit(self.allocator);
         self.da_parse_states.deinit(self.allocator);
         self.mouse_tracking_enabled.deinit(self.allocator);
+        self.pending_mouse_events.deinit(self.allocator);
 
         self.popup_mgr.deinit();
         self.workspace_mgr.deinit();
@@ -248,7 +250,12 @@ pub const Multiplexer = struct {
                                         else => false,
                                     };
                                 },
-                                .passthrough => {},
+                                .passthrough => {
+                                    consumed_mouse = self.handleMousePassthrough(s, mouse) catch |err| switch (err) {
+                                        error.OutOfMemory => return err,
+                                        else => false,
+                                    };
+                                },
                             }
                         }
                     }
@@ -267,7 +274,7 @@ pub const Multiplexer = struct {
                             };
                         }
                     }
-                    if (seq.mouse) |mouse| self.last_mouse_event = mouse;
+                    if (seq.mouse) |mouse| try self.pending_mouse_events.append(self.allocator, mouse);
                 },
                 .command => |cmd| switch (cmd) {
                     .create_window => {
@@ -1046,9 +1053,8 @@ pub const Multiplexer = struct {
     }
 
     pub fn consumeLastMouseEvent(self: *Multiplexer) ?input_mod.MouseEvent {
-        const value = self.last_mouse_event;
-        self.last_mouse_event = null;
-        return value;
+        if (self.pending_mouse_events.items.len == 0) return null;
+        return self.pending_mouse_events.orderedRemove(0);
     }
 
     pub fn tick(
@@ -1400,20 +1406,48 @@ pub const Multiplexer = struct {
         // (e.g. plugin-rendered toolbars/tabs/status lines).
         if (!pointInRect(px, py, screen)) {
             self.hybrid_forward_click_active = false;
+            self.hybrid_chrome_capture_active = false;
             if (!mouse.pressed) self.drag_state.axis = .none;
             return true;
         }
 
         if (!mouse.pressed) {
+            if (self.hybrid_chrome_capture_active) {
+                self.hybrid_chrome_capture_active = false;
+                self.hybrid_forward_click_active = false;
+                self.drag_state.axis = .none;
+                return true;
+            }
             if (self.drag_state.axis != .none) {
                 self.drag_state.axis = .none;
                 return true;
+            }
+            if (try self.paneHitAt(screen, px, py)) |hit| {
+                if (hit.on_border) {
+                    self.hybrid_forward_click_active = false;
+                    return true;
+                }
             }
             if (self.hybrid_forward_click_active) {
                 self.hybrid_forward_click_active = false;
                 return false;
             }
-            return !target_has_tracking;
+            return true;
+        }
+
+        if (self.hybrid_chrome_capture_active) return true;
+
+        if (try self.windowChromeHitAt(screen, px, py)) |chrome_hit| {
+            if (chrome_hit.on_title_bar or chrome_hit.on_minimize_button or chrome_hit.on_maximize_button or chrome_hit.on_close_button) {
+                if (mouse.pressed) {
+                    try self.workspace_mgr.setFocusedWindowIndexActive(chrome_hit.window_index);
+                    try self.markWindowDirty(chrome_hit.window_id);
+                    self.requestRedraw();
+                }
+                self.hybrid_chrome_capture_active = true;
+                self.hybrid_forward_click_active = false;
+                return true;
+            }
         }
 
         const motion = (mouse.button & 32) != 0;
@@ -1421,8 +1455,33 @@ pub const Multiplexer = struct {
             try self.applyDragResize(screen, px, py);
             return true;
         }
-        if (motion) return !target_has_tracking;
-        if (mouse.button != 0) return !target_has_tracking;
+        const pane_hit = try self.paneHitAt(screen, px, py);
+        if (motion) {
+            if (pane_hit) |hit| {
+                if (hit.on_border) {
+                    self.hybrid_forward_click_active = false;
+                    return true;
+                }
+                const tab = try self.workspace_mgr.activeTab();
+                const current_focus = tab.focused_index orelse 0;
+                if (hit.idx != current_focus) return true;
+                return !target_has_tracking;
+            }
+            return true;
+        }
+        if (mouse.button != 0) {
+            const hit = pane_hit orelse return true;
+            if (hit.on_border) return true;
+            const tab = try self.workspace_mgr.activeTab();
+            const target_id = tab.windows.items[hit.idx].id;
+            const target_tracking = self.windowHasMouseTracking(target_id);
+            if (!target_tracking) return true;
+            try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
+            try self.markWindowDirty(target_id);
+            self.requestRedraw();
+            self.hybrid_forward_click_active = true;
+            return false;
+        }
 
         if (try self.hitDividerForVerticalStack(screen, px, py)) {
             self.drag_state.axis = .vertical;
@@ -1433,11 +1492,11 @@ pub const Multiplexer = struct {
             return true;
         }
 
-        const pane_hit = try self.paneHitAt(screen, px, py);
         if (pane_hit) |hit| {
             const tab = try self.workspace_mgr.activeTab();
             const current_focus = tab.focused_index orelse 0;
             const target_id = tab.windows.items[hit.idx].id;
+            const target_tracking = self.windowHasMouseTracking(target_id);
             try self.workspace_mgr.setFocusedWindowIndexActive(hit.idx);
             try self.markWindowDirty(target_id);
             self.requestRedraw();
@@ -1447,13 +1506,56 @@ pub const Multiplexer = struct {
             }
             if (hit.idx != current_focus) {
                 // First click into another pane switches focus only.
+                if (target_tracking) {
+                    self.hybrid_forward_click_active = true;
+                    return false;
+                }
                 self.hybrid_forward_click_active = false;
                 return true;
             }
             // Content clicks are forwarded (for shell click-to-move), while
             // motion/non-left events remain gated by mouse-tracking capability.
-            self.hybrid_forward_click_active = true;
-            return false;
+            if (target_tracking) {
+                self.hybrid_forward_click_active = true;
+                return false;
+            }
+            self.hybrid_forward_click_active = false;
+            return true;
+        }
+
+        self.hybrid_forward_click_active = false;
+        return true;
+    }
+
+    fn handleMousePassthrough(
+        self: *Multiplexer,
+        screen: layout.Rect,
+        mouse: input_mod.MouseEvent,
+    ) !bool {
+        const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
+        const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
+
+        if (self.hybrid_chrome_capture_active) {
+            if (!mouse.pressed) self.hybrid_chrome_capture_active = false;
+            return true;
+        }
+
+        if (!pointInRect(px, py, screen)) return true;
+
+        if (try self.windowChromeHitAt(screen, px, py)) |chrome_hit| {
+            if (chrome_hit.on_title_bar or chrome_hit.on_minimize_button or chrome_hit.on_maximize_button or chrome_hit.on_close_button) {
+                if (mouse.pressed) {
+                    try self.workspace_mgr.setFocusedWindowIndexActive(chrome_hit.window_index);
+                    try self.markWindowDirty(chrome_hit.window_id);
+                    self.requestRedraw();
+                    self.hybrid_chrome_capture_active = true;
+                }
+                return true;
+            }
+        }
+
+        if (try self.paneHitAt(screen, px, py)) |hit| {
+            if (hit.on_border) return true;
         }
 
         return false;
@@ -2324,7 +2426,7 @@ test "multiplexer hybrid mode first click switches focus without forwarding" {
     try testing.expect(std.mem.indexOf(u8, right_out, seq) == null);
 }
 
-test "multiplexer hybrid mode forwards click in already focused pane" {
+test "multiplexer hybrid mode does not forward click when tracking is disabled" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
 
@@ -2335,19 +2437,14 @@ test "multiplexer hybrid mode forwards click in already focused pane" {
     const right_id = try mux.createCommandWindow("right", &.{"/bin/cat"});
     mux.setMouseMode(.hybrid);
 
-    // Single pane is focused by definition; click should be forwarded.
     const seq = "\x1b[<0;20;5M";
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, seq);
 
     var tries: usize = 0;
-    while (tries < 20) : (tries += 1) {
-        _ = try mux.pollOnce(20);
-        const out_now = try mux.windowOutput(right_id);
-        if (std.mem.indexOf(u8, out_now, seq) != null) break;
-    }
+    while (tries < 10) : (tries += 1) _ = try mux.pollOnce(20);
 
     const out = try mux.windowOutput(right_id);
-    try testing.expect(std.mem.indexOf(u8, out, seq) != null);
+    try testing.expect(std.mem.indexOf(u8, out, seq) == null);
 }
 
 test "multiplexer hybrid mode forwards click when target enabled mouse tracking" {
