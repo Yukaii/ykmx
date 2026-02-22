@@ -279,7 +279,8 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             while (mux.consumeLastMouseEvent()) |mouse| {
                 const px: u16 = if (mouse.x > 0) mouse.x - 1 else 0;
                 const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
-                const hit = mux.windowChromeHitAt(content, px, py) catch null;
+                const popup_hit = mux.popupChromeHitAt(px, py);
+                const hit = if (popup_hit == null) (mux.windowChromeHitAt(content, px, py) catch null) else null;
                 const toolbar_hit = minimizedToolbarHitAt(&mux.workspace_mgr, content, px, py);
                 plugins.emitPointer(
                     .{
@@ -289,7 +290,26 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                         .pressed = mouse.pressed,
                         .motion = (mouse.button & 32) != 0,
                     },
-                    if (hit) |h| .{
+                    if (popup_hit) |ph| .{
+                        .window_id = ph.window_id,
+                        .window_index = 0,
+                        .on_title_bar = false,
+                        .on_minimize_button = false,
+                        .on_maximize_button = false,
+                        .on_close_button = false,
+                        .on_minimized_toolbar = false,
+                        .on_restore_button = false,
+                        .is_panel = true,
+                        .panel_id = ph.popup_id,
+                        .panel_rect = ph.rect,
+                        .on_panel_title_bar = ph.on_title_bar,
+                        .on_panel_close_button = ph.on_close_button,
+                        .on_panel_resize_left = ph.on_resize_left,
+                        .on_panel_resize_right = ph.on_resize_right,
+                        .on_panel_resize_top = ph.on_resize_top,
+                        .on_panel_resize_bottom = ph.on_resize_bottom,
+                        .on_panel_body = ph.on_body,
+                    } else if (hit) |h| .{
                         .window_id = h.window_id,
                         .window_index = h.window_index,
                         .on_title_bar = h.on_title_bar,
@@ -298,6 +318,16 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                         .on_close_button = h.on_close_button,
                         .on_minimized_toolbar = false,
                         .on_restore_button = false,
+                        .is_panel = false,
+                        .panel_id = 0,
+                        .panel_rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+                        .on_panel_title_bar = false,
+                        .on_panel_close_button = false,
+                        .on_panel_resize_left = false,
+                        .on_panel_resize_right = false,
+                        .on_panel_resize_top = false,
+                        .on_panel_resize_bottom = false,
+                        .on_panel_body = false,
                     } else if (toolbar_hit) |th| .{
                         .window_id = th.window_id,
                         .window_index = th.window_index,
@@ -307,6 +337,16 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                         .on_close_button = false,
                         .on_minimized_toolbar = true,
                         .on_restore_button = true,
+                        .is_panel = false,
+                        .panel_id = 0,
+                        .panel_rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+                        .on_panel_title_bar = false,
+                        .on_panel_close_button = false,
+                        .on_panel_resize_left = false,
+                        .on_panel_resize_right = false,
+                        .on_panel_resize_top = false,
+                        .on_panel_resize_bottom = false,
+                        .on_panel_body = false,
                     } else null,
                 );
             }
@@ -384,6 +424,7 @@ fn collectPluginRuntimeState(
     }
     const focus_idx = mux.workspace_mgr.focusedWindowIndexActive() catch null;
     const focus_id = mux.workspace_mgr.focusedWindowIdActive() catch null;
+    const focused_panel_id = mux.popup_mgr.focused_popup_id orelse 0;
     const master_count = try mux.workspace_mgr.activeMasterCount();
     const master_ratio = try mux.workspace_mgr.activeMasterRatioPermille();
     const active_tab_idx = mux.workspace_mgr.activeTabIndex();
@@ -393,6 +434,9 @@ fn collectPluginRuntimeState(
         .window_count = window_count,
         .minimized_window_count = minimized_count,
         .visible_window_count = window_count - minimized_count,
+        .panel_count = mux.popup_mgr.count(),
+        .focused_panel_id = focused_panel_id,
+        .has_focused_panel = mux.popup_mgr.focused_popup_id != null,
         .focused_index = focus_idx orelse 0,
         .focused_window_id = focus_id orelse 0,
         .has_focused_window = focus_idx != null,
@@ -415,6 +459,9 @@ fn pluginRuntimeStateEql(
         a.window_count == b.window_count and
         a.minimized_window_count == b.minimized_window_count and
         a.visible_window_count == b.visible_window_count and
+        a.panel_count == b.panel_count and
+        a.focused_panel_id == b.focused_panel_id and
+        a.has_focused_panel == b.has_focused_panel and
         a.focused_index == b.focused_index and
         a.focused_window_id == b.focused_window_id and
         a.has_focused_window == b.has_focused_window and
@@ -435,6 +482,7 @@ fn detectStateChangeReason(
     if (!std.mem.eql(u8, prev.layout, next.layout)) return "layout";
     if (prev.window_count != next.window_count) return "window_count";
     if (prev.minimized_window_count != next.minimized_window_count or prev.visible_window_count != next.visible_window_count) return "window_count";
+    if (prev.panel_count != next.panel_count or prev.focused_panel_id != next.focused_panel_id or prev.has_focused_panel != next.has_focused_panel) return "focus";
     if (prev.focused_index != next.focused_index or prev.focused_window_id != next.focused_window_id or prev.has_focused_window != next.has_focused_window) return "focus";
     if (prev.tab_count != next.tab_count or prev.active_tab_index != next.active_tab_index or prev.has_active_tab != next.has_active_tab) return "tab";
     if (prev.master_count != next.master_count or prev.master_ratio_permille != next.master_ratio_permille) return "master";
@@ -496,25 +544,63 @@ fn applyPluginAction(
             try mux.setPluginCommandOverride(payload.command, payload.enabled);
             return false;
         },
-        .open_shell_popup => {
+        .open_shell_panel => {
             _ = try mux.openShellPopup("popup-shell", screen, true);
             return true;
         },
-        .close_focused_popup => {
+        .close_focused_panel => {
             try mux.closeFocusedPopup();
             return true;
         },
-        .cycle_popup_focus => {
+        .cycle_panel_focus => {
             mux.popup_mgr.cycleFocus();
             return true;
         },
-        .toggle_shell_popup => {
+        .toggle_shell_panel => {
             if (mux.popup_mgr.count() > 0) {
                 try mux.closeFocusedPopup();
             } else {
                 _ = try mux.openShellPopup("popup-shell", screen, true);
             }
             return true;
+        },
+        .open_shell_panel_rect => |payload| {
+            _ = try mux.openShellPopupRectStyled(
+                "popup-shell",
+                screen,
+                .{
+                    .x = payload.x,
+                    .y = payload.y,
+                    .width = payload.width,
+                    .height = payload.height,
+                },
+                payload.modal,
+                .{
+                    .transparent_background = payload.transparent_background,
+                    .show_border = payload.show_border,
+                    .show_controls = payload.show_controls,
+                },
+            );
+            return true;
+        },
+        .close_panel_by_id => |panel_id| {
+            return try mux.closePopupById(panel_id);
+        },
+        .focus_panel_by_id => |panel_id| {
+            return try mux.focusPopupById(panel_id);
+        },
+        .move_panel_by_id => |payload| {
+            return try mux.movePopupById(payload.panel_id, payload.x, payload.y, screen);
+        },
+        .resize_panel_by_id => |payload| {
+            return try mux.resizePopupById(payload.panel_id, payload.width, payload.height, screen);
+        },
+        .set_panel_style_by_id => |payload| {
+            return try mux.setPopupStyleById(payload.panel_id, .{
+                .transparent_background = payload.transparent_background,
+                .show_border = payload.show_border,
+                .show_controls = payload.show_controls,
+            }, screen);
         },
     }
 }
@@ -1047,6 +1133,9 @@ fn renderRuntimeFrame(
 
         drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
         markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
+        // Popup interiors are opaque: suppress any precomputed base-pane border
+        // connectors under the popup content area so they never bleed through.
+        clearBorderConnInsideRect(border_conn, total_cols, content_rows, p.rect);
 
         const output = mux.windowOutput(window_id) catch "";
         const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
@@ -1482,6 +1571,29 @@ fn markPopupOverlay(
     while (y <= y1) : (y += 1) {
         overlay[y * cols + x0] = true;
         overlay[y * cols + x1] = true;
+    }
+}
+
+fn clearBorderConnInsideRect(
+    conn: []u8,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+) void {
+    if (r.width < 3 or r.height < 3) return;
+    const x0: usize = r.x + 1;
+    const y0: usize = r.y + 1;
+    const x1: usize = r.x + r.width - 1;
+    const y1: usize = r.y + r.height - 1;
+    if (x0 >= cols or y0 >= rows) return;
+    if (x1 > cols or y1 > rows) return;
+
+    var y = y0;
+    while (y < y1) : (y += 1) {
+        var x = x0;
+        while (x < x1) : (x += 1) {
+            conn[y * cols + x] = 0;
+        }
     }
 }
 

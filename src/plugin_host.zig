@@ -15,6 +15,9 @@ pub const PluginHost = struct {
         window_count: usize,
         minimized_window_count: usize,
         visible_window_count: usize,
+        panel_count: usize,
+        focused_panel_id: u32,
+        has_focused_panel: bool,
         focused_index: usize,
         focused_window_id: u32,
         has_focused_window: bool,
@@ -51,10 +54,30 @@ pub const PluginHost = struct {
         close_focused_window,
         restore_window_by_id: u32,
         register_command: struct { command: input_mod.Command, enabled: bool },
-        open_shell_popup,
-        close_focused_popup,
-        cycle_popup_focus,
-        toggle_shell_popup,
+        open_shell_panel,
+        close_focused_panel,
+        cycle_panel_focus,
+        toggle_shell_panel,
+        open_shell_panel_rect: struct {
+            x: u16,
+            y: u16,
+            width: u16,
+            height: u16,
+            modal: bool,
+            transparent_background: bool,
+            show_border: bool,
+            show_controls: bool,
+        },
+        close_panel_by_id: u32,
+        focus_panel_by_id: u32,
+        move_panel_by_id: struct { panel_id: u32, x: u16, y: u16 },
+        resize_panel_by_id: struct { panel_id: u32, width: u16, height: u16 },
+        set_panel_style_by_id: struct {
+            panel_id: u32,
+            transparent_background: bool,
+            show_border: bool,
+            show_controls: bool,
+        },
     };
 
     pub const PointerEvent = struct {
@@ -74,6 +97,16 @@ pub const PluginHost = struct {
         on_close_button: bool,
         on_minimized_toolbar: bool,
         on_restore_button: bool,
+        is_panel: bool,
+        panel_id: u32,
+        panel_rect: layout.Rect,
+        on_panel_title_bar: bool,
+        on_panel_close_button: bool,
+        on_panel_resize_left: bool,
+        on_panel_resize_right: bool,
+        on_panel_resize_top: bool,
+        on_panel_resize_bottom: bool,
+        on_panel_body: bool,
     };
 
     allocator: std.mem.Allocator,
@@ -108,6 +141,15 @@ pub const PluginHost = struct {
         value: ?u16 = null,
         index: ?usize = null,
         window_id: ?u32 = null,
+        panel_id: ?u32 = null,
+        x: ?u16 = null,
+        y: ?u16 = null,
+        width: ?u16 = null,
+        height: ?u16 = null,
+        modal: ?bool = null,
+        transparent_background: ?bool = null,
+        show_border: ?bool = null,
+        show_controls: ?bool = null,
         toolbar_line: ?[]const u8 = null,
         tab_line: ?[]const u8 = null,
         status_line: ?[]const u8 = null,
@@ -184,16 +226,19 @@ pub const PluginHost = struct {
         reason: []const u8,
         state: RuntimeState,
     ) !void {
-        var buf: [512]u8 = undefined;
+        var buf: [640]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
-            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"panel_count\":{},\"focused_panel_id\":{},\"has_focused_panel\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
             .{
                 reason,
                 state.layout,
                 state.window_count,
                 state.minimized_window_count,
                 state.visible_window_count,
+                state.panel_count,
+                state.focused_panel_id,
+                state.has_focused_panel,
                 state.focused_index,
                 state.focused_window_id,
                 state.has_focused_window,
@@ -214,10 +259,10 @@ pub const PluginHost = struct {
     }
 
     pub fn emitTick(self: *PluginHost, stats: TickStats, state: RuntimeState) !void {
-        var buf: [640]u8 = undefined;
+        var buf: [768]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
-            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"panel_count\":{},\"focused_panel_id\":{},\"has_focused_panel\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
             .{
                 stats.reads,
                 stats.resized,
@@ -231,6 +276,9 @@ pub const PluginHost = struct {
                 state.window_count,
                 state.minimized_window_count,
                 state.visible_window_count,
+                state.panel_count,
+                state.focused_panel_id,
+                state.has_focused_panel,
                 state.focused_index,
                 state.focused_window_id,
                 state.has_focused_window,
@@ -251,12 +299,12 @@ pub const PluginHost = struct {
     }
 
     pub fn emitPointer(self: *PluginHost, pointer: PointerEvent, hit: ?PointerHit) !void {
-        var buf: [512]u8 = undefined;
+        var buf: [1024]u8 = undefined;
         const line = if (hit) |h|
             try std.fmt.bufPrint(
                 &buf,
-                "{{\"v\":1,\"event\":\"on_pointer\",\"pointer\":{{\"x\":{},\"y\":{},\"button\":{},\"pressed\":{},\"motion\":{}}},\"hit\":{{\"window_id\":{},\"window_index\":{},\"on_title_bar\":{},\"on_minimize_button\":{},\"on_maximize_button\":{},\"on_close_button\":{},\"on_minimized_toolbar\":{},\"on_restore_button\":{}}}}}\n",
-                .{ pointer.x, pointer.y, pointer.button, pointer.pressed, pointer.motion, h.window_id, h.window_index, h.on_title_bar, h.on_minimize_button, h.on_maximize_button, h.on_close_button, h.on_minimized_toolbar, h.on_restore_button },
+                "{{\"v\":1,\"event\":\"on_pointer\",\"pointer\":{{\"x\":{},\"y\":{},\"button\":{},\"pressed\":{},\"motion\":{}}},\"hit\":{{\"window_id\":{},\"window_index\":{},\"on_title_bar\":{},\"on_minimize_button\":{},\"on_maximize_button\":{},\"on_close_button\":{},\"on_minimized_toolbar\":{},\"on_restore_button\":{},\"is_panel\":{},\"panel_id\":{},\"panel_rect\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}},\"on_panel_title_bar\":{},\"on_panel_close_button\":{},\"on_panel_resize_left\":{},\"on_panel_resize_right\":{},\"on_panel_resize_top\":{},\"on_panel_resize_bottom\":{},\"on_panel_body\":{}}}}}\n",
+                .{ pointer.x, pointer.y, pointer.button, pointer.pressed, pointer.motion, h.window_id, h.window_index, h.on_title_bar, h.on_minimize_button, h.on_maximize_button, h.on_close_button, h.on_minimized_toolbar, h.on_restore_button, h.is_panel, h.panel_id, h.panel_rect.x, h.panel_rect.y, h.panel_rect.width, h.panel_rect.height, h.on_panel_title_bar, h.on_panel_close_button, h.on_panel_resize_left, h.on_panel_resize_right, h.on_panel_resize_top, h.on_panel_resize_bottom, h.on_panel_body },
             )
         else
             try std.fmt.bufPrint(
@@ -482,10 +530,55 @@ pub const PluginHost = struct {
                 .enabled = envelope.enabled orelse true,
             } };
         }
-        if (std.mem.eql(u8, action_name, "open_shell_popup")) return .open_shell_popup;
-        if (std.mem.eql(u8, action_name, "close_focused_popup")) return .close_focused_popup;
-        if (std.mem.eql(u8, action_name, "cycle_popup_focus")) return .cycle_popup_focus;
-        if (std.mem.eql(u8, action_name, "toggle_shell_popup")) return .toggle_shell_popup;
+        if (std.mem.eql(u8, action_name, "open_shell_panel")) return .open_shell_panel;
+        if (std.mem.eql(u8, action_name, "close_focused_panel")) return .close_focused_panel;
+        if (std.mem.eql(u8, action_name, "cycle_panel_focus")) return .cycle_panel_focus;
+        if (std.mem.eql(u8, action_name, "toggle_shell_panel")) return .toggle_shell_panel;
+        if (std.mem.eql(u8, action_name, "open_shell_panel_rect")) {
+            const x = envelope.x orelse return null;
+            const y = envelope.y orelse return null;
+            const width = envelope.width orelse return null;
+            const height = envelope.height orelse return null;
+            return .{ .open_shell_panel_rect = .{
+                .x = x,
+                .y = y,
+                .width = width,
+                .height = height,
+                .modal = envelope.modal orelse true,
+                .transparent_background = envelope.transparent_background orelse false,
+                .show_border = envelope.show_border orelse true,
+                .show_controls = envelope.show_controls orelse false,
+            } };
+        }
+        if (std.mem.eql(u8, action_name, "close_panel_by_id")) {
+            const panel_id = envelope.panel_id orelse return null;
+            return .{ .close_panel_by_id = panel_id };
+        }
+        if (std.mem.eql(u8, action_name, "focus_panel_by_id")) {
+            const panel_id = envelope.panel_id orelse return null;
+            return .{ .focus_panel_by_id = panel_id };
+        }
+        if (std.mem.eql(u8, action_name, "move_panel_by_id")) {
+            const panel_id = envelope.panel_id orelse return null;
+            const x = envelope.x orelse return null;
+            const y = envelope.y orelse return null;
+            return .{ .move_panel_by_id = .{ .panel_id = panel_id, .x = x, .y = y } };
+        }
+        if (std.mem.eql(u8, action_name, "resize_panel_by_id")) {
+            const panel_id = envelope.panel_id orelse return null;
+            const width = envelope.width orelse return null;
+            const height = envelope.height orelse return null;
+            return .{ .resize_panel_by_id = .{ .panel_id = panel_id, .width = width, .height = height } };
+        }
+        if (std.mem.eql(u8, action_name, "set_panel_style_by_id")) {
+            const panel_id = envelope.panel_id orelse return null;
+            return .{ .set_panel_style_by_id = .{
+                .panel_id = panel_id,
+                .transparent_background = envelope.transparent_background orelse false,
+                .show_border = envelope.show_border orelse true,
+                .show_controls = envelope.show_controls orelse false,
+            } };
+        }
         if (std.mem.eql(u8, action_name, "set_ui_bars")) {
             const toolbar = envelope.toolbar_line orelse return null;
             const tab = envelope.tab_line orelse return null;

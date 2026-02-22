@@ -19,6 +19,25 @@ pub const Multiplexer = struct {
         on_restore_button: bool = false,
     };
 
+    pub const PopupChromeHit = struct {
+        popup_id: u32,
+        window_id: u32,
+        rect: layout.Rect,
+        on_title_bar: bool,
+        on_close_button: bool,
+        on_resize_left: bool,
+        on_resize_right: bool,
+        on_resize_top: bool,
+        on_resize_bottom: bool,
+        on_body: bool,
+    };
+
+    pub const PopupStyle = struct {
+        transparent_background: bool = false,
+        show_border: bool = true,
+        show_controls: bool = false,
+    };
+
     pub const MouseMode = enum {
         hybrid,
         passthrough,
@@ -630,6 +649,41 @@ pub const Multiplexer = struct {
         return null;
     }
 
+    pub fn popupChromeHitAt(self: *const Multiplexer, px: u16, py: u16) ?PopupChromeHit {
+        var best_idx: ?usize = null;
+        var best_z: u32 = 0;
+        for (self.popup_mgr.popups.items, 0..) |p, i| {
+            const inside_x = px >= p.rect.x and px < (p.rect.x + p.rect.width);
+            const inside_y = py >= p.rect.y and py < (p.rect.y + p.rect.height);
+            if (!(inside_x and inside_y)) continue;
+            if (best_idx == null or p.z_index >= best_z) {
+                best_idx = i;
+                best_z = p.z_index;
+            }
+        }
+        const idx = best_idx orelse return null;
+        const p = self.popup_mgr.popups.items[idx];
+        const window_id = p.window_id orelse 0;
+        const on_title_bar = p.show_border and py == p.rect.y and px > p.rect.x and px < (p.rect.x + p.rect.width - 1);
+        const on_close_button = p.show_border and p.show_controls and on_title_bar and p.rect.width >= 5 and px == (p.rect.x + p.rect.width - 3);
+        const on_resize_left = px == p.rect.x;
+        const on_resize_right = px + 1 == p.rect.x + p.rect.width;
+        const on_resize_top = py == p.rect.y;
+        const on_resize_bottom = py + 1 == p.rect.y + p.rect.height;
+        return .{
+            .popup_id = p.id,
+            .window_id = window_id,
+            .rect = p.rect,
+            .on_title_bar = on_title_bar,
+            .on_close_button = on_close_button,
+            .on_resize_left = on_resize_left,
+            .on_resize_right = on_resize_right,
+            .on_resize_top = on_resize_top,
+            .on_resize_bottom = on_resize_bottom,
+            .on_body = !on_title_bar and !(on_resize_left or on_resize_right or on_resize_top or on_resize_bottom),
+        };
+    }
+
     pub fn focusedPopupWindowId(self: *Multiplexer) ?u32 {
         return self.popup_mgr.focusedWindowId();
     }
@@ -1203,10 +1257,9 @@ pub const Multiplexer = struct {
         try self.selection_cursor_y.put(self.allocator, popup_window_id, 0);
         try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
 
-        const popup_inner_rows: u16 = if (rect.height > 2) rect.height - 2 else 1;
-        const popup_inner_cols: u16 = if (rect.width > 2) rect.width - 2 else 1;
+        const popup_inner = popupInnerSize(rect, .{});
         if (self.ptys.getPtr(popup_window_id)) |pp| {
-            try pp.resize(popup_inner_rows, popup_inner_cols);
+            try pp.resize(popup_inner.rows, popup_inner.cols);
         }
 
         const popup_id = try self.popup_mgr.create(.{
@@ -1216,6 +1269,9 @@ pub const Multiplexer = struct {
             .modal = modal,
             .auto_close = auto_close,
             .kind = .command,
+            .transparent_background = false,
+            .show_border = true,
+            .show_controls = false,
             .animate = true,
         });
         try self.markWindowDirty(popup_window_id);
@@ -1242,10 +1298,9 @@ pub const Multiplexer = struct {
         try self.selection_cursor_y.put(self.allocator, popup_window_id, 0);
         try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
 
-        const popup_inner_rows: u16 = if (rect.height > 2) rect.height - 2 else 1;
-        const popup_inner_cols: u16 = if (rect.width > 2) rect.width - 2 else 1;
+        const popup_inner = popupInnerSize(rect, .{});
         if (self.ptys.getPtr(popup_window_id)) |pp| {
-            try pp.resize(popup_inner_rows, popup_inner_cols);
+            try pp.resize(popup_inner.rows, popup_inner.cols);
         }
 
         const popup_id = try self.popup_mgr.create(.{
@@ -1255,6 +1310,52 @@ pub const Multiplexer = struct {
             .modal = modal,
             .auto_close = false,
             .kind = .persistent,
+            .transparent_background = false,
+            .show_border = true,
+            .show_controls = false,
+            .animate = true,
+        });
+        try self.markWindowDirty(popup_window_id);
+        return popup_id;
+    }
+
+    pub fn openShellPopupRectStyled(
+        self: *Multiplexer,
+        title: []const u8,
+        screen: layout.Rect,
+        rect: layout.Rect,
+        modal: bool,
+        style: PopupStyle,
+    ) !u32 {
+        const popup_window_id = self.next_popup_window_id;
+        self.next_popup_window_id += 1;
+
+        const clamped = clampPopupRect(screen, rect);
+        var p = try pty_mod.Pty.spawnShell(self.allocator);
+        errdefer p.deinit();
+
+        try self.ptys.put(self.allocator, popup_window_id, p);
+        try self.stdout_buffers.put(self.allocator, popup_window_id, .{});
+        try self.scrollbacks.put(self.allocator, popup_window_id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 2_000));
+        try self.selection_cursor_x.put(self.allocator, popup_window_id, 0);
+        try self.selection_cursor_y.put(self.allocator, popup_window_id, 0);
+        try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
+
+        const popup_inner = popupInnerSize(clamped, style);
+        if (self.ptys.getPtr(popup_window_id)) |pp| {
+            try pp.resize(popup_inner.rows, popup_inner.cols);
+        }
+
+        const popup_id = try self.popup_mgr.create(.{
+            .window_id = popup_window_id,
+            .title = title,
+            .rect = clamped,
+            .modal = modal,
+            .auto_close = false,
+            .kind = .persistent,
+            .transparent_background = style.transparent_background,
+            .show_border = style.show_border,
+            .show_controls = style.show_controls,
             .animate = true,
         });
         try self.markWindowDirty(popup_window_id);
@@ -1289,6 +1390,75 @@ pub const Multiplexer = struct {
         const removed = self.popup_mgr.closeFocused() orelse self.popup_mgr.closeTopmost() orelse return;
         self.cleanupClosedPopup(removed);
         self.requestRedraw();
+    }
+
+    pub fn closePopupById(self: *Multiplexer, popup_id: u32) !bool {
+        const removed = self.popup_mgr.close(popup_id) orelse return false;
+        self.cleanupClosedPopup(removed);
+        self.requestRedraw();
+        return true;
+    }
+
+    pub fn focusPopupById(self: *Multiplexer, popup_id: u32) !bool {
+        if (!self.popup_mgr.focusAndRaise(popup_id)) return false;
+        if (self.popup_mgr.getByIdConst(popup_id)) |p| {
+            if (p.window_id) |wid| try self.markWindowDirty(wid);
+        }
+        self.requestRedraw();
+        return true;
+    }
+
+    pub fn movePopupById(self: *Multiplexer, popup_id: u32, x: u16, y: u16, screen: layout.Rect) !bool {
+        const p = self.popup_mgr.getById(popup_id) orelse return false;
+        p.rect = clampPopupRect(screen, .{
+            .x = x,
+            .y = y,
+            .width = p.rect.width,
+            .height = p.rect.height,
+        });
+        if (p.window_id) |wid| try self.markWindowDirty(wid);
+        self.requestRedraw();
+        return true;
+    }
+
+    pub fn resizePopupById(self: *Multiplexer, popup_id: u32, width: u16, height: u16, screen: layout.Rect) !bool {
+        const p = self.popup_mgr.getById(popup_id) orelse return false;
+        p.rect = clampPopupRect(screen, .{
+            .x = p.rect.x,
+            .y = p.rect.y,
+            .width = width,
+            .height = height,
+        });
+        if (p.window_id) |wid| {
+            if (self.ptys.getPtr(wid)) |proc| {
+                const inner = popupInnerSize(p.rect, .{
+                    .transparent_background = p.transparent_background,
+                    .show_border = p.show_border,
+                    .show_controls = p.show_controls,
+                });
+                try proc.resize(inner.rows, inner.cols);
+            }
+            try self.markWindowDirty(wid);
+        }
+        self.requestRedraw();
+        return true;
+    }
+
+    pub fn setPopupStyleById(self: *Multiplexer, popup_id: u32, style: PopupStyle, screen: layout.Rect) !bool {
+        const p = self.popup_mgr.getById(popup_id) orelse return false;
+        p.transparent_background = style.transparent_background;
+        p.show_border = style.show_border;
+        p.show_controls = style.show_controls;
+        p.rect = clampPopupRect(screen, p.rect);
+        if (p.window_id) |wid| {
+            if (self.ptys.getPtr(wid)) |proc| {
+                const inner = popupInnerSize(p.rect, style);
+                try proc.resize(inner.rows, inner.cols);
+            }
+            try self.markWindowDirty(wid);
+        }
+        self.requestRedraw();
+        return true;
     }
 
     pub fn closeActiveTab(self: *Multiplexer) !void {
@@ -2023,14 +2193,24 @@ pub const Multiplexer = struct {
             p.rect = clampPopupRect(screen, p.rect);
             const window_id = p.window_id orelse continue;
             if (self.ptys.getPtr(window_id)) |proc| {
-                const rows: u16 = if (p.rect.height > 2) p.rect.height - 2 else 1;
-                const cols: u16 = if (p.rect.width > 2) p.rect.width - 2 else 1;
-                try proc.resize(rows, cols);
+                const inner = popupInnerSize(p.rect, .{
+                    .transparent_background = p.transparent_background,
+                    .show_border = p.show_border,
+                    .show_controls = p.show_controls,
+                });
+                try proc.resize(inner.rows, inner.cols);
                 try self.markWindowDirty(window_id);
                 resized += 1;
             }
         }
         return resized;
+    }
+
+    fn popupInnerSize(rect: layout.Rect, style: PopupStyle) struct { rows: u16, cols: u16 } {
+        const inset: u16 = if (style.show_border) 2 else 0;
+        const rows: u16 = if (rect.height > inset) rect.height - inset else 1;
+        const cols: u16 = if (rect.width > inset) rect.width - inset else 1;
+        return .{ .rows = rows, .cols = cols };
     }
 
     fn clampPopupRect(screen: layout.Rect, rect: layout.Rect) layout.Rect {

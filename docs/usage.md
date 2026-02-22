@@ -182,10 +182,16 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"close_focused_window"}`
   - `{"v":1,"action":"restore_window_by_id","window_id":123}`
   - `{"v":1,"action":"register_command","command":"open_popup","enabled":true}`
-  - `{"v":1,"action":"open_shell_popup"}`
-  - `{"v":1,"action":"close_focused_popup"}`
-  - `{"v":1,"action":"cycle_popup_focus"}`
-  - `{"v":1,"action":"toggle_shell_popup"}`
+  - `{"v":1,"action":"open_shell_panel"}`
+  - `{"v":1,"action":"close_focused_panel"}`
+  - `{"v":1,"action":"cycle_panel_focus"}`
+  - `{"v":1,"action":"toggle_shell_panel"}`
+  - `{"v":1,"action":"open_shell_panel_rect","x":8,"y":4,"width":100,"height":24,"modal":true,"show_border":true,"show_controls":false,"transparent_background":false}`
+  - `{"v":1,"action":"close_panel_by_id","panel_id":1}`
+  - `{"v":1,"action":"focus_panel_by_id","panel_id":1}`
+  - `{"v":1,"action":"move_panel_by_id","panel_id":1,"x":12,"y":6}`
+  - `{"v":1,"action":"resize_panel_by_id","panel_id":1,"width":110,"height":26}`
+  - `{"v":1,"action":"set_panel_style_by_id","panel_id":1,"show_border":true,"show_controls":false,"transparent_background":false}`
   - `{"v":1,"action":"set_ui_bars","toolbar_line":"...","tab_line":"...","status_line":"..."}`
   - `{"v":1,"action":"clear_ui_bars"}`
 - Plugin errors/crashes are isolated; ykwm continues running.

@@ -36,6 +36,9 @@ export type RuntimeState = {
   window_count: number;
   minimized_window_count: number;
   visible_window_count: number;
+  panel_count: number;
+  focused_panel_id: number;
+  has_focused_panel: boolean;
   focused_index: number;
   focused_window_id: number;
   has_focused_window: boolean;
@@ -60,22 +63,9 @@ export type TickStats = {
   sigterm: boolean;
 };
 
-export type OnStartEvent = {
-  v: 1;
-  event: "on_start";
-  layout: LayoutType;
-};
-
-export type OnLayoutChangedEvent = {
-  v: 1;
-  event: "on_layout_changed";
-  layout: LayoutType;
-};
-
-export type OnShutdownEvent = {
-  v: 1;
-  event: "on_shutdown";
-};
+export type OnStartEvent = { v: 1; event: "on_start"; layout: LayoutType };
+export type OnLayoutChangedEvent = { v: 1; event: "on_layout_changed"; layout: LayoutType };
+export type OnShutdownEvent = { v: 1; event: "on_shutdown" };
 
 export type OnStateChangedEvent = {
   v: 1;
@@ -84,12 +74,7 @@ export type OnStateChangedEvent = {
   state: RuntimeState;
 };
 
-export type OnTickEvent = {
-  v: 1;
-  event: "on_tick";
-  stats: TickStats;
-  state: RuntimeState;
-};
+export type OnTickEvent = { v: 1; event: "on_tick"; stats: TickStats; state: RuntimeState };
 
 export type OnComputeLayoutEvent = {
   v: 1;
@@ -110,13 +95,7 @@ export type OnComputeLayoutEvent = {
 export type OnPointerEvent = {
   v: 1;
   event: "on_pointer";
-  pointer: {
-    x: number;
-    y: number;
-    button: number;
-    pressed: boolean;
-    motion: boolean;
-  };
+  pointer: { x: number; y: number; button: number; pressed: boolean; motion: boolean };
   hit?: {
     window_id: number;
     window_index: number;
@@ -126,14 +105,20 @@ export type OnPointerEvent = {
     on_close_button: boolean;
     on_minimized_toolbar: boolean;
     on_restore_button: boolean;
+    is_panel: boolean;
+    panel_id: number;
+    panel_rect: Rect;
+    on_panel_title_bar: boolean;
+    on_panel_close_button: boolean;
+    on_panel_resize_left: boolean;
+    on_panel_resize_right: boolean;
+    on_panel_resize_top: boolean;
+    on_panel_resize_bottom: boolean;
+    on_panel_body: boolean;
   };
 };
 
-export type OnCommandEvent = {
-  v: 1;
-  event: "on_command";
-  command: CommandName;
-};
+export type OnCommandEvent = { v: 1; event: "on_command"; command: CommandName };
 
 export type PluginEvent =
   | OnStartEvent
@@ -157,10 +142,34 @@ export type ActionMessage =
   | { v: 1; action: "close_focused_window" }
   | { v: 1; action: "restore_window_by_id"; window_id: number }
   | { v: 1; action: "register_command"; command: CommandName; enabled?: boolean }
-  | { v: 1; action: "open_shell_popup" }
-  | { v: 1; action: "close_focused_popup" }
-  | { v: 1; action: "cycle_popup_focus" }
-  | { v: 1; action: "toggle_shell_popup" }
+  | { v: 1; action: "open_shell_panel" }
+  | { v: 1; action: "close_focused_panel" }
+  | { v: 1; action: "cycle_panel_focus" }
+  | { v: 1; action: "toggle_shell_panel" }
+  | {
+      v: 1;
+      action: "open_shell_panel_rect";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      modal?: boolean;
+      transparent_background?: boolean;
+      show_border?: boolean;
+      show_controls?: boolean;
+    }
+  | { v: 1; action: "close_panel_by_id"; panel_id: number }
+  | { v: 1; action: "focus_panel_by_id"; panel_id: number }
+  | { v: 1; action: "move_panel_by_id"; panel_id: number; x: number; y: number }
+  | { v: 1; action: "resize_panel_by_id"; panel_id: number; width: number; height: number }
+  | {
+      v: 1;
+      action: "set_panel_style_by_id";
+      panel_id: number;
+      transparent_background?: boolean;
+      show_border?: boolean;
+      show_controls?: boolean;
+    }
   | { v: 1; action: "set_ui_bars"; toolbar_line: string; tab_line: string; status_line: string }
   | { v: 1; action: "clear_ui_bars" };
 

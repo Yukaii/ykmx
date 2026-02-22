@@ -30,6 +30,9 @@ pub const Popup = struct {
     parent_id: ?u32 = null,
     auto_close: bool = false,
     kind: PopupKind = .command,
+    transparent_background: bool = false,
+    show_border: bool = true,
+    show_controls: bool = false,
     animation: AnimationState = .{},
 };
 
@@ -41,6 +44,9 @@ pub const CreateParams = struct {
     parent_id: ?u32 = null,
     auto_close: bool = false,
     kind: PopupKind = .command,
+    transparent_background: bool = false,
+    show_border: bool = true,
+    show_controls: bool = false,
     animate: bool = true,
 };
 
@@ -74,6 +80,9 @@ pub const PopupManager = struct {
             .parent_id = params.parent_id,
             .auto_close = params.auto_close,
             .kind = params.kind,
+            .transparent_background = params.transparent_background,
+            .show_border = params.show_border,
+            .show_controls = params.show_controls,
             .animation = if (params.animate)
                 .{ .phase = .fade_in, .progress_permille = 0, .step_permille = 250 }
             else
@@ -230,7 +239,14 @@ pub const PopupManager = struct {
         return try closed.toOwnedSlice(allocator);
     }
 
-    fn getById(self: *PopupManager, popup_id: u32) ?*Popup {
+    pub fn getById(self: *PopupManager, popup_id: u32) ?*Popup {
+        for (self.popups.items) |*p| {
+            if (p.id == popup_id) return p;
+        }
+        return null;
+    }
+
+    pub fn getByIdConst(self: *const PopupManager, popup_id: u32) ?*const Popup {
         for (self.popups.items) |*p| {
             if (p.id == popup_id) return p;
         }
