@@ -15,6 +15,7 @@ const scrollback_mod = @import("scrollback.zig");
 const plugin_host = @import("plugin_host.zig");
 const plugin_manager = @import("plugin_manager.zig");
 const input_mod = @import("input.zig");
+const render_compositor = @import("render_compositor.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const c = @cImport({
@@ -2006,7 +2007,7 @@ fn renderRuntimeFrame(
 ) !void {
     const total_cols: usize = size.cols;
     const content_rows: usize = content.height;
-    const total_rows: usize = frameTotalRows(size);
+    const total_rows: usize = render_compositor.frameTotalRows(size);
     const canvas_len = total_cols * content_rows;
     const canvas = try allocator.alloc(u21, canvas_len);
     defer allocator.free(canvas);
@@ -2043,7 +2044,7 @@ fn renderRuntimeFrame(
     var pane_count: usize = 0;
     var focused_cursor_abs: ?struct { row: usize, col: usize } = null;
 
-    const popup_order = try collectVisiblePopupOrder(allocator, mux);
+    const popup_order = try render_compositor.collectVisiblePopupOrder(allocator, mux);
     defer allocator.free(popup_order);
     const popup_count = popup_order.len;
     markPopupMasks(
@@ -2184,22 +2185,9 @@ fn renderRuntimeFrame(
     if (focused_cursor_abs) |p| {
         try writeFmtBlocking(out, "\x1b[{};{}H", .{ p.row, p.col });
     } else {
-        try writeFmtBlocking(out, "\x1b[{};1H", .{fallbackCursorRow(content_rows, footer_rows)});
+        try writeFmtBlocking(out, "\x1b[{};1H", .{render_compositor.fallbackCursorRow(content_rows, footer_rows)});
     }
     try writeAllBlocking(out, "\x1b[?25h");
-}
-
-fn frameTotalRows(size: RuntimeSize) usize {
-    return size.rows;
-}
-
-fn fallbackCursorRow(content_rows: usize, footer_rows: usize) usize {
-    return if (footer_rows > 0)
-        content_rows + footer_rows
-    else if (content_rows > 0)
-        content_rows
-    else
-        1;
 }
 
 const FooterLines = struct {
@@ -2471,37 +2459,6 @@ fn resolveChromeStyleAt(
         return fallback;
     }
     return null;
-}
-
-fn collectVisiblePopupOrder(
-    allocator: std.mem.Allocator,
-    mux: *const multiplexer.Multiplexer,
-) ![]usize {
-    var visible_count: usize = 0;
-    for (mux.popup_mgr.popups.items) |p| {
-        if (p.visible) visible_count += 1;
-    }
-
-    const order = try allocator.alloc(usize, visible_count);
-    var out_i: usize = 0;
-    for (mux.popup_mgr.popups.items, 0..) |p, i| {
-        if (!p.visible) continue;
-        order[out_i] = i;
-        out_i += 1;
-    }
-
-    var i: usize = 1;
-    while (i < order.len) : (i += 1) {
-        const key = order[i];
-        const key_z = mux.popup_mgr.popups.items[key].z_index;
-        var j = i;
-        while (j > 0 and mux.popup_mgr.popups.items[order[j - 1]].z_index > key_z) : (j -= 1) {
-            order[j] = order[j - 1];
-        }
-        order[j] = key;
-    }
-
-    return order;
 }
 
 fn markPopupMasks(
@@ -4313,17 +4270,17 @@ test "contentRect never overflows total terminal rows" {
 test "frame row math stays within terminal after resize extremes" {
     const testing = std.testing;
 
-    try testing.expectEqual(@as(usize, 1), frameTotalRows(.{ .cols = 80, .rows = 1 }));
-    try testing.expectEqual(@as(usize, 3), frameTotalRows(.{ .cols = 80, .rows = 3 }));
-    try testing.expectEqual(@as(usize, 24), frameTotalRows(.{ .cols = 80, .rows = 24 }));
+    try testing.expectEqual(@as(usize, 1), render_compositor.frameTotalRows(.{ .cols = 80, .rows = 1 }));
+    try testing.expectEqual(@as(usize, 3), render_compositor.frameTotalRows(.{ .cols = 80, .rows = 3 }));
+    try testing.expectEqual(@as(usize, 24), render_compositor.frameTotalRows(.{ .cols = 80, .rows = 24 }));
 
     // No footer rows visible (tiny terminal): keep cursor on last visible content row.
-    try testing.expectEqual(@as(usize, 1), fallbackCursorRow(1, 0));
-    try testing.expectEqual(@as(usize, 3), fallbackCursorRow(3, 0));
+    try testing.expectEqual(@as(usize, 1), render_compositor.fallbackCursorRow(1, 0));
+    try testing.expectEqual(@as(usize, 3), render_compositor.fallbackCursorRow(3, 0));
 
     // Footer rows visible: place cursor at the final visible row.
-    try testing.expectEqual(@as(usize, 24), fallbackCursorRow(21, 3));
+    try testing.expectEqual(@as(usize, 24), render_compositor.fallbackCursorRow(21, 3));
 
     // Degenerate safety.
-    try testing.expectEqual(@as(usize, 1), fallbackCursorRow(0, 0));
+    try testing.expectEqual(@as(usize, 1), render_compositor.fallbackCursorRow(0, 0));
 }
