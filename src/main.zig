@@ -2156,7 +2156,7 @@ fn renderRuntimeFrame(
 
     const resized = try frame_cache.ensureSize(total_cols, total_rows);
 
-    var curr = try allocator.alloc(RuntimeRenderCell, total_cols * total_rows);
+    const curr = try allocator.alloc(RuntimeRenderCell, total_cols * total_rows);
     defer allocator.free(curr);
     for (curr) |*cell| cell.* = .{};
     composeContentCells(
@@ -2196,6 +2196,40 @@ fn renderRuntimeFrame(
     }
 
     const footer_rows = total_rows - content_rows;
+    composeFooterRows(curr, total_cols, content_rows, total_rows, minimized_line, tab_line, status_line);
+    try writeFrameToTerminal(
+        out,
+        frame_cache,
+        curr,
+        resized,
+        total_cols,
+        content_rows,
+        footer_rows,
+        minimized_line,
+        tab_line,
+        status_line,
+    );
+
+    @memcpy(frame_cache.cells, curr);
+
+    if (focused_cursor_abs) |p| {
+        try writeFmtBlocking(out, "\x1b[{};{}H", .{ p.row, p.col });
+    } else {
+        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
+    }
+    try writeAllBlocking(out, "\x1b[?25h");
+}
+
+fn composeFooterRows(
+    curr: []RuntimeRenderCell,
+    total_cols: usize,
+    content_rows: usize,
+    total_rows: usize,
+    minimized_line: []const u8,
+    tab_line: []const u8,
+    status_line: []const u8,
+) void {
+    const footer_rows = total_rows - content_rows;
     traceEvent(
         .render_footer,
         @intCast(total_cols),
@@ -2212,6 +2246,20 @@ fn renderRuntimeFrame(
     if (footer_rows > 2) {
         fillPlainLine(curr[(content_rows + 2) * total_cols .. (content_rows + 3) * total_cols], status_line);
     }
+}
+
+fn writeFrameToTerminal(
+    out: *std.Io.Writer,
+    frame_cache: *RuntimeFrameCache,
+    curr: []const RuntimeRenderCell,
+    resized: bool,
+    total_cols: usize,
+    content_rows: usize,
+    footer_rows: usize,
+    minimized_line: []const u8,
+    tab_line: []const u8,
+    status_line: []const u8,
+) !void {
     if (resized) try writeAllBlocking(out, "\x1b[2J");
 
     var active_style: ?ghostty_vt.Style = null;
@@ -2223,8 +2271,6 @@ fn renderRuntimeFrame(
             const y = idx / total_cols;
             const x = idx % total_cols;
             try writeFmtBlocking(out, "\x1b[{};{}H", .{ y + 1, x + 1 });
-            // Cursor moves do not reset SGR. Start each fragmented write from a
-            // known style baseline to prevent background leaks across runs.
             try writeAllBlocking(out, "\x1b[0m");
             active_style = null;
             const new = curr[idx];
@@ -2235,8 +2281,6 @@ fn renderRuntimeFrame(
                 }
             } else if (active_style) |s| {
                 if (!s.eql(new.style)) {
-                    // Styles are not guaranteed to be "absolute" (they may omit bg),
-                    // so reset first to avoid inheriting background from prior cells.
                     try writeAllBlocking(out, "\x1b[0m");
                     try writeStyle(out, new.style);
                     active_style = new.style;
@@ -2260,8 +2304,6 @@ fn renderRuntimeFrame(
 
         const x0 = run_start % total_cols;
         try writeFmtBlocking(out, "\x1b[{};{}H", .{ y_row + 1, x0 + 1 });
-        // Reset SGR at run boundaries so the first cell in this run can't
-        // inherit a background from an earlier run that ended without a reset.
         try writeAllBlocking(out, "\x1b[0m");
         active_style = null;
 
@@ -2275,8 +2317,6 @@ fn renderRuntimeFrame(
                 }
             } else if (active_style) |s| {
                 if (!s.eql(new.style)) {
-                    // Reset before applying a different style to prevent bg/attrs
-                    // from leaking when the next style doesn't specify them.
                     try writeAllBlocking(out, "\x1b[0m");
                     try writeStyle(out, new.style);
                     active_style = new.style;
@@ -2292,8 +2332,6 @@ fn renderRuntimeFrame(
     }
     if (active_style != null) try writeAllBlocking(out, "\x1b[0m");
 
-    // Footer bars are informational UI chrome; always paint them last to avoid
-    // transient corruption from incremental pane diff writes during focus churn.
     try writeAllBlocking(out, "\x1b[0m");
     if (footer_rows > 0) {
         try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 1});
@@ -2307,15 +2345,6 @@ fn renderRuntimeFrame(
         try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
         try writeClippedLine(out, status_line, total_cols);
     }
-
-    @memcpy(frame_cache.cells, curr);
-
-    if (focused_cursor_abs) |p| {
-        try writeFmtBlocking(out, "\x1b[{};{}H", .{ p.row, p.col });
-    } else {
-        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
-    }
-    try writeAllBlocking(out, "\x1b[?25h");
 }
 
 const BorderMask = struct {
