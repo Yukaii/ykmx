@@ -105,7 +105,7 @@ plugin_dir="$HOME/.config/ykmx/plugins"
 plugins_dir="$HOME/.config/ykmx/plugins.d"
 ```
 
-Reference config lives at `docs/examples/config`.
+Reference config lives at `docs/examples/config.toml`.
 
 ## Default Keybindings
 

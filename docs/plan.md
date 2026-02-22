@@ -517,7 +517,7 @@ Implemented in repository:
 - Scrollback actions wired: `MOD+u` page-up and `MOD+d` page-down on focused window scrollback
 - Multiplexer search API wired: forward/backward query over focused scrollback with jump-to-match behavior
 - CLI utilities wired: `--help`, `--version`, `--benchmark [N]`, `--smoke-zmx [session]`
-- User docs added: `docs/usage.md`, `docs/examples/config`, `docs/completions/ykmx.bash`, `docs/completions/_ykmx`
+- User docs added: `docs/usage.md`, `docs/examples/config.toml`, `docs/completions/ykmx.bash`, `docs/completions/_ykmx`
 - Popup animation hooks implemented (fade-in/fade-out state + animation tick processing in runtime loop)
 - FZF popup integration example implemented (`openFzfPopup` with auto-close semantics and fallback if `fzf` is unavailable)
 - Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
