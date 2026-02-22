@@ -117,6 +117,7 @@ Prefix key is `Ctrl+G`.
 - Popup/panels: `p` toggle popup shell, `Esc` close focused popup, `Tab` cycle popup focus
 - Scrollback: `u/d` page up/down, `s` toggle synchronized scroll
 - Mouse mode: `M` cycle `hybrid -> passthrough -> compositor`
+- Quit ykmx: `q` (graceful shutdown of ykmx process)
 - Detach request: `\`
 
 ## Plugins

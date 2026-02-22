@@ -139,6 +139,7 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G u` / `Ctrl+G d` page up/down scrollback
 - `Ctrl+G s` toggle synchronized scroll across visible panes in active tab
 - `Ctrl+G M` cycle mouse mode (`hybrid` -> `passthrough` -> `compositor`)
+- `Ctrl+G q` graceful shutdown (quit ykmx process)
 - `Ctrl+G \` detach request
 
 Current layout cycle order: `vertical_stack -> horizontal_stack -> grid -> paperwm -> fullscreen`.

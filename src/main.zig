@@ -36,6 +36,7 @@ const DebugTag = enum(u8) {
     render_begin,
     render_footer,
     plugin_request_redraw,
+    compose_bg_leak,
 };
 
 const DebugTrace = struct {
@@ -95,6 +96,8 @@ const DebugTrace = struct {
 };
 
 var g_debug_trace: DebugTrace = .{};
+var g_compose_debug_frame: u64 = 0;
+var g_compose_debug_tick: u64 = 0;
 
 fn traceEvent(tag: DebugTag, a: i32, b: i32, c_val: i32, d: i32) void {
     g_debug_trace.push(tag, a, b, c_val, d);
@@ -107,6 +110,7 @@ fn debugTagName(tag: DebugTag) []const u8 {
         .render_begin => "render_begin",
         .render_footer => "render_footer",
         .plugin_request_redraw => "plugin_request_redraw",
+        .compose_bg_leak => "compose_bg_leak",
     };
 }
 
@@ -299,6 +303,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     control.exportEnv() catch {};
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
+    const compose_debug_enabled = readEnvFlag(allocator, "YKMX_DEBUG_COMPOSE");
 
     var plugins = plugin_manager.PluginManager.init(allocator);
     defer plugins.deinit();
@@ -389,6 +394,10 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
 
         const snap = signal_mod.drain();
         const tick_result = try mux.tick(30, content, snap);
+        if (compose_debug_enabled and (g_compose_debug_tick % 30) == 0) {
+            logComposeTickSummary(&mux, content);
+        }
+        g_compose_debug_tick += 1;
         traceEvent(
             .tick_result,
             @intCast(tick_result.reads),
@@ -546,12 +555,40 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                 @intCast(content.width),
                 @intCast(content.height),
             );
-            try renderRuntimeFrame(out, allocator, &mux, &vt_state, &frame_cache, size, content, if (plugins.hasAny()) plugins.uiBars() else null);
+            try renderRuntimeFrame(out, allocator, &mux, &vt_state, &frame_cache, size, content, if (plugins.hasAny()) plugins.uiBars() else null, compose_debug_enabled);
             try out.flush();
             force_redraw = false;
         }
     }
     if (plugins.hasAny()) plugins.emitShutdown();
+}
+
+fn readEnvFlag(allocator: std.mem.Allocator, name: []const u8) bool {
+    const raw = std.process.getEnvVarOwned(allocator, name) catch return false;
+    defer allocator.free(raw);
+    const v = std.mem.trim(u8, raw, " \t\r\n");
+    if (v.len == 0) return false;
+    if (std.mem.eql(u8, v, "0")) return false;
+    if (std.ascii.eqlIgnoreCase(v, "false")) return false;
+    if (std.ascii.eqlIgnoreCase(v, "off")) return false;
+    if (std.ascii.eqlIgnoreCase(v, "no")) return false;
+    return true;
+}
+
+fn logComposeTickSummary(mux: *multiplexer.Multiplexer, content: layout.Rect) void {
+    var buf: [256]u8 = undefined;
+    const line = std.fmt.bufPrint(
+        &buf,
+        "ykmx compose-debug tick={} visible_popups={} focused_popup={} screen={}x{}\n",
+        .{
+            g_compose_debug_tick,
+            mux.popup_mgr.visibleCount(),
+            mux.popup_mgr.focused_popup_id orelse 0,
+            content.width,
+            content.height,
+        },
+    ) catch return;
+    _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
 }
 
 const ControlCommand = struct {
@@ -1965,6 +2002,7 @@ fn renderRuntimeFrame(
     size: RuntimeSize,
     content: layout.Rect,
     plugin_ui_bars: ?plugin_host.PluginHost.UiBarsView,
+    compose_debug_enabled: bool,
 ) !void {
     const total_cols: usize = size.cols;
     const content_rows: usize = content.height;
@@ -1982,6 +2020,9 @@ fn renderRuntimeFrame(
     const popup_cover = try allocator.alloc(bool, canvas_len);
     defer allocator.free(popup_cover);
     @memset(popup_cover, false);
+    const popup_opaque_cover = try allocator.alloc(bool, canvas_len);
+    defer allocator.free(popup_opaque_cover);
+    @memset(popup_opaque_cover, false);
     const top_window_owner = try allocator.alloc(i32, canvas_len);
     defer allocator.free(top_window_owner);
     @memset(top_window_owner, -1);
@@ -2136,6 +2177,9 @@ fn renderRuntimeFrame(
         }
         markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
         markRectOverlay(popup_cover, total_cols, content_rows, p.rect);
+        if (!p.transparent_background) {
+            markRectOverlay(popup_opaque_cover, total_cols, content_rows, p.rect);
+        }
         // Popup interiors are opaque: suppress any precomputed base-pane border
         // connectors under the popup content area so they never bleed through.
         clearBorderConnInsideRect(border_conn, total_cols, content_rows, p.rect);
@@ -2192,10 +2236,44 @@ fn renderRuntimeFrame(
     for (popup_order[0..popup_count]) |popup_idx| {
         const p = mux.popup_mgr.popups.items[popup_idx];
         if (p.rect.width < 2 or p.rect.height < 2) continue;
+        const panel_active = mux.popup_mgr.focused_popup_id == p.id;
+        if (p.show_border) {
+            drawPopupBorderDirect(
+                canvas,
+                total_cols,
+                content_rows,
+                p.rect,
+                mux.borderGlyphs(),
+                if (panel_active) mux.focusMarker() else null,
+            );
+            const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
+            markBorderLayer(
+                chrome_layer,
+                chrome_panel_id,
+                total_cols,
+                content_rows,
+                p.rect,
+                popup_border,
+                if (panel_active) chrome_layer_active_border else chrome_layer_inactive_border,
+                p.id,
+            );
+        }
         const inner_x = p.rect.x + 1;
         const inner_w = p.rect.width - 2;
         if (inner_w == 0) continue;
         drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
+        markTextLayer(
+            chrome_layer,
+            chrome_panel_id,
+            total_cols,
+            content_rows,
+            inner_x,
+            p.rect.y,
+            p.title,
+            inner_w,
+            if (panel_active) chrome_layer_active_title else chrome_layer_inactive_title,
+            p.id,
+        );
         if (p.show_controls and p.rect.width >= 10) {
             var controls_buf: [9]u8 = undefined;
             const control_chars = mux.windowControlChars();
@@ -2204,6 +2282,18 @@ fn renderRuntimeFrame(
             const controls_w: u16 = @intCast(controls.len);
             const controls_x: u16 = p.rect.x + p.rect.width - controls_w - 1;
             drawText(canvas, total_cols, content_rows, controls_x, p.rect.y, controls, controls_w);
+            markTextLayer(
+                chrome_layer,
+                chrome_panel_id,
+                total_cols,
+                content_rows,
+                controls_x,
+                p.rect.y,
+                controls,
+                controls_w,
+                if (panel_active) chrome_layer_active_buttons else chrome_layer_inactive_buttons,
+                p.id,
+            );
         }
     }
 
@@ -2254,7 +2344,6 @@ fn renderRuntimeFrame(
     };
 
     const resized = try frame_cache.ensureSize(total_cols, total_rows);
-    if (resized) try writeAllBlocking(out, "\x1b[2J");
 
     var curr = try allocator.alloc(RuntimeRenderCell, total_cols * total_rows);
     defer allocator.free(curr);
@@ -2266,9 +2355,9 @@ fn renderRuntimeFrame(
         const start = row * total_cols;
         var x: usize = 0;
         while (x < total_cols) : (x += 1) {
-            // Border/chrome cells always win compositor layering so overlapped
-            // panes don't paint content over visible frame edges/titles.
-            if (border_conn[row_off + x] != 0) {
+            // Popup chrome (border/title/buttons) must win over any pane border
+            // connectors underneath in overlap scenarios.
+            if (popup_overlay[row_off + x]) {
                 curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
                 if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
                     curr[row_off + x].style = s;
@@ -2276,7 +2365,9 @@ fn renderRuntimeFrame(
                 }
                 continue;
             }
-            if (popup_overlay[row_off + x]) {
+            // Border/chrome cells win over pane content, but only after popup
+            // chrome has had a chance to override them.
+            if (border_conn[row_off + x] != 0) {
                 curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
                 if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
                     curr[row_off + x].style = s;
@@ -2310,7 +2401,32 @@ fn renderRuntimeFrame(
                 curr[row_off + x].style = s;
                 curr[row_off + x].styled = !s.default();
             }
+            if (popup_opaque_cover[row_off + x]) {
+                enforceOpaqueRuntimeCellBg(&curr[row_off + x]);
+            }
         }
+    }
+    if (compose_debug_enabled and popup_count > 0) {
+        logComposePopupSummary(
+            mux.popup_mgr.popups.items,
+            popup_order[0..popup_count],
+            popup_count,
+            mux.popup_mgr.focused_popup_id,
+            total_cols,
+            content_rows,
+        );
+        logComposeBgDebug(
+            curr,
+            canvas,
+            total_cols,
+            content_rows,
+            popup_count,
+            popup_overlay,
+            popup_opaque_cover,
+            border_conn,
+            chrome_layer,
+            chrome_panel_id,
+        );
     }
 
     const footer_rows = total_rows - content_rows;
@@ -2330,16 +2446,50 @@ fn renderRuntimeFrame(
     if (footer_rows > 2) {
         fillPlainLine(curr[(content_rows + 2) * total_cols .. (content_rows + 3) * total_cols], status_line);
     }
+    const force_repaint_with_popup = popup_count > 0;
+    // Temporary safety path: force full-screen redraw while any popup/panel is
+    // visible. This removes all diff-cache artifacts during overlap styling.
+    const force_full_redraw_with_popup = popup_count > 0;
+    const redraw_full_frame = resized or force_full_redraw_with_popup;
+    if (redraw_full_frame) try writeAllBlocking(out, "\x1b[2J");
+
+    // Popup-covered cells must not rely on diff-skip because stale styled
+    // backgrounds from underlying panes can survive when glyph text matches.
+    // Force these cells to repaint each frame while any popup is visible.
+    if (!resized and popup_count > 0) {
+        var y: usize = 0;
+        while (y < content_rows) : (y += 1) {
+            var x: usize = 0;
+            while (x < total_cols) : (x += 1) {
+                const idx_fc = y * total_cols + x;
+                if (!popup_opaque_cover[idx_fc]) continue;
+                frame_cache.cells[idx_fc].text_len = 0;
+                frame_cache.cells[idx_fc].styled = false;
+                frame_cache.cells[idx_fc].style = .{};
+            }
+        }
+    }
 
     var active_style: ?ghostty_vt.Style = null;
     var idx: usize = 0;
     while (idx < curr.len) : (idx += 1) {
-        if (!resized and renderCellEqual(frame_cache.cells[idx], curr[idx])) continue;
+        if (!redraw_full_frame and !mustRepaintCell(
+            idx,
+            force_repaint_with_popup,
+            popup_opaque_cover,
+            popup_overlay,
+            border_conn,
+            chrome_layer,
+        ) and renderCellEqual(frame_cache.cells[idx], curr[idx])) continue;
 
-        if (!isSafeRunCell(curr[idx])) {
+        if (force_full_redraw_with_popup or !isSafeRunCell(curr[idx])) {
             const y = idx / total_cols;
             const x = idx % total_cols;
             try writeFmtBlocking(out, "\x1b[{};{}H", .{ y + 1, x + 1 });
+            // Cursor moves do not reset SGR. Start each fragmented write from a
+            // known style baseline to prevent background leaks across runs.
+            try writeAllBlocking(out, "\x1b[0m");
+            active_style = null;
             const new = curr[idx];
             if (!new.styled) {
                 if (active_style != null) {
@@ -2348,6 +2498,9 @@ fn renderRuntimeFrame(
                 }
             } else if (active_style) |s| {
                 if (!s.eql(new.style)) {
+                    // Styles are not guaranteed to be "absolute" (they may omit bg),
+                    // so reset first to avoid inheriting background from prior cells.
+                    try writeAllBlocking(out, "\x1b[0m");
                     try writeStyle(out, new.style);
                     active_style = new.style;
                 }
@@ -2365,11 +2518,22 @@ fn renderRuntimeFrame(
         var run_end = idx + 1;
         while (run_end < row_end) : (run_end += 1) {
             if (!isSafeRunCell(curr[run_end])) break;
-            if (!resized and renderCellEqual(frame_cache.cells[run_end], curr[run_end])) break;
+            if (!redraw_full_frame and !mustRepaintCell(
+                run_end,
+                force_repaint_with_popup,
+                popup_opaque_cover,
+                popup_overlay,
+                border_conn,
+                chrome_layer,
+            ) and renderCellEqual(frame_cache.cells[run_end], curr[run_end])) break;
         }
 
         const x0 = run_start % total_cols;
         try writeFmtBlocking(out, "\x1b[{};{}H", .{ y_row + 1, x0 + 1 });
+        // Reset SGR at run boundaries so the first cell in this run can't
+        // inherit a background from an earlier run that ended without a reset.
+        try writeAllBlocking(out, "\x1b[0m");
+        active_style = null;
 
         var j = run_start;
         while (j < run_end) : (j += 1) {
@@ -2381,6 +2545,9 @@ fn renderRuntimeFrame(
                 }
             } else if (active_style) |s| {
                 if (!s.eql(new.style)) {
+                    // Reset before applying a different style to prevent bg/attrs
+                    // from leaking when the next style doesn't specify them.
+                    try writeAllBlocking(out, "\x1b[0m");
                     try writeStyle(out, new.style);
                     active_style = new.style;
                 }
@@ -2457,7 +2624,7 @@ fn resolveChromeStyleAt(
 ) ?ghostty_vt.Style {
     if (role == chrome_layer_none) return null;
     const styles = if (panel_id != 0) (mux.panelChromeStylesById(panel_id) orelse mux.chromeStyles()) else mux.chromeStyles();
-    return switch (role) {
+    const base = switch (role) {
         chrome_layer_active_border => styles.active_border,
         chrome_layer_inactive_border => styles.inactive_border,
         chrome_layer_active_title => styles.active_title,
@@ -2466,6 +2633,42 @@ fn resolveChromeStyleAt(
         chrome_layer_inactive_buttons => styles.inactive_buttons,
         else => null,
     };
+    if (base) |style| return enforceOpaquePanelChromeBg(style, panel_id);
+    if (panel_id != 0) {
+        var fallback: ghostty_vt.Style = .{};
+        fallback.bg_color = .{ .palette = 0 };
+        return fallback;
+    }
+    return null;
+}
+
+fn enforceOpaquePanelChromeBg(style: ghostty_vt.Style, panel_id: u32) ghostty_vt.Style {
+    if (panel_id == 0) return style;
+    var out = style;
+    switch (out.bg_color) {
+        .none => out.bg_color = .{ .palette = 0 },
+        else => {},
+    }
+    return out;
+}
+
+fn enforceOpaqueRuntimeCellBg(cell: *RuntimeRenderCell) void {
+    if (!cell.styled) {
+        var s: ghostty_vt.Style = .{};
+        s.bg_color = .{ .palette = 0 };
+        cell.style = s;
+        cell.styled = true;
+        return;
+    }
+    var s = cell.style;
+    switch (s.bg_color) {
+        .none => {
+            s.bg_color = .{ .palette = 0 };
+            cell.style = s;
+            cell.styled = true;
+        },
+        else => {},
+    }
 }
 
 fn markLayerCell(
@@ -2779,6 +2982,42 @@ fn applyBorderGlyphs(
     _ = cols;
 }
 
+fn drawPopupBorderDirect(
+    canvas: []u21,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+    glyphs: multiplexer.Multiplexer.BorderGlyphs,
+    focus_marker: ?u8,
+) void {
+    if (r.width < 2 or r.height < 2) return;
+    const x0: usize = r.x;
+    const y0: usize = r.y;
+    const x1: usize = x0 + r.width - 1;
+    const y1: usize = y0 + r.height - 1;
+    if (x1 >= cols or y1 >= rows) return;
+
+    putCell(canvas, cols, x0, y0, glyphs.corner_tl);
+    putCell(canvas, cols, x1, y0, glyphs.corner_tr);
+    putCell(canvas, cols, x0, y1, glyphs.corner_bl);
+    putCell(canvas, cols, x1, y1, glyphs.corner_br);
+
+    var x = x0 + 1;
+    while (x < x1) : (x += 1) {
+        putCell(canvas, cols, x, y0, glyphs.horizontal);
+        putCell(canvas, cols, x, y1, glyphs.horizontal);
+    }
+    var y = y0 + 1;
+    while (y < y1) : (y += 1) {
+        putCell(canvas, cols, x0, y, glyphs.vertical);
+        putCell(canvas, cols, x1, y, glyphs.vertical);
+    }
+
+    if (focus_marker) |m| {
+        if (x0 + 1 < cols) putCell(canvas, cols, x0 + 1, y0, m);
+    }
+}
+
 fn markPopupOverlay(
     overlay: []bool,
     cols: usize,
@@ -3007,6 +3246,163 @@ fn renderCellEqual(a: RuntimeRenderCell, b: RuntimeRenderCell) bool {
     if (a.styled != b.styled) return false;
     if (a.styled and !a.style.eql(b.style)) return false;
     return std.mem.eql(u8, a.text[0..a.text_len], b.text[0..b.text_len]);
+}
+
+fn runtimeCellHasExplicitBg(cell: RuntimeRenderCell) bool {
+    if (!cell.styled) return false;
+    return switch (cell.style.bg_color) {
+        .none => false,
+        else => true,
+    };
+}
+
+fn runtimeCellBgTag(cell: RuntimeRenderCell) u8 {
+    if (!cell.styled) return 0;
+    return switch (cell.style.bg_color) {
+        .none => 0,
+        .palette => 1,
+        .rgb => 2,
+    };
+}
+
+fn logComposePopupSummary(
+    popups: anytype,
+    popup_order: []const usize,
+    popup_count: usize,
+    focused_popup_id: ?u32,
+    cols: usize,
+    rows: usize,
+) void {
+    var hdr_buf: [256]u8 = undefined;
+    const hdr = std.fmt.bufPrint(
+        &hdr_buf,
+        "ykmx compose-debug frame={} popups={} focused_popup={} canvas={}x{}\n",
+        .{ g_compose_debug_frame, popup_count, focused_popup_id orelse 0, cols, rows },
+    ) catch return;
+    _ = c.write(c.STDERR_FILENO, hdr.ptr, hdr.len);
+
+    var i: usize = 0;
+    while (i < popup_count) : (i += 1) {
+        const idx = popup_order[i];
+        if (idx >= popups.len) continue;
+        const p = popups[idx];
+        var line_buf: [320]u8 = undefined;
+        const line = std.fmt.bufPrint(
+            &line_buf,
+            "  popup#{}/{} id={} vis={} z={} rect=({},{} {}x{}) border={} controls={} transparent={}\n",
+            .{
+                i + 1,
+                popup_count,
+                p.id,
+                @as(u8, @intFromBool(p.visible)),
+                p.z_index,
+                p.rect.x,
+                p.rect.y,
+                p.rect.width,
+                p.rect.height,
+                @as(u8, @intFromBool(p.show_border)),
+                @as(u8, @intFromBool(p.show_controls)),
+                @as(u8, @intFromBool(p.transparent_background)),
+            },
+        ) catch continue;
+        _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
+    }
+}
+
+fn logComposeBgDebug(
+    curr: []const RuntimeRenderCell,
+    canvas: []const u21,
+    cols: usize,
+    rows: usize,
+    popup_count: usize,
+    popup_overlay: []const bool,
+    popup_opaque_cover: []const bool,
+    border_conn: []const u8,
+    chrome_layer: []const u8,
+    chrome_panel_id: []const u32,
+) void {
+    if (curr.len == 0 or popup_count == 0) return;
+    var opaque_cells: usize = 0;
+    var leak_cells: usize = 0;
+    var sample_ids: [12]usize = undefined;
+    var sample_count: usize = 0;
+
+    var i: usize = 0;
+    while (i < curr.len and i < popup_opaque_cover.len) : (i += 1) {
+        if (!popup_opaque_cover[i]) continue;
+        opaque_cells += 1;
+        if (!runtimeCellHasExplicitBg(curr[i])) {
+            leak_cells += 1;
+            if (sample_count < sample_ids.len) {
+                sample_ids[sample_count] = i;
+                sample_count += 1;
+            }
+        }
+    }
+
+    const frame_no = g_compose_debug_frame;
+    g_compose_debug_frame += 1;
+    traceEvent(
+        .compose_bg_leak,
+        @intCast(popup_count),
+        @intCast(leak_cells),
+        @intCast(opaque_cells),
+        @intCast(@min(frame_no, @as(u64, std.math.maxInt(i32)))),
+    );
+
+    // Log every leaking frame; also heartbeat every ~120 frames to confirm state.
+    if (leak_cells == 0 and (frame_no % 120) != 0) return;
+
+    var stderr_buf: [2048]u8 = undefined;
+    const prefix = std.fmt.bufPrint(
+        &stderr_buf,
+        "ykmx compose-debug frame={} popups={} rows={} cols={} opaque_cells={} leak_cells={}\n",
+        .{ frame_no, popup_count, rows, cols, opaque_cells, leak_cells },
+    ) catch return;
+    _ = c.write(c.STDERR_FILENO, prefix.ptr, prefix.len);
+
+    var s: usize = 0;
+    while (s < sample_count) : (s += 1) {
+        const idx = sample_ids[s];
+        const x = idx % cols;
+        const y = idx / cols;
+        const cell = curr[idx];
+        const cp = if (idx < canvas.len) canvas[idx] else @as(u21, ' ');
+        var sample_buf: [320]u8 = undefined;
+        const line = std.fmt.bufPrint(
+            &sample_buf,
+            "  leak#{}/{} x={} y={} cp=U+{X:0>4} text_len={} styled={} bg_tag={} overlay={} opaque={} border_bits={} chrome_role={} panel_id={}\n",
+            .{
+                s + 1,
+                sample_count,
+                x,
+                y,
+                cp,
+                cell.text_len,
+                @as(u8, @intFromBool(cell.styled)),
+                runtimeCellBgTag(cell),
+                @as(u8, @intFromBool(idx < popup_overlay.len and popup_overlay[idx])),
+                @as(u8, @intFromBool(idx < popup_opaque_cover.len and popup_opaque_cover[idx])),
+                if (idx < border_conn.len) border_conn[idx] else 0,
+                if (idx < chrome_layer.len) chrome_layer[idx] else 0,
+                if (idx < chrome_panel_id.len) chrome_panel_id[idx] else 0,
+            },
+        ) catch continue;
+        _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
+    }
+}
+
+fn mustRepaintCell(
+    idx: usize,
+    force_repaint_with_popup: bool,
+    popup_cover: []const bool,
+    popup_overlay: []const bool,
+    border_conn: []const u8,
+    chrome_layer: []const u8,
+) bool {
+    if (!force_repaint_with_popup) return false;
+    if (idx >= popup_cover.len or idx >= popup_overlay.len or idx >= border_conn.len or idx >= chrome_layer.len) return false;
+    return popup_cover[idx] or popup_overlay[idx] or border_conn[idx] != 0 or chrome_layer[idx] != chrome_layer_none;
 }
 
 fn isSafeRunCell(cell: RuntimeRenderCell) bool {

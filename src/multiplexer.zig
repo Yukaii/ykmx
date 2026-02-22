@@ -133,6 +133,7 @@ pub const Multiplexer = struct {
     mouse_tracking_enabled: std.AutoHashMapUnmanaged(u32, void) = .{},
     input_router: input_mod.Router = .{},
     detach_requested: bool = false,
+    shutdown_requested: bool = false,
     sync_scroll_enabled: bool = false,
     sync_scroll_source_window_id: ?u32 = null,
     scrollback_query_mode: bool = false,
@@ -391,6 +392,9 @@ pub const Multiplexer = struct {
                         continue;
                     }
                     switch (cmd) {
+                        .quit_ykmx => {
+                            self.shutdown_requested = true;
+                        },
                         .create_window => {
                             _ = try self.createShellWindow("shell");
                             if (screen) |s| _ = try self.resizeActiveWindowsToLayout(s);
@@ -1324,6 +1328,12 @@ pub const Multiplexer = struct {
         return value;
     }
 
+    pub fn consumeShutdownRequested(self: *Multiplexer) bool {
+        const value = self.shutdown_requested;
+        self.shutdown_requested = false;
+        return value;
+    }
+
     pub fn consumeLastMouseEvent(self: *Multiplexer) ?input_mod.MouseEvent {
         if (self.pending_mouse_events.items.len == 0) return null;
         return self.pending_mouse_events.orderedRemove(0);
@@ -1482,8 +1492,9 @@ pub const Multiplexer = struct {
     ) !TickResult {
         self.last_screen = screen;
         const detach_requested = self.consumeDetachRequested();
+        const shutdown_requested = self.consumeShutdownRequested();
 
-        if (signals.sighup or signals.sigterm) {
+        if (signals.sighup or signals.sigterm or shutdown_requested) {
             try self.gracefulShutdown();
             return .{
                 .reads = 0,
@@ -2939,6 +2950,19 @@ test "multiplexer detach still works with plugin popup command overrides" {
     try testing.expect(!mux.consumeDetachRequested());
 }
 
+test "multiplexer quit command toggles shutdown request flag" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    try mux.handleInputBytes(&.{ 0x07, 'q' });
+    try testing.expect(mux.consumeShutdownRequested());
+    try testing.expect(!mux.consumeShutdownRequested());
+}
+
 test "multiplexer tick surfaces detach request" {
     const testing = std.testing;
     const engine = @import("layout_native.zig").NativeLayoutEngine.init();
@@ -2957,6 +2981,28 @@ test "multiplexer tick surfaces detach request" {
 
     try testing.expect(result.detach_requested);
     try testing.expect(!mux.consumeDetachRequested());
+}
+
+test "multiplexer tick shuts down on quit command" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    try mux.handleInputBytes(&.{ 0x07, 'q' });
+
+    const result = try mux.tick(0, .{ .x = 0, .y = 0, .width = 80, .height = 24 }, .{
+        .sigwinch = false,
+        .sighup = false,
+        .sigterm = false,
+    });
+
+    try testing.expect(result.should_shutdown);
+    try testing.expectEqual(@as(usize, 0), mux.ptys.count());
+    try testing.expect(!result.detach_requested);
 }
 
 test "multiplexer captures mouse metadata without forwarding to pane" {

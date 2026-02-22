@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const Command = enum {
+    quit_ykmx,
     create_window,
     close_window,
     open_popup,
@@ -47,6 +48,7 @@ pub fn parseCommandName(name: []const u8) ?Command {
 
 pub fn defaultPrefixedKey(cmd: Command) ?u8 {
     return switch (cmd) {
+        .quit_ykmx => 'q',
         .create_window => 'c',
         .close_window => 'x',
         .open_popup => 'p',
@@ -146,6 +148,7 @@ pub const Router = struct {
             if (b == self.sidebar_toggle_key) return .{ .prefixed_key = b };
             if (b == self.bottom_toggle_key) return .{ .prefixed_key = b };
             return switch (b) {
+                'q' => .{ .command = .quit_ykmx },
                 'c' => .{ .command = .create_window },
                 'x' => .{ .command = .close_window },
                 'p' => .{ .command = .open_popup },
@@ -332,6 +335,8 @@ test "input router parses prefixed command" {
     const testing = std.testing;
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
+    try testing.expectEqual(Event{ .command = .quit_ykmx }, r.feedByte('q'));
+    try testing.expectEqual(Event.noop, r.feedByte(0x07));
     try testing.expectEqual(Event{ .command = .create_window }, r.feedByte('c'));
 }
 
@@ -430,7 +435,7 @@ test "input router emits unknown prefixed key" {
     const testing = std.testing;
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
-    try testing.expectEqual(Event{ .prefixed_key = 'q' }, r.feedByte('q'));
+    try testing.expectEqual(Event{ .prefixed_key = 'z' }, r.feedByte('z'));
 }
 
 test "input validates command names" {
