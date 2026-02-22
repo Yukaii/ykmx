@@ -1385,6 +1385,51 @@ pub const Multiplexer = struct {
         return popup_id;
     }
 
+    pub fn openCommandPopupRectInDir(
+        self: *Multiplexer,
+        title: []const u8,
+        argv: []const []const u8,
+        screen: layout.Rect,
+        rect: layout.Rect,
+        modal: bool,
+        auto_close: bool,
+        cwd: ?[]const u8,
+    ) !u32 {
+        const popup_window_id = self.next_popup_window_id;
+        self.next_popup_window_id += 1;
+
+        const clamped = clampPopupRect(screen, rect);
+        var p = try pty_mod.Pty.spawnCommandInDir(self.allocator, argv, cwd);
+        errdefer p.deinit();
+
+        try self.ptys.put(self.allocator, popup_window_id, p);
+        try self.stdout_buffers.put(self.allocator, popup_window_id, .{});
+        try self.scrollbacks.put(self.allocator, popup_window_id, scrollback_mod.ScrollbackBuffer.init(self.allocator, 2_000));
+        try self.selection_cursor_x.put(self.allocator, popup_window_id, 0);
+        try self.selection_cursor_y.put(self.allocator, popup_window_id, 0);
+        try self.da_parse_states.put(self.allocator, popup_window_id, .idle);
+
+        const popup_inner = popupInnerSize(clamped, .{});
+        if (self.ptys.getPtr(popup_window_id)) |pp| {
+            try pp.resize(popup_inner.rows, popup_inner.cols);
+        }
+
+        const popup_id = try self.popup_mgr.create(.{
+            .window_id = popup_window_id,
+            .title = title,
+            .rect = clamped,
+            .modal = modal,
+            .auto_close = auto_close,
+            .kind = .command,
+            .transparent_background = false,
+            .show_border = true,
+            .show_controls = false,
+            .animate = true,
+        });
+        try self.markWindowDirty(popup_window_id);
+        return popup_id;
+    }
+
     pub fn openShellPopup(
         self: *Multiplexer,
         title: []const u8,

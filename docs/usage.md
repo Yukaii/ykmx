@@ -44,6 +44,8 @@ ykmx ctl close-window
 ykmx ctl open-popup
 ykmx ctl open-popup -- lazygit
 ykmx ctl open-popup --cwd /path/to/project
+ykmx ctl open-popup --x 24 --y 6 --width 110 --height 26
+ykmx ctl open-popup --cwd /path/to/project --x 24 --y 6 --width 110 --height 26 -- lazygit
 ykmx ctl open-panel 8 4 100 24
 ykmx ctl open-panel 8 4 100 24 --cwd /path/to/project
 ykmx ctl hide-panel 1
@@ -201,6 +203,10 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - optional plugin config:
     - `[plugin.popup-controls]`
     - `persistent_process=true` (hide/show popup while keeping PTY alive)
+    - `popup_x=24`
+    - `popup_y=6`
+    - `popup_width=110`
+    - `popup_height=26`
 - Sidebar panel example lives at:
   - `docs/examples/plugins.d/sidebar-panel/index.ts`
   - optional plugin config:

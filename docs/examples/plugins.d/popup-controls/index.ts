@@ -9,10 +9,19 @@ let popupPanelId: number | null = null;
 let opening = false;
 let visible = false;
 let persistentProcess = true;
+let popupX = 24;
+let popupY = 6;
+let popupWidth = 110;
+let popupHeight = 26;
 
 function parseBoolLike(value: string): boolean {
   const s = value.trim().toLowerCase();
   return s === "1" || s === "true" || s === "yes" || s === "on";
+}
+
+function parseIntLike(value: string): number | null {
+  const n = Number.parseInt(value.trim(), 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 async function main() {
@@ -20,6 +29,18 @@ async function main() {
     if (isPluginConfigEvent(ev)) {
       if (ev.key === "persistent_process") {
         persistentProcess = parseBoolLike(ev.value);
+      } else if (ev.key === "popup_x") {
+        const n = parseIntLike(ev.value);
+        if (n !== null) popupX = n;
+      } else if (ev.key === "popup_y") {
+        const n = parseIntLike(ev.value);
+        if (n !== null) popupY = n;
+      } else if (ev.key === "popup_width") {
+        const n = parseIntLike(ev.value);
+        if (n !== null) popupWidth = n;
+      } else if (ev.key === "popup_height") {
+        const n = parseIntLike(ev.value);
+        if (n !== null) popupHeight = n;
       }
       continue;
     }
@@ -63,10 +84,10 @@ async function main() {
         await writeAction({
           v: 1,
           action: "open_shell_panel_rect",
-          x: 24,
-          y: 6,
-          width: 110,
-          height: 26,
+          x: popupX,
+          y: popupY,
+          width: popupWidth,
+          height: popupHeight,
           modal: true,
           show_border: true,
           show_controls: ENABLE_PANEL_CONTROLS,
