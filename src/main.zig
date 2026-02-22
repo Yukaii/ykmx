@@ -2006,7 +2006,7 @@ fn renderRuntimeFrame(
 ) !void {
     const total_cols: usize = size.cols;
     const content_rows: usize = content.height;
-    const total_rows: usize = content_rows + 3;
+    const total_rows: usize = frameTotalRows(size);
     const canvas_len = total_cols * content_rows;
     const canvas = try allocator.alloc(u21, canvas_len);
     defer allocator.free(canvas);
@@ -2184,9 +2184,22 @@ fn renderRuntimeFrame(
     if (focused_cursor_abs) |p| {
         try writeFmtBlocking(out, "\x1b[{};{}H", .{ p.row, p.col });
     } else {
-        try writeFmtBlocking(out, "\x1b[{};1H", .{content_rows + 3});
+        try writeFmtBlocking(out, "\x1b[{};1H", .{fallbackCursorRow(content_rows, footer_rows)});
     }
     try writeAllBlocking(out, "\x1b[?25h");
+}
+
+fn frameTotalRows(size: RuntimeSize) usize {
+    return size.rows;
+}
+
+fn fallbackCursorRow(content_rows: usize, footer_rows: usize) usize {
+    return if (footer_rows > 0)
+        content_rows + footer_rows
+    else if (content_rows > 0)
+        content_rows
+    else
+        1;
 }
 
 const FooterLines = struct {
@@ -4230,4 +4243,22 @@ test "contentRect never overflows total terminal rows" {
 
     const normal = contentRect(.{ .cols = 80, .rows = 24 });
     try testing.expectEqual(@as(u16, 21), normal.height);
+}
+
+test "frame row math stays within terminal after resize extremes" {
+    const testing = std.testing;
+
+    try testing.expectEqual(@as(usize, 1), frameTotalRows(.{ .cols = 80, .rows = 1 }));
+    try testing.expectEqual(@as(usize, 3), frameTotalRows(.{ .cols = 80, .rows = 3 }));
+    try testing.expectEqual(@as(usize, 24), frameTotalRows(.{ .cols = 80, .rows = 24 }));
+
+    // No footer rows visible (tiny terminal): keep cursor on last visible content row.
+    try testing.expectEqual(@as(usize, 1), fallbackCursorRow(1, 0));
+    try testing.expectEqual(@as(usize, 3), fallbackCursorRow(3, 0));
+
+    // Footer rows visible: place cursor at the final visible row.
+    try testing.expectEqual(@as(usize, 24), fallbackCursorRow(21, 3));
+
+    // Degenerate safety.
+    try testing.expectEqual(@as(usize, 1), fallbackCursorRow(0, 0));
 }
