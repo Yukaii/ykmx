@@ -166,6 +166,7 @@ export type ActionMessage =
   | { v: 1; action: "focus_panel_by_id"; panel_id: number }
   | { v: 1; action: "move_panel_by_id"; panel_id: number; x: number; y: number }
   | { v: 1; action: "resize_panel_by_id"; panel_id: number; width: number; height: number }
+  | { v: 1; action: "set_panel_visibility_by_id"; panel_id: number; visible: boolean }
   | {
       v: 1;
       action: "set_panel_style_by_id";

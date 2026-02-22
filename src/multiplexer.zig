@@ -694,6 +694,7 @@ pub const Multiplexer = struct {
         var best_idx: ?usize = null;
         var best_z: u32 = 0;
         for (self.popup_mgr.popups.items, 0..) |p, i| {
+            if (!p.visible) continue;
             const inside_x = px >= p.rect.x and px < (p.rect.x + p.rect.width);
             const inside_y = py >= p.rect.y and py < (p.rect.y + p.rect.height);
             if (!(inside_x and inside_y)) continue;
@@ -1563,6 +1564,16 @@ pub const Multiplexer = struct {
         return true;
     }
 
+    pub fn setPopupVisibilityByIdOwned(self: *Multiplexer, popup_id: u32, visible: bool, owner_plugin_name: ?[]const u8) !bool {
+        if (!self.popupOwnedByPlugin(popup_id, owner_plugin_name)) return false;
+        if (!self.popup_mgr.setVisible(popup_id, visible)) return false;
+        if (self.popup_mgr.getByIdConst(popup_id)) |p| {
+            if (p.window_id) |wid| try self.markWindowDirty(wid);
+        }
+        self.requestRedraw();
+        return true;
+    }
+
     pub fn setPopupStyleById(self: *Multiplexer, popup_id: u32, style: PopupStyle, screen: layout.Rect) !bool {
         return self.setPopupStyleByIdOwned(popup_id, style, screen, null);
     }
@@ -1618,6 +1629,7 @@ pub const Multiplexer = struct {
         defer ids.deinit(self.allocator);
 
         for (self.popup_mgr.popups.items) |p| {
+            if (!p.visible) continue;
             if (!self.popupOwnedByName(&p, owner_plugin_name)) continue;
             ids.append(self.allocator, p.id) catch return false;
         }
@@ -2034,6 +2046,7 @@ pub const Multiplexer = struct {
         var best_id: ?u32 = null;
         var best_z: u32 = 0;
         for (self.popup_mgr.popups.items) |p| {
+            if (!p.visible) continue;
             const inside_x = px >= p.rect.x and px < (p.rect.x + p.rect.width);
             const inside_y = py >= p.rect.y and py < (p.rect.y + p.rect.height);
             if (!(inside_x and inside_y)) continue;

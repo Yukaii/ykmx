@@ -169,11 +169,20 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `docs/examples/plugins.d/desktop-wm/index.ts`
 - Standalone popup keybinding/plugin-control example lives at:
   - `docs/examples/plugins.d/popup-controls/index.ts`
+  - optional plugin config:
+    - `[plugin.popup-controls]`
+    - `persistent_process=true` (hide/show popup while keeping PTY alive)
 - Sidebar panel example lives at:
   - `docs/examples/plugins.d/sidebar-panel/index.ts`
+  - optional plugin config:
+    - `[plugin.sidebar-panel]`
+    - `persistent_process=true` (hide/show while keeping PTY alive)
 - Bottom panel example lives at:
   - `docs/examples/plugins.d/bottom-panel/index.ts`
   - these examples use arbitrary command names (`panel.sidebar.toggle`, `panel.bottom.toggle`)
+  - optional plugin config:
+    - `[plugin.bottom-panel]`
+    - `persistent_process=true` (hide/show while keeping PTY alive)
 - Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
 - For interactive layout plugins (drag/resize/floating state), also set `plugins_enabled=true` so the same plugin host handles both layout compute and pointer/actions.
@@ -189,6 +198,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"event":"on_command","command":"<string-command-name>"}`
   - `{"v":1,"event":"on_shutdown"}`
 - `state` currently includes layout, window/focus info, tab info, master settings, mouse mode, sync-scroll flag, and current screen rect.
+  - `state.panel_count` reflects currently visible panels.
 - For plugin layout backend, ykmx also sends:
   - `{"v":1,"id":N,"event":"on_compute_layout","params":{...}}`
   - `params.window_ids` carries stable visible window IDs in layout index order.
@@ -216,6 +226,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"focus_panel_by_id","panel_id":1}`
   - `{"v":1,"action":"move_panel_by_id","panel_id":1,"x":12,"y":6}`
   - `{"v":1,"action":"resize_panel_by_id","panel_id":1,"width":110,"height":26}`
+  - `{"v":1,"action":"set_panel_visibility_by_id","panel_id":1,"visible":false}`
   - `{"v":1,"action":"set_panel_style_by_id","panel_id":1,"show_border":true,"show_controls":false,"transparent_background":false}`
   - `{"v":1,"action":"set_ui_bars","toolbar_line":"...","tab_line":"...","status_line":"..."}`
   - `{"v":1,"action":"clear_ui_bars"}`

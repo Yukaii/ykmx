@@ -7,10 +7,17 @@ const DEFAULT_WIDTH = 36;
 let side: "left" | "right" = DEFAULT_SIDE;
 let panelWidth = DEFAULT_WIDTH;
 const TOGGLE_COMMAND = "panel.sidebar.toggle";
+let persistentProcess = true;
 
 let panelId: number | null = null;
 let opening = false;
+let visible = false;
 let lastState: RuntimeState | null = null;
+
+function parseBoolLike(value: string): boolean {
+  const s = value.trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
+}
 
 function panelRect(state: RuntimeState): { x: number; y: number; width: number; height: number } {
   const width = Math.max(12, Math.min(panelWidth, state.screen.width));
@@ -55,6 +62,8 @@ async function main() {
       } else if (ev.key === "width") {
         const n = Number.parseInt(ev.value, 10);
         if (Number.isFinite(n)) panelWidth = Math.max(12, n);
+      } else if (ev.key === "persistent_process") {
+        persistentProcess = parseBoolLike(ev.value);
       }
       if (lastState && panelId) {
         await ensurePanelPosition(lastState);
@@ -73,10 +82,7 @@ async function main() {
       if (opening && ev.state.has_focused_panel) {
         panelId = ev.state.focused_panel_id;
         opening = false;
-      }
-
-      if (panelId && ev.state.panel_count === 0) {
-        panelId = null;
+        visible = true;
       }
 
       if (ev.reason === "screen") {
@@ -89,9 +95,19 @@ async function main() {
 
     if (ev.command === TOGGLE_COMMAND) {
       if (panelId) {
-        await writeAction({ v: 1, action: "close_panel_by_id", panel_id: panelId });
-        panelId = null;
-        opening = false;
+        if (persistentProcess) {
+          const nextVisible = !visible;
+          await writeAction({ v: 1, action: "set_panel_visibility_by_id", panel_id: panelId, visible: nextVisible });
+          if (nextVisible) {
+            await writeAction({ v: 1, action: "focus_panel_by_id", panel_id: panelId });
+          }
+          visible = nextVisible;
+        } else {
+          await writeAction({ v: 1, action: "close_panel_by_id", panel_id: panelId });
+          panelId = null;
+          opening = false;
+          visible = false;
+        }
       } else if (lastState && !opening) {
         await openPanel(lastState);
       }

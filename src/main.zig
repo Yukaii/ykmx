@@ -454,7 +454,7 @@ fn collectPluginRuntimeState(
         .window_count = window_count,
         .minimized_window_count = minimized_count,
         .visible_window_count = window_count - minimized_count,
-        .panel_count = mux.popup_mgr.count(),
+        .panel_count = mux.popup_mgr.visibleCount(),
         .focused_panel_id = focused_panel_id,
         .has_focused_panel = mux.popup_mgr.focused_popup_id != null,
         .focused_index = focus_idx orelse 0,
@@ -618,6 +618,9 @@ fn applyPluginAction(
         },
         .resize_panel_by_id => |payload| {
             return try mux.resizePopupByIdOwned(payload.panel_id, payload.width, payload.height, screen, plugin_name);
+        },
+        .set_panel_visibility_by_id => |payload| {
+            return try mux.setPopupVisibilityByIdOwned(payload.panel_id, payload.visible, plugin_name);
         },
         .set_panel_style_by_id => |payload| {
             return try mux.setPopupStyleByIdOwned(payload.panel_id, .{
@@ -1052,8 +1055,8 @@ fn renderRuntimeFrame(
     defer allocator.free(rects);
     const tab = try mux.workspace_mgr.activeTab();
     const n = @min(rects.len, tab.windows.items.len);
-    const popup_count = mux.popup_mgr.count();
-    var panes = try allocator.alloc(PaneRenderRef, n + popup_count);
+    const popup_capacity = mux.popup_mgr.count();
+    var panes = try allocator.alloc(PaneRenderRef, n + popup_capacity);
     defer allocator.free(panes);
     var pane_count: usize = 0;
     var focused_cursor_abs: ?struct { row: usize, col: usize } = null;
@@ -1131,9 +1134,14 @@ fn renderRuntimeFrame(
 
     var popup_order = try allocator.alloc(usize, mux.popup_mgr.popups.items.len);
     defer allocator.free(popup_order);
-    for (popup_order, 0..) |*slot, i| slot.* = i;
+    var popup_count: usize = 0;
+    for (mux.popup_mgr.popups.items, 0..) |p, i| {
+        if (!p.visible) continue;
+        popup_order[popup_count] = i;
+        popup_count += 1;
+    }
     var po_i: usize = 1;
-    while (po_i < popup_order.len) : (po_i += 1) {
+    while (po_i < popup_count) : (po_i += 1) {
         const key = popup_order[po_i];
         const key_z = mux.popup_mgr.popups.items[key].z_index;
         var j = po_i;
@@ -1143,7 +1151,7 @@ fn renderRuntimeFrame(
         popup_order[j] = key;
     }
 
-    for (popup_order) |popup_idx| {
+    for (popup_order[0..popup_count]) |popup_idx| {
         const p = mux.popup_mgr.popups.items[popup_idx];
         const window_id = p.window_id orelse continue;
         if (window_id == 0) continue;
@@ -1217,7 +1225,7 @@ fn renderRuntimeFrame(
             drawTextOwnedMasked(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner, popup_cover);
         }
     }
-    for (popup_order) |popup_idx| {
+    for (popup_order[0..popup_count]) |popup_idx| {
         const p = mux.popup_mgr.popups.items[popup_idx];
         if (p.rect.width < 2 or p.rect.height < 2) continue;
         const inner_x = p.rect.x + 1;

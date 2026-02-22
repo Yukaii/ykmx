@@ -77,6 +77,7 @@ pub const PluginHost = struct {
         focus_panel_by_id: u32,
         move_panel_by_id: struct { panel_id: u32, x: u16, y: u16 },
         resize_panel_by_id: struct { panel_id: u32, width: u16, height: u16 },
+        set_panel_visibility_by_id: struct { panel_id: u32, visible: bool },
         set_panel_style_by_id: struct {
             panel_id: u32,
             transparent_background: bool,
@@ -157,6 +158,7 @@ pub const PluginHost = struct {
         transparent_background: ?bool = null,
         show_border: ?bool = null,
         show_controls: ?bool = null,
+        visible: ?bool = null,
         toolbar_line: ?[]const u8 = null,
         tab_line: ?[]const u8 = null,
         status_line: ?[]const u8 = null,
@@ -620,6 +622,11 @@ pub const PluginHost = struct {
             const width = envelope.width orelse return null;
             const height = envelope.height orelse return null;
             return .{ .resize_panel_by_id = .{ .panel_id = panel_id, .width = width, .height = height } };
+        }
+        if (std.mem.eql(u8, action_name, "set_panel_visibility_by_id")) {
+            const panel_id = envelope.panel_id orelse return null;
+            const visible = envelope.visible orelse return null;
+            return .{ .set_panel_visibility_by_id = .{ .panel_id = panel_id, .visible = visible } };
         }
         if (std.mem.eql(u8, action_name, "set_panel_style_by_id")) {
             const panel_id = envelope.panel_id orelse return null;

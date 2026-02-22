@@ -34,6 +34,7 @@ pub const Popup = struct {
     transparent_background: bool = false,
     show_border: bool = true,
     show_controls: bool = false,
+    visible: bool = true,
     animation: AnimationState = .{},
 };
 
@@ -127,15 +128,17 @@ pub const PopupManager = struct {
 
     pub fn closeTopmost(self: *PopupManager) ?Popup {
         if (self.popups.items.len == 0) return null;
-        var best_idx: usize = 0;
-        var best_z: u32 = self.popups.items[0].z_index;
+        var best_idx: ?usize = null;
+        var best_z: u32 = 0;
         for (self.popups.items, 0..) |p, i| {
+            if (!p.visible) continue;
             if (p.z_index >= best_z) {
                 best_z = p.z_index;
                 best_idx = i;
             }
         }
-        const removed = self.popups.orderedRemove(best_idx);
+        const idx = best_idx orelse return null;
+        const removed = self.popups.orderedRemove(idx);
         self.recomputeFocusAfterRemove(removed.id);
         return removed;
     }
@@ -148,38 +151,50 @@ pub const PopupManager = struct {
     pub fn focusedWindowId(self: *const PopupManager) ?u32 {
         const id = self.focused_popup_id orelse return null;
         for (self.popups.items) |p| {
-            if (p.id == id) return p.window_id;
+            if (p.id == id and p.visible) return p.window_id;
         }
         return null;
     }
 
     pub fn hasModalOpen(self: *const PopupManager) bool {
         for (self.popups.items) |p| {
-            if (p.modal) return true;
+            if (p.visible and p.modal) return true;
         }
         return false;
     }
 
     pub fn cycleFocus(self: *PopupManager) void {
-        if (self.popups.items.len == 0) {
+        if (self.visibleCount() == 0) {
             self.focused_popup_id = null;
             return;
         }
 
         if (self.focused_popup_id) |id| {
             for (self.popups.items, 0..) |p, i| {
-                if (p.id != id) continue;
-                const next = (i + 1) % self.popups.items.len;
-                _ = self.focusAndRaise(self.popups.items[next].id);
+                if (p.id != id or !p.visible) continue;
+                var j = (i + 1) % self.popups.items.len;
+                while (j != i) : (j = (j + 1) % self.popups.items.len) {
+                    if (self.popups.items[j].visible) {
+                        _ = self.focusAndRaise(self.popups.items[j].id);
+                        return;
+                    }
+                }
                 return;
             }
         }
 
-        _ = self.focusAndRaise(self.popups.items[self.popups.items.len - 1].id);
+        var i = self.popups.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (!self.popups.items[i].visible) continue;
+            _ = self.focusAndRaise(self.popups.items[i].id);
+            return;
+        }
     }
 
     pub fn focusAndRaise(self: *PopupManager, popup_id: u32) bool {
         const p = self.getById(popup_id) orelse return false;
+        if (!p.visible) return false;
         self.focused_popup_id = popup_id;
         p.z_index = self.nextZIndex();
         return true;
@@ -187,6 +202,26 @@ pub const PopupManager = struct {
 
     pub fn count(self: *const PopupManager) usize {
         return self.popups.items.len;
+    }
+
+    pub fn visibleCount(self: *const PopupManager) usize {
+        var n: usize = 0;
+        for (self.popups.items) |p| {
+            if (p.visible) n += 1;
+        }
+        return n;
+    }
+
+    pub fn setVisible(self: *PopupManager, popup_id: u32, visible: bool) bool {
+        const p = self.getById(popup_id) orelse return false;
+        p.visible = visible;
+        if (visible) {
+            self.focused_popup_id = popup_id;
+            p.z_index = self.nextZIndex();
+        } else if (self.focused_popup_id == popup_id) {
+            self.recomputeFocusAfterRemove(popup_id);
+        }
+        return true;
     }
 
     pub fn startCloseAnimation(self: *PopupManager, popup_id: u32) bool {
@@ -261,15 +296,16 @@ pub const PopupManager = struct {
 
     fn recomputeFocusAfterRemove(self: *PopupManager, removed_id: u32) void {
         if (self.focused_popup_id != removed_id) return;
-        if (self.popups.items.len == 0) {
+        if (self.visibleCount() == 0) {
             self.focused_popup_id = null;
             return;
         }
 
         // Focus topmost popup after close.
         var best_z: u32 = 0;
-        var best_id: u32 = self.popups.items[0].id;
+        var best_id: ?u32 = null;
         for (self.popups.items) |p| {
+            if (!p.visible) continue;
             if (p.z_index >= best_z) {
                 best_z = p.z_index;
                 best_id = p.id;
