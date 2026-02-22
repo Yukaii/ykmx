@@ -100,6 +100,7 @@ pub const Multiplexer = struct {
     hybrid_forward_click_active: bool = false,
     hybrid_chrome_capture_active: bool = false,
     mouse_mode: MouseMode = .hybrid,
+    layout_cycle_locked: bool = false,
     next_popup_window_id: u32 = 1_000_000,
     redraw_requested: bool = false,
     last_screen: ?layout.Rect = null,
@@ -178,6 +179,10 @@ pub const Multiplexer = struct {
 
     pub fn setMouseMode(self: *Multiplexer, mode: MouseMode) void {
         self.mouse_mode = mode;
+    }
+
+    pub fn setLayoutCycleLocked(self: *Multiplexer, locked: bool) void {
+        self.layout_cycle_locked = locked;
     }
 
     pub fn setPrefixPanelToggleKeys(self: *Multiplexer, sidebar_key: u8, bottom_key: u8) void {
@@ -470,6 +475,10 @@ pub const Multiplexer = struct {
                             self.requestRedraw();
                         },
                         .cycle_layout => {
+                            if (self.layout_cycle_locked) {
+                                self.requestRedraw();
+                                continue;
+                            }
                             _ = try self.workspace_mgr.cycleActiveLayout();
                             if (screen) |s| {
                                 _ = try self.resizeActiveWindowsToLayout(s);
@@ -3162,6 +3171,23 @@ test "multiplexer layout cycle command updates active layout" {
 
     try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, ' ' });
     try testing.expectEqual(layout.LayoutType.horizontal_stack, try mux.workspace_mgr.activeLayoutType());
+}
+
+test "multiplexer layout cycle lock prevents active layout change" {
+    const testing = std.testing;
+    const engine = @import("layout_native.zig").NativeLayoutEngine.init();
+
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.2" });
+    mux.setLayoutCycleLocked(true);
+
+    const before = try mux.workspace_mgr.activeLayoutType();
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, ' ' });
+    const after = try mux.workspace_mgr.activeLayoutType();
+    try testing.expectEqual(before, after);
 }
 
 test "multiplexer zoom-to-master command promotes focused pane" {

@@ -322,6 +322,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
         .passthrough => .passthrough,
         .compositor => .compositor,
     });
+    mux.setLayoutCycleLocked(cfg.layout_backend == .plugin and plugins.hasAny());
     mux.setPrefixPanelToggleKeys(cfg.key_toggle_sidebar_panel, cfg.key_toggle_bottom_panel);
     for (cfg.plugin_keybindings.items) |kb| {
         mux.setPluginPrefixedKeybinding(kb.key, kb.command_name) catch {};
