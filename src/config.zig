@@ -26,17 +26,21 @@ pub const Config = struct {
     plugins_enabled: bool = false,
     plugin_dir: ?[]u8 = null,
     plugins_dir: ?[]u8 = null,
+    plugins_dirs: std.ArrayListUnmanaged([]u8) = .{},
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         if (self.source_path) |p| allocator.free(p);
         if (self.plugin_dir) |p| allocator.free(p);
         if (self.plugins_dir) |p| allocator.free(p);
+        for (self.plugins_dirs.items) |p| allocator.free(p);
+        self.plugins_dirs.deinit(allocator);
         self.* = undefined;
     }
 };
 
 pub fn load(allocator: std.mem.Allocator) !Config {
     var cfg = Config{};
+    errdefer cfg.deinit(allocator);
 
     if (try discoverDefaultConfigPath(allocator)) |path| {
         defer allocator.free(path);
@@ -69,10 +73,12 @@ fn discoverDefaultConfigPath(allocator: std.mem.Allocator) !?[]u8 {
 
     if (xdg_config_home) |xdg| {
         try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykwm", "config" }));
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykwm", "config.toml" }));
         try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykwm", "config.zig" }));
     }
     if (home) |h| {
         try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykwm", "config" }));
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykwm", "config.toml" }));
         try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykwm", "config.zig" }));
     }
 
@@ -84,17 +90,45 @@ fn discoverDefaultConfigPath(allocator: std.mem.Allocator) !?[]u8 {
 }
 
 pub fn parseContents(allocator: std.mem.Allocator, cfg: *Config, contents: []const u8) !void {
+    var pending_key: ?[]u8 = null;
+    var pending_value = std.ArrayListUnmanaged(u8){};
+    defer {
+        if (pending_key) |k| allocator.free(k);
+        pending_value.deinit(allocator);
+    }
+
     var it = std.mem.splitScalar(u8, contents, '\n');
     while (it.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
 
+        if (pending_key != null) {
+            if (pending_value.items.len > 0) try pending_value.append(allocator, ' ');
+            try pending_value.appendSlice(allocator, line);
+            if (line[line.len - 1] == ']') {
+                const key = pending_key.?;
+                pending_key = null;
+                defer allocator.free(key);
+                const value = trimQuotes(std.mem.trim(u8, pending_value.items, " \t"));
+                try applyKeyValue(allocator, cfg, key, value);
+                pending_value.clearRetainingCapacity();
+            }
+            continue;
+        }
+
         const eq_idx = std.mem.indexOfScalar(u8, line, '=') orelse return error.InvalidConfigLine;
         const key = std.mem.trim(u8, line[0..eq_idx], " \t");
         const raw_value = std.mem.trim(u8, line[eq_idx + 1 ..], " \t");
+        if (raw_value.len > 0 and raw_value[0] == '[' and raw_value[raw_value.len - 1] != ']') {
+            pending_key = try allocator.dupe(u8, key);
+            try pending_value.appendSlice(allocator, raw_value);
+            continue;
+        }
         const value = trimQuotes(raw_value);
         try applyKeyValue(allocator, cfg, key, value);
     }
+
+    if (pending_key != null) return error.InvalidConfigLine;
 }
 
 fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, value: []const u8) !void {
@@ -151,7 +185,50 @@ fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, va
         cfg.plugins_dir = try allocator.dupe(u8, value);
         return;
     }
+    if (std.mem.eql(u8, key, "plugins_dirs")) {
+        try setPluginsDirs(allocator, cfg, value);
+        return;
+    }
     // Unknown keys are ignored for forward compatibility.
+}
+
+fn setPluginsDirs(allocator: std.mem.Allocator, cfg: *Config, value: []const u8) !void {
+    var parsed = std.ArrayListUnmanaged([]u8){};
+    errdefer {
+        for (parsed.items) |p| allocator.free(p);
+        parsed.deinit(allocator);
+    }
+
+    const trimmed = std.mem.trim(u8, value, " \t");
+    if (trimmed.len == 0) {
+        for (cfg.plugins_dirs.items) |p| allocator.free(p);
+        cfg.plugins_dirs.clearRetainingCapacity();
+        return;
+    }
+
+    if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+        const inner = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t");
+        if (inner.len > 0) {
+            var it = std.mem.splitScalar(u8, inner, ',');
+            while (it.next()) |part_raw| {
+                const part = trimQuotes(std.mem.trim(u8, part_raw, " \t"));
+                if (part.len == 0) continue;
+                try parsed.append(allocator, try allocator.dupe(u8, part));
+            }
+        }
+    } else {
+        var it = std.mem.splitScalar(u8, trimmed, ',');
+        while (it.next()) |part_raw| {
+            const part = trimQuotes(std.mem.trim(u8, part_raw, " \t"));
+            if (part.len == 0) continue;
+            try parsed.append(allocator, try allocator.dupe(u8, part));
+        }
+    }
+
+    for (cfg.plugins_dirs.items) |p| allocator.free(p);
+    cfg.plugins_dirs.deinit(allocator);
+    cfg.plugins_dirs = parsed;
+    parsed = .{};
 }
 
 fn parseLayoutType(value: []const u8) !layout.LayoutType {
@@ -199,6 +276,7 @@ test "config parser applies known keys" {
         \\plugins_enabled=1
         \\plugin_dir=/tmp/ykwm-plugins
         \\plugins_dir=/tmp/ykwm-plugins.d
+        \\plugins_dirs=["/tmp/plugins-a","/tmp/plugins-b"]
     );
 
     try testing.expectEqual(LayoutBackend.opentui, cfg.layout_backend);
@@ -212,6 +290,35 @@ test "config parser applies known keys" {
     try testing.expect(cfg.plugins_enabled);
     try testing.expectEqualStrings("/tmp/ykwm-plugins", cfg.plugin_dir.?);
     try testing.expectEqualStrings("/tmp/ykwm-plugins.d", cfg.plugins_dir.?);
+    try testing.expectEqual(@as(usize, 2), cfg.plugins_dirs.items.len);
+    try testing.expectEqualStrings("/tmp/plugins-a", cfg.plugins_dirs.items[0]);
+    try testing.expectEqualStrings("/tmp/plugins-b", cfg.plugins_dirs.items[1]);
+}
+
+test "config parser accepts plugins_dirs csv" {
+    const testing = std.testing;
+    var cfg = Config{};
+
+    try parseContents(testing.allocator, &cfg, "plugins_dirs=/a,/b,/c\n");
+    try testing.expectEqual(@as(usize, 3), cfg.plugins_dirs.items.len);
+    try testing.expectEqualStrings("/a", cfg.plugins_dirs.items[0]);
+    try testing.expectEqualStrings("/b", cfg.plugins_dirs.items[1]);
+    try testing.expectEqualStrings("/c", cfg.plugins_dirs.items[2]);
+}
+
+test "config parser accepts multiline plugins_dirs array" {
+    const testing = std.testing;
+    var cfg = Config{};
+
+    try parseContents(testing.allocator, &cfg,
+        \\plugins_dirs=[
+        \\  "/x/a",
+        \\  "/x/b",
+        \\]
+    );
+    try testing.expectEqual(@as(usize, 2), cfg.plugins_dirs.items.len);
+    try testing.expectEqualStrings("/x/a", cfg.plugins_dirs.items[0]);
+    try testing.expectEqualStrings("/x/b", cfg.plugins_dirs.items[1]);
 }
 
 test "config parser accepts paperwm layout type" {

@@ -205,7 +205,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     var plugins = plugin_manager.PluginManager.init(allocator);
     defer plugins.deinit();
     if (cfg.plugins_enabled) {
-        _ = plugins.startAll(cfg.plugin_dir, cfg.plugins_dir) catch 0;
+        _ = plugins.startAll(cfg.plugin_dir, cfg.plugins_dir, cfg.plugins_dirs.items) catch 0;
     }
 
     var mux = multiplexer.Multiplexer.init(allocator, try pickLayoutEngineRuntime(allocator, cfg, &plugins));
@@ -1858,6 +1858,13 @@ fn pickLayoutEngine(allocator: std.mem.Allocator, cfg: config.Config) !layout.La
             if (cfg.plugin_dir) |plugin_dir| {
                 break :blk layout_plugin.PluginLayoutEngine.init(allocator, plugin_dir) catch layout_native.NativeLayoutEngine.init();
             }
+            for (cfg.plugins_dirs.items) |plugins_dir| {
+                const first = try findFirstPluginSubdir(allocator, plugins_dir);
+                defer if (first) |p| allocator.free(p);
+                if (first) |path| {
+                    break :blk layout_plugin.PluginLayoutEngine.init(allocator, path) catch layout_native.NativeLayoutEngine.init();
+                }
+            }
             if (cfg.plugins_dir) |plugins_dir| {
                 const first = try findFirstPluginSubdir(allocator, plugins_dir);
                 defer if (first) |p| allocator.free(p);
@@ -1887,6 +1894,12 @@ fn pickLayoutEngineRuntime(
 }
 
 fn findFirstPluginSubdir(allocator: std.mem.Allocator, plugins_dir: []const u8) !?[]u8 {
+    const direct_index = try std.fs.path.join(allocator, &.{ plugins_dir, "index.ts" });
+    defer allocator.free(direct_index);
+    if (std.fs.cwd().access(direct_index, .{})) |_| {
+        return try allocator.dupe(u8, plugins_dir);
+    } else |_| {}
+
     var dir = std.fs.cwd().openDir(plugins_dir, .{ .iterate = true }) catch return null;
     defer dir.close();
 

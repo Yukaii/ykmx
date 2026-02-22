@@ -1,7 +1,9 @@
 # ykwm example config
 # Location:
 #   $XDG_CONFIG_HOME/ykwm/config
+#   $XDG_CONFIG_HOME/ykwm/config.toml
 #   or $HOME/.config/ykwm/config
+#   or $HOME/.config/ykwm/config.toml
 
 layout_backend=native
 # backend values: native | opentui | plugin
@@ -27,5 +29,6 @@ plugins_enabled=false
 # layout_backend=plugin
 # plugins_enabled=true
 # plugin_dir="/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d/desktop-wm"
+# plugins_dirs=["$HOME/.config/ykwm/plugins.d","/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d"]
 plugin_dir="$HOME/.config/ykwm/plugins"
 plugins_dir="$HOME/.config/ykwm/plugins.d"

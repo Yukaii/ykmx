@@ -15,6 +15,13 @@ zig build test
 scripts/compat/ci-smoke.sh
 ```
 
+Config file lookup (first existing path wins):
+
+- `$XDG_CONFIG_HOME/ykwm/config`
+- `$XDG_CONFIG_HOME/ykwm/config.toml`
+- `$HOME/.config/ykwm/config`
+- `$HOME/.config/ykwm/config.toml`
+
 ## CLI
 
 ```bash
@@ -131,6 +138,11 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 - Enable with `plugins_enabled=true` and `plugin_dir=/abs/path/to/plugins`.
 - For multiple plugins, set `plugins_dir=/abs/path/to/plugins.d` and place each plugin at:
   - `<plugins_dir>/<plugin-name>/index.ts`
+- To search multiple plugin collections without editing paths, use:
+  - `plugins_dirs=["/abs/path/plugins.d","/another/plugins.d"]`
+- Each `plugins_dirs` entry can be either:
+  - a plugin root directory containing subfolders (`<dir>/<plugin-name>/index.ts`)
+  - or a direct plugin directory containing `index.ts`
 - Use either `plugin_dir` or `plugins_dir` for a given plugin path; avoid loading the same plugin from both.
 - In this repository, the PaperWM example plugin lives at:
   - `docs/examples/plugins.d/paperwm/index.ts`

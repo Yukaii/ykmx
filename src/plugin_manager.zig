@@ -21,12 +21,16 @@ pub const PluginManager = struct {
         self: *PluginManager,
         maybe_plugin_dir: ?[]const u8,
         maybe_plugins_dir: ?[]const u8,
+        plugins_dirs: []const []const u8,
     ) !usize {
         if (maybe_plugin_dir) |plugin_dir| {
             try self.tryStartHost(plugin_dir);
         }
         if (maybe_plugins_dir) |plugins_dir| {
-            try self.startFromPluginsDir(plugins_dir);
+            try self.startFromPluginPath(plugins_dir);
+        }
+        for (plugins_dirs) |plugins_dir| {
+            try self.startFromPluginPath(plugins_dir);
         }
         return self.hosts.items.len;
     }
@@ -114,6 +118,14 @@ pub const PluginManager = struct {
         return null;
     }
 
+    fn startFromPluginPath(self: *PluginManager, path: []const u8) !void {
+        if (isPluginDir(self.allocator, path)) {
+            try self.tryStartHost(path);
+            return;
+        }
+        try self.startFromPluginsDir(path);
+    }
+
     fn startFromPluginsDir(self: *PluginManager, plugins_dir: []const u8) !void {
         var dir = std.fs.cwd().openDir(plugins_dir, .{ .iterate = true }) catch return;
         defer dir.close();
@@ -148,6 +160,13 @@ pub const PluginManager = struct {
     fn tryStartHost(self: *PluginManager, path: []const u8) !void {
         const host = plugin_host.PluginHost.start(self.allocator, path) catch return;
         try self.hosts.append(self.allocator, host);
+    }
+
+    fn isPluginDir(allocator: std.mem.Allocator, path: []const u8) bool {
+        const index_ts = std.fs.path.join(allocator, &.{ path, "index.ts" }) catch return false;
+        defer allocator.free(index_ts);
+        std.fs.cwd().access(index_ts, .{}) catch return false;
+        return true;
     }
 
     fn lessThanPath(_: void, a: []u8, b: []u8) bool {
