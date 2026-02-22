@@ -380,6 +380,7 @@ fn collectPluginRuntimeState(
         if (w.minimized) minimized_count += 1;
     }
     const focus_idx = mux.workspace_mgr.focusedWindowIndexActive() catch null;
+    const focus_id = mux.workspace_mgr.focusedWindowIdActive() catch null;
     const master_count = try mux.workspace_mgr.activeMasterCount();
     const master_ratio = try mux.workspace_mgr.activeMasterRatioPermille();
     const active_tab_idx = mux.workspace_mgr.activeTabIndex();
@@ -390,6 +391,7 @@ fn collectPluginRuntimeState(
         .minimized_window_count = minimized_count,
         .visible_window_count = window_count - minimized_count,
         .focused_index = focus_idx orelse 0,
+        .focused_window_id = focus_id orelse 0,
         .has_focused_window = focus_idx != null,
         .tab_count = mux.workspace_mgr.tabCount(),
         .active_tab_index = active_tab_idx orelse 0,
@@ -411,6 +413,7 @@ fn pluginRuntimeStateEql(
         a.minimized_window_count == b.minimized_window_count and
         a.visible_window_count == b.visible_window_count and
         a.focused_index == b.focused_index and
+        a.focused_window_id == b.focused_window_id and
         a.has_focused_window == b.has_focused_window and
         a.tab_count == b.tab_count and
         a.active_tab_index == b.active_tab_index and
@@ -429,7 +432,7 @@ fn detectStateChangeReason(
     if (!std.mem.eql(u8, prev.layout, next.layout)) return "layout";
     if (prev.window_count != next.window_count) return "window_count";
     if (prev.minimized_window_count != next.minimized_window_count or prev.visible_window_count != next.visible_window_count) return "window_count";
-    if (prev.focused_index != next.focused_index or prev.has_focused_window != next.has_focused_window) return "focus";
+    if (prev.focused_index != next.focused_index or prev.focused_window_id != next.focused_window_id or prev.has_focused_window != next.has_focused_window) return "focus";
     if (prev.tab_count != next.tab_count or prev.active_tab_index != next.active_tab_index or prev.has_active_tab != next.has_active_tab) return "tab";
     if (prev.master_count != next.master_count or prev.master_ratio_permille != next.master_ratio_permille) return "master";
     if (!std.mem.eql(u8, prev.mouse_mode, next.mouse_mode)) return "mouse_mode";
@@ -1084,21 +1087,32 @@ fn renderRuntimeFrame(
     var owned_status_line: ?[]u8 = null;
     defer if (owned_status_line) |line| allocator.free(line);
 
-    const minimized_line: []const u8 = if (plugin_ui_bars) |ui|
-        ui.toolbar_line
-    else blk: {
+    const minimized_line: []const u8 = if (plugin_ui_bars) |ui| blk: {
+        if (ui.toolbar_line.len > 0) break :blk ui.toolbar_line;
+        owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
+        break :blk owned_minimized_line.?;
+    } else blk: {
         owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
         break :blk owned_minimized_line.?;
     };
-    const tab_line: []const u8 = if (plugin_ui_bars) |ui|
-        ui.tab_line
-    else blk: {
+    const tab_line: []const u8 = if (plugin_ui_bars) |ui| blk: {
+        if (ui.tab_line.len > 0) break :blk ui.tab_line;
+        owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
+        break :blk owned_tab_line.?;
+    } else blk: {
         owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
         break :blk owned_tab_line.?;
     };
-    const status_line: []const u8 = if (plugin_ui_bars) |ui|
-        ui.status_line
-    else blk: {
+    const status_line: []const u8 = if (plugin_ui_bars) |ui| blk: {
+        if (ui.status_line.len > 0) break :blk ui.status_line;
+        owned_status_line = try status.renderStatusBarWithScrollAndSync(
+            allocator,
+            &mux.workspace_mgr,
+            mux.focusedScrollOffset(),
+            mux.syncScrollEnabled(),
+        );
+        break :blk owned_status_line.?;
+    } else blk: {
         owned_status_line = try status.renderStatusBarWithScrollAndSync(
             allocator,
             &mux.workspace_mgr,

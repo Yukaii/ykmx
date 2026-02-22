@@ -15,6 +15,7 @@ pub const PluginHost = struct {
         minimized_window_count: usize,
         visible_window_count: usize,
         focused_index: usize,
+        focused_window_id: u32,
         has_focused_window: bool,
         tab_count: usize,
         active_tab_index: usize,
@@ -178,7 +179,7 @@ pub const PluginHost = struct {
         var buf: [512]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
-            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"focused_index\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
             .{
                 reason,
                 state.layout,
@@ -186,6 +187,7 @@ pub const PluginHost = struct {
                 state.minimized_window_count,
                 state.visible_window_count,
                 state.focused_index,
+                state.focused_window_id,
                 state.has_focused_window,
                 state.tab_count,
                 state.active_tab_index,
@@ -207,7 +209,7 @@ pub const PluginHost = struct {
         var buf: [640]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
-            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"focused_index\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
             .{
                 stats.reads,
                 stats.resized,
@@ -222,6 +224,7 @@ pub const PluginHost = struct {
                 state.minimized_window_count,
                 state.visible_window_count,
                 state.focused_index,
+                state.focused_window_id,
                 state.has_focused_window,
                 state.tab_count,
                 state.active_tab_index,

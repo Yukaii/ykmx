@@ -9,6 +9,7 @@ export type RuntimeState = {
   minimized_window_count: number;
   visible_window_count: number;
   focused_index: number;
+  focused_window_id: number;
   has_focused_window: boolean;
   tab_count: number;
   active_tab_index: number;

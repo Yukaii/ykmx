@@ -40,10 +40,47 @@ let drag: DragState | null = null;
 let lastFocusedWindowId: number | null = null;
 let lastWindowIds: number[] = [];
 
+function trimToWidth(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (text.length <= width) return text;
+  if (width <= 3) return ".".repeat(width);
+  return `${text.slice(0, width - 3)}...`;
+}
+
+function fitLeft(text: string, width: number): string {
+  const t = trimToWidth(text, width);
+  if (t.length >= width) return t;
+  return `${t}${" ".repeat(width - t.length)}`;
+}
+
+function fitLeftRight(left: string, right: string, width: number): string {
+  if (width <= 0) return "";
+  const r = trimToWidth(right, Math.floor(width * 0.5));
+  if (left.length + 1 + r.length <= width) {
+    return `${left}${" ".repeat(width - left.length - r.length)}${r}`;
+  }
+  const l = trimToWidth(left, width - (r.length > 0 ? r.length + 1 : 0));
+  if (l.length + r.length <= width) {
+    return `${l}${" ".repeat(width - l.length - r.length)}${r}`;
+  }
+  return fitLeft(`${l} ${r}`.trim(), width);
+}
+
 function renderBars(state: RuntimeState): { toolbar: string; tab: string; status: string } {
-  const toolbar = `desktop-wm: floating overlap=on minimized=${state.minimized_window_count} visible=${state.visible_window_count}`;
-  const tab = `tab:${state.active_tab_index + 1}/${state.tab_count} layout=${state.layout} focus=${state.has_focused_window ? state.focused_index + 1 : 0}`;
-  const status = `mouse=${state.mouse_mode} sync=${state.sync_scroll_enabled ? "on" : "off"} screen=${state.screen.width}x${state.screen.height}`;
+  const width = Math.max(1, state.screen.width);
+  const focusedId = state.has_focused_window && state.focused_index >= 0 && state.focused_index < lastWindowIds.length
+    ? lastWindowIds[state.focused_index]
+    : 0;
+
+  const toolbar = "";
+
+  const tabLeft = `tab ${state.active_tab_index + 1}/${state.tab_count} | focus:${state.has_focused_window ? state.focused_index + 1 : 0}${focusedId ? `(#${focusedId})` : ""} | layout:${state.layout}`;
+  const tabRight = `[click title=raise] [drag=move] [edge=resize]`;
+  const tab = fitLeftRight(tabLeft, tabRight, width);
+
+  const statusLeft = `mouse:${state.mouse_mode} sync:${state.sync_scroll_enabled ? "on" : "off"} screen:${state.screen.width}x${state.screen.height}`;
+  const statusRight = "keys: Ctrl+G h/j/k/l focus, Space cycle";
+  const status = fitLeftRight(statusLeft, statusRight, width);
   return { toolbar, tab, status };
 }
 
@@ -68,13 +105,8 @@ function clampFrame(frame: Frame, screen: Rect): Frame {
 }
 
 function syncFrames(windowIds: number[], screen: Rect): void {
-  const present = new Set(windowIds);
-  for (const id of frames.keys()) {
-    if (!present.has(id)) frames.delete(id);
-  }
-  for (const id of maximizedFrames.keys()) {
-    if (!present.has(id)) maximizedFrames.delete(id);
-  }
+  // Keep non-visible window frames so minimize/restore brings windows back
+  // to their last floating geometry.
   for (let i = 0; i < windowIds.length; i += 1) {
     const id = windowIds[i];
     if (!frames.has(id)) {
@@ -143,12 +175,13 @@ async function maybeBringFocusedToFront(state: RuntimeState): Promise<void> {
     lastFocusedWindowId = null;
     return;
   }
-  if (state.focused_index < 0 || state.focused_index >= lastWindowIds.length) return;
-  const focusedWindowId = lastWindowIds[state.focused_index];
+  const focusedWindowId = state.focused_window_id;
   if (!focusedWindowId) return;
   if (focusedWindowId === lastFocusedWindowId) return;
+  const visibleIndex = lastWindowIds.indexOf(focusedWindowId);
+  if (visibleIndex < 0) return;
   lastFocusedWindowId = focusedWindowId;
-  await maybeBringToFront(focusedWindowId, state.focused_index);
+  await maybeBringToFront(focusedWindowId, visibleIndex);
 }
 
 function applyDrag(px: number, py: number): boolean {
@@ -217,9 +250,13 @@ async function main() {
 
     if (ev.hit.on_restore_button) {
       await writeAction({ v: 1, action: "restore_window_by_id", window_id: ev.hit.window_id });
+      await maybeBringToFront(ev.hit.window_id, ev.hit.window_index);
+      lastFocusedWindowId = ev.hit.window_id;
       continue;
     }
     if (ev.hit.on_close_button) {
+      frames.delete(ev.hit.window_id);
+      maximizedFrames.delete(ev.hit.window_id);
       await writeAction({ v: 1, action: "close_focused_window" });
       continue;
     }
