@@ -2183,6 +2183,11 @@ fn renderRuntimeFrame(
         // Popup interiors are opaque: suppress any precomputed base-pane border
         // connectors under the popup content area so they never bleed through.
         clearBorderConnInsideRect(border_conn, total_cols, content_rows, p.rect);
+        // Clear underlying chrome layer markings in the popup interior to prevent
+        // background color leaks from underlying panel chrome styles.
+        if (!p.transparent_background) {
+            clearChromeLayerInsideRect(chrome_layer, chrome_panel_id, total_cols, content_rows, p.rect);
+        }
 
         const output = mux.windowOutput(window_id) catch "";
         const wv = try vt_state.syncWindow(window_id, inner_w, inner_h, output);
@@ -2446,43 +2451,14 @@ fn renderRuntimeFrame(
     if (footer_rows > 2) {
         fillPlainLine(curr[(content_rows + 2) * total_cols .. (content_rows + 3) * total_cols], status_line);
     }
-    const force_repaint_with_popup = popup_count > 0;
-    // Temporary safety path: force full-screen redraw while any popup/panel is
-    // visible. This removes all diff-cache artifacts during overlap styling.
-    const force_full_redraw_with_popup = popup_count > 0;
-    const redraw_full_frame = resized or force_full_redraw_with_popup;
-    if (redraw_full_frame) try writeAllBlocking(out, "\x1b[2J");
-
-    // Popup-covered cells must not rely on diff-skip because stale styled
-    // backgrounds from underlying panes can survive when glyph text matches.
-    // Force these cells to repaint each frame while any popup is visible.
-    if (!resized and popup_count > 0) {
-        var y: usize = 0;
-        while (y < content_rows) : (y += 1) {
-            var x: usize = 0;
-            while (x < total_cols) : (x += 1) {
-                const idx_fc = y * total_cols + x;
-                if (!popup_opaque_cover[idx_fc]) continue;
-                frame_cache.cells[idx_fc].text_len = 0;
-                frame_cache.cells[idx_fc].styled = false;
-                frame_cache.cells[idx_fc].style = .{};
-            }
-        }
-    }
+    if (resized) try writeAllBlocking(out, "\x1b[2J");
 
     var active_style: ?ghostty_vt.Style = null;
     var idx: usize = 0;
     while (idx < curr.len) : (idx += 1) {
-        if (!redraw_full_frame and !mustRepaintCell(
-            idx,
-            force_repaint_with_popup,
-            popup_opaque_cover,
-            popup_overlay,
-            border_conn,
-            chrome_layer,
-        ) and renderCellEqual(frame_cache.cells[idx], curr[idx])) continue;
+        if (!resized and renderCellEqual(frame_cache.cells[idx], curr[idx])) continue;
 
-        if (force_full_redraw_with_popup or !isSafeRunCell(curr[idx])) {
+        if (!isSafeRunCell(curr[idx])) {
             const y = idx / total_cols;
             const x = idx % total_cols;
             try writeFmtBlocking(out, "\x1b[{};{}H", .{ y + 1, x + 1 });
@@ -2518,14 +2494,7 @@ fn renderRuntimeFrame(
         var run_end = idx + 1;
         while (run_end < row_end) : (run_end += 1) {
             if (!isSafeRunCell(curr[run_end])) break;
-            if (!redraw_full_frame and !mustRepaintCell(
-                run_end,
-                force_repaint_with_popup,
-                popup_opaque_cover,
-                popup_overlay,
-                border_conn,
-                chrome_layer,
-            ) and renderCellEqual(frame_cache.cells[run_end], curr[run_end])) break;
+            if (!resized and renderCellEqual(frame_cache.cells[run_end], curr[run_end])) break;
         }
 
         const x0 = run_start % total_cols;
@@ -3089,6 +3058,31 @@ fn clearBorderConnInsideRect(
     }
 }
 
+fn clearChromeLayerInsideRect(
+    layer: []u8,
+    panel_ids: []u32,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+) void {
+    if (r.width < 3 or r.height < 3) return;
+    const x0: usize = r.x + 1;
+    const y0: usize = r.y + 1;
+    const x1: usize = r.x + r.width - 1;
+    const y1: usize = r.y + r.height - 1;
+    if (x0 >= cols or y0 >= rows) return;
+    if (x1 > cols or y1 > rows) return;
+
+    var y = y0;
+    while (y < y1) : (y += 1) {
+        var x = x0;
+        while (x < x1) : (x += 1) {
+            layer[y * cols + x] = 0;
+            panel_ids[y * cols + x] = 0;
+        }
+    }
+}
+
 fn clearCanvasRect(
     canvas: []u21,
     cols: usize,
@@ -3390,19 +3384,6 @@ fn logComposeBgDebug(
         ) catch continue;
         _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
     }
-}
-
-fn mustRepaintCell(
-    idx: usize,
-    force_repaint_with_popup: bool,
-    popup_cover: []const bool,
-    popup_overlay: []const bool,
-    border_conn: []const u8,
-    chrome_layer: []const u8,
-) bool {
-    if (!force_repaint_with_popup) return false;
-    if (idx >= popup_cover.len or idx >= popup_overlay.len or idx >= border_conn.len or idx >= chrome_layer.len) return false;
-    return popup_cover[idx] or popup_overlay[idx] or border_conn[idx] != 0 or chrome_layer[idx] != chrome_layer_none;
 }
 
 fn isSafeRunCell(cell: RuntimeRenderCell) bool {
