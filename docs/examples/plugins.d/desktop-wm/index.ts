@@ -34,6 +34,7 @@ const MIN_H = 6;
 const RESIZE_EDGE = 1;
 
 const frames = new Map<number, Frame>();
+const maximizedFrames = new Map<number, Frame>();
 let lastState: RuntimeState | null = null;
 let drag: DragState | null = null;
 let lastFocusedWindowId: number | null = null;
@@ -70,6 +71,9 @@ function syncFrames(windowIds: number[], screen: Rect): void {
   const present = new Set(windowIds);
   for (const id of frames.keys()) {
     if (!present.has(id)) frames.delete(id);
+  }
+  for (const id of maximizedFrames.keys()) {
+    if (!present.has(id)) maximizedFrames.delete(id);
   }
   for (let i = 0; i < windowIds.length; i += 1) {
     const id = windowIds[i];
@@ -152,6 +156,7 @@ function applyDrag(px: number, py: number): boolean {
 
   const dx = px - drag.start_x;
   const dy = py - drag.start_y;
+  maximizedFrames.delete(drag.window_id);
   if (drag.kind === "move") {
     const next = clampFrame(
       {
@@ -220,6 +225,26 @@ async function main() {
     }
     if (ev.hit.on_minimize_button) {
       await writeAction({ v: 1, action: "minimize_focused_window" });
+      continue;
+    }
+    if (ev.hit.on_maximize_button) {
+      if (!lastState) continue;
+      const current = frames.get(ev.hit.window_id);
+      if (!current) continue;
+      if (maximizedFrames.has(ev.hit.window_id)) {
+        const restore = maximizedFrames.get(ev.hit.window_id) as Frame;
+        frames.set(ev.hit.window_id, clampFrame(restore, lastState.screen));
+        maximizedFrames.delete(ev.hit.window_id);
+      } else {
+        maximizedFrames.set(ev.hit.window_id, { ...current });
+        frames.set(ev.hit.window_id, {
+          x: lastState.screen.x,
+          y: lastState.screen.y,
+          width: lastState.screen.width,
+          height: lastState.screen.height,
+        });
+      }
+      await requestRedraw();
       continue;
     }
 
