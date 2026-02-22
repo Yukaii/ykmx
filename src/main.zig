@@ -18,6 +18,7 @@ const runtime_layout = @import("runtime_layout.zig");
 const poc_output = @import("poc_output.zig");
 const runtime_vt = @import("runtime_vt.zig");
 const runtime_terminal = @import("runtime_terminal.zig");
+const runtime_footer = @import("runtime_footer.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const POC_ROWS: u16 = 12;
@@ -417,7 +418,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                 const py: u16 = if (mouse.y > 0) mouse.y - 1 else 0;
                 const popup_hit = mux.popupChromeHitAt(px, py);
                 const hit = if (popup_hit == null) (mux.windowChromeHitAt(content, px, py) catch null) else null;
-                const toolbar_hit = minimizedToolbarHitAt(&mux.workspace_mgr, content, px, py);
+                const toolbar_hit = runtime_footer.minimizedToolbarHitAt(&mux.workspace_mgr, content, px, py);
                 plugins.emitPointer(
                     .{
                         .x = px,
@@ -1776,7 +1777,7 @@ fn renderRuntimeFrame(
     defer allocator.free(live_ids);
     try vt_state.prune(live_ids);
 
-    const footer_lines = try resolveFooterLines(allocator, mux, plugin_ui_bars);
+    const footer_lines = try runtime_footer.resolveFooterLines(allocator, mux, plugin_ui_bars);
     defer footer_lines.deinit(allocator);
 
     const resized = try frame_cache.ensureSize(total_cols, total_rows);
@@ -1851,75 +1852,6 @@ fn renderRuntimeFrame(
         try writeFmtBlocking(out, "\x1b[{};1H", .{render_compositor.fallbackCursorRow(content_rows, footer_rows)});
     }
     try writeAllBlocking(out, "\x1b[?25h");
-}
-
-const FooterLines = struct {
-    minimized_line: []const u8,
-    tab_line: []const u8,
-    status_line: []const u8,
-    owned_minimized_line: ?[]u8 = null,
-    owned_tab_line: ?[]u8 = null,
-    owned_status_line: ?[]u8 = null,
-
-    fn deinit(self: FooterLines, allocator: std.mem.Allocator) void {
-        if (self.owned_minimized_line) |line| allocator.free(line);
-        if (self.owned_tab_line) |line| allocator.free(line);
-        if (self.owned_status_line) |line| allocator.free(line);
-    }
-};
-
-fn resolveFooterLines(
-    allocator: std.mem.Allocator,
-    mux: *multiplexer.Multiplexer,
-    plugin_ui_bars: ?plugin_host.PluginHost.UiBarsView,
-) !FooterLines {
-    var lines: FooterLines = .{
-        .minimized_line = "",
-        .tab_line = "",
-        .status_line = "",
-    };
-
-    if (plugin_ui_bars) |ui| {
-        if (ui.toolbar_line.len > 0) {
-            lines.minimized_line = ui.toolbar_line;
-        } else {
-            lines.owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
-            lines.minimized_line = lines.owned_minimized_line.?;
-        }
-
-        if (ui.tab_line.len > 0) {
-            lines.tab_line = ui.tab_line;
-        } else {
-            lines.owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
-            lines.tab_line = lines.owned_tab_line.?;
-        }
-
-        if (ui.status_line.len > 0) {
-            lines.status_line = ui.status_line;
-        } else {
-            lines.owned_status_line = try status.renderStatusBarWithScrollAndSync(
-                allocator,
-                &mux.workspace_mgr,
-                mux.focusedScrollOffset(),
-                mux.syncScrollEnabled(),
-            );
-            lines.status_line = lines.owned_status_line.?;
-        }
-        return lines;
-    }
-
-    lines.owned_minimized_line = try renderMinimizedToolbarLine(allocator, &mux.workspace_mgr);
-    lines.minimized_line = lines.owned_minimized_line.?;
-    lines.owned_tab_line = try status.renderTabBar(allocator, &mux.workspace_mgr);
-    lines.tab_line = lines.owned_tab_line.?;
-    lines.owned_status_line = try status.renderStatusBarWithScrollAndSync(
-        allocator,
-        &mux.workspace_mgr,
-        mux.focusedScrollOffset(),
-        mux.syncScrollEnabled(),
-    );
-    lines.status_line = lines.owned_status_line.?;
-    return lines;
 }
 
 fn composeFooterRows(
@@ -2991,45 +2923,6 @@ fn fillPlainLine(dst: []RuntimeRenderCell, line: []const u8) void {
             .styled = false,
         };
     }
-}
-
-fn renderMinimizedToolbarLine(allocator: std.mem.Allocator, wm: *workspace.WorkspaceManager) ![]u8 {
-    var list = std.ArrayListUnmanaged(u8){};
-    errdefer list.deinit(allocator);
-
-    try list.appendSlice(allocator, "min: ");
-    const tab = wm.activeTab() catch return list.toOwnedSlice(allocator);
-    for (tab.windows.items) |w| {
-        if (!w.minimized) continue;
-        try list.appendSlice(allocator, "[");
-        try list.writer(allocator).print("{d}:{s}", .{ w.id, w.title });
-        try list.appendSlice(allocator, "] ");
-    }
-    return list.toOwnedSlice(allocator);
-}
-
-fn minimizedToolbarHitAt(
-    wm: *workspace.WorkspaceManager,
-    content: layout.Rect,
-    px: u16,
-    py: u16,
-) ?struct { window_id: u32, window_index: usize } {
-    if (py != content.y + content.height) return null;
-    const tab = wm.activeTab() catch return null;
-
-    var x: u16 = 5; // "min: "
-    for (tab.windows.items, 0..) |w, i| {
-        if (!w.minimized) continue;
-
-        var id_buf: [16]u8 = undefined;
-        const id_txt = std.fmt.bufPrint(&id_buf, "{d}", .{w.id}) catch continue;
-        const seg_w: u16 = @intCast(1 + id_txt.len + 1 + w.title.len + 2); // [id:title] + trailing space
-        const start = x;
-        const end = x + seg_w;
-        if (px >= start and px < end) return .{ .window_id = w.id, .window_index = i };
-        x = end;
-    }
-    return null;
 }
 
 fn plainCellFromCodepoint(cp: u21) RuntimeRenderCell {
