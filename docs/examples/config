@@ -1,9 +1,9 @@
-# ykwm example config
+# ykmx example config
 # Location:
-#   $XDG_CONFIG_HOME/ykwm/config
-#   $XDG_CONFIG_HOME/ykwm/config.toml
-#   or $HOME/.config/ykwm/config
-#   or $HOME/.config/ykwm/config.toml
+#   $XDG_CONFIG_HOME/ykmx/config
+#   $XDG_CONFIG_HOME/ykmx/config.toml
+#   or $HOME/.config/ykmx/config
+#   or $HOME/.config/ykmx/config.toml
 
 layout_backend=native
 # backend values: native | opentui | plugin
@@ -20,15 +20,15 @@ mouse_mode=hybrid
 # Long-term plugin toggle scaffold
 plugins_enabled=false
 # Dev example paths from this repository:
-# plugin_dir="/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d/paperwm"
-# plugins_dir="/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d"
+# plugin_dir="/Users/yukai/Projects/Personal/ykmx/docs/examples/plugins.d/paperwm"
+# plugins_dir="/Users/yukai/Projects/Personal/ykmx/docs/examples/plugins.d"
 #   - paperwm: layout only
 #   - desktop-wm: floating overlap layout + free drag/resize + window controls
 #   - popup-controls: standalone popup keybinding registration/behavior plugin
 # To run desktop-wm as layout owner (single shared plugin process for layout + pointer/actions):
 # layout_backend=plugin
 # plugins_enabled=true
-# plugin_dir="/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d/desktop-wm"
-# plugins_dirs=["$HOME/.config/ykwm/plugins.d","/Users/yukai/Projects/Personal/ykwm/docs/examples/plugins.d"]
-plugin_dir="$HOME/.config/ykwm/plugins"
-plugins_dir="$HOME/.config/ykwm/plugins.d"
+# plugin_dir="/Users/yukai/Projects/Personal/ykmx/docs/examples/plugins.d/desktop-wm"
+# plugins_dirs=["$HOME/.config/ykmx/plugins.d","/Users/yukai/Projects/Personal/ykmx/docs/examples/plugins.d"]
+plugin_dir="$HOME/.config/ykmx/plugins"
+plugins_dir="$HOME/.config/ykmx/plugins.d"

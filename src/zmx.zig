@@ -132,14 +132,14 @@ test "zmx detach helper returns false when not in session" {
 
 test "zmx attach argv builder includes session and program args" {
     const testing = std.testing;
-    const argv = try buildAttachArgv(testing.allocator, "dev", "ykwm", &.{ "--config", "foo" });
+    const argv = try buildAttachArgv(testing.allocator, "dev", "ykmx", &.{ "--config", "foo" });
     defer testing.allocator.free(argv);
 
     try testing.expectEqual(@as(usize, 6), argv.len);
     try testing.expectEqualStrings("zmx", argv[0]);
     try testing.expectEqualStrings("attach", argv[1]);
     try testing.expectEqualStrings("dev", argv[2]);
-    try testing.expectEqualStrings("ykwm", argv[3]);
+    try testing.expectEqualStrings("ykmx", argv[3]);
     try testing.expectEqualStrings("--config", argv[4]);
     try testing.expectEqualStrings("foo", argv[5]);
 }

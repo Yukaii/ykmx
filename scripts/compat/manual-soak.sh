@@ -11,9 +11,9 @@ Manual runtime compatibility soak (Ghostty + zmx):
    zig build
 
 2) Launch:
-   zmx attach dev ./zig-out/bin/ykwm
+   zmx attach dev ./zig-out/bin/ykmx
 
-3) In ykwm panes, run:
+3) In ykmx panes, run:
    fish
    zoxide query .
    printf 'one\ntwo\nthree\n' | fzf --height=100% --layout=reverse

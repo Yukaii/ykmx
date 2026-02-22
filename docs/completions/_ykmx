@@ -1,6 +1,6 @@
-#compdef ykwm
+#compdef ykmx
 
-_ykwm() {
+_ykmx() {
   local -a opts
   opts=(
     '--help[Show help]'
@@ -11,5 +11,5 @@ _ykwm() {
   _describe 'option' opts
 }
 
-_ykwm "$@"
+_ykmx "$@"
 

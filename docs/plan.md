@@ -1,4 +1,4 @@
-# ykwm - Plan Document
+# ykmx - Plan Document
 
 A custom terminal multiplexer designed for experimental UX with floating popups, tiled scrollable windows, and modern terminal features.
 
@@ -31,7 +31,7 @@ No existing solution provides:
 │ ┌─────────────────────────────────────────────────────────┐ │
 │ │ zmx session (session persistence layer)                 │ │
 │ │ ┌─────────────────────────────────────────────────────┐ │ │
-│ │ │ ykwm (custom multiplexer)                           │ │ │
+│ │ │ ykmx (custom multiplexer)                           │ │ │
 │ │ │                                                     │ │ │
 │ │ │  ┌──────────┐  ┌──────────┐  ┌──────────┐           │ │ │
 │ │ │  │ Window 1 │  │ Window 2 │  │ Window 3 │           │ │ │
@@ -50,7 +50,7 @@ No existing solution provides:
 
 1. **Ghostty sees one terminal session** - No OSC 133 passthrough issues
 2. **zmx handles persistence** - Detach/reattach with full state restoration
-3. **ykwm handles all windowing** - Complete control over UX
+3. **ykmx handles all windowing** - Complete control over UX
 4. **Shell integration works** - Click-to-move, semantic prompts in the root session
 
 ## Core Features
@@ -338,23 +338,23 @@ zmx daemon architecture:
 
 **VT Instance Architecture (N+1 model):**
 
-When ykwm runs inside zmx, there are N+1 ghostty-vt instances:
-- **1 instance in zmx daemon**: Tracks the *composed* output that ykwm writes to stdout.
+When ykmx runs inside zmx, there are N+1 ghostty-vt instances:
+- **1 instance in zmx daemon**: Tracks the *composed* output that ykmx writes to stdout.
   This is what zmx uses to restore the screen when a client reconnects.
-- **N instances in ykwm**: One per window, tracking each child PTY's state independently.
+- **N instances in ykmx**: One per window, tracking each child PTY's state independently.
 
-This is correct and intentional. zmx's VT instance sees ykwm's final rendered output
+This is correct and intentional. zmx's VT instance sees ykmx's final rendered output
 (escape sequences for the composed screen), not the raw per-window PTY data. On zmx
-reconnect, zmx replays ykwm's last rendered frame — which is exactly what the user
+reconnect, zmx replays ykmx's last rendered frame — which is exactly what the user
 should see.
 
 ```
 ┌─ zmx daemon ──────────────────────────────────────┐
 │                                                    │
-│  ykwm stdout ──┬──► client sockets                │
+│  ykmx stdout ──┬──► client sockets                │
 │                └──► zmx's ghostty-vt (1 instance)  │
 │                                                    │
-│  ┌─ ykwm process ──────────────────────────────┐   │
+│  ┌─ ykmx process ──────────────────────────────┐   │
 │  │  PTY 1 ──► ghostty-vt #1 ──┐               │   │
 │  │  PTY 2 ──► ghostty-vt #2 ──┤ compositor    │   │
 │  │  PTY 3 ──► ghostty-vt #3 ──┘ ──► stdout    │   │
@@ -365,32 +365,32 @@ should see.
 **State Restoration on zmx Reconnect:**
 
 When a client reconnects to zmx, zmx replays the last rendered frame. This
-restores the *visual* state but not ykwm's internal state (window layout,
+restores the *visual* state but not ykmx's internal state (window layout,
 scroll positions, focus). Two strategies:
 
 1. **Visual-only restore (simpler, Phase 5 MVP):**
    - zmx replays the last frame → user sees the composed screen
-   - ykwm is still running, so it immediately re-renders the next frame
+   - ykmx is still running, so it immediately re-renders the next frame
    - User sees a brief flash but state is fully intact
-   - This works because ykwm doesn't need to serialize anything — it stays alive
+   - This works because ykmx doesn't need to serialize anything — it stays alive
 
-2. **Full state restore (future, if ykwm itself needs to restart):**
-   - Serialize ykwm state to a file: window layout, scroll positions, focus,
+2. **Full state restore (future, if ykmx itself needs to restart):**
+   - Serialize ykmx state to a file: window layout, scroll positions, focus,
      per-window VT state (via `TerminalFormatter`)
    - On restart, deserialize and reconstruct windows
    - Requires a state file format (JSON or binary)
-   - Not needed for zmx integration since zmx keeps ykwm alive
+   - Not needed for zmx integration since zmx keeps ykmx alive
 
 **Key Requirements:**
-- [x] Spawn as command within zmx session: `zmx attach <name> ykwm`
-- [x] Proper PTY handoff between zmx and ykwm
-- [x] Handle zmx detach/reattach gracefully (ykwm stays alive, re-renders on reattach)
+- [x] Spawn as command within zmx session: `zmx attach <name> ykmx`
+- [x] Proper PTY handoff between zmx and ykmx
+- [x] Handle zmx detach/reattach gracefully (ykmx stays alive, re-renders on reattach)
 - [x] Handle terminal resize on reattach (zmx sends SIGWINCH)
 - [x] Graceful shutdown on zmx kill (SIGHUP/SIGTERM handling)
 
 **Integration Points:**
 - Use zmx's socket directory (`$ZMX_DIR` or `$XDG_RUNTIME_DIR/zmx`) for any
-  ykwm-specific IPC if needed (e.g., `ykwm-ctl` commands)
+  ykmx-specific IPC if needed (e.g., `ykmx-ctl` commands)
 - Detect `$ZMX_SESSION` env var to know we're inside zmx
 - Work with zmx's `attach`, `detach`, `history` commands
 - Support multiple clients viewing same session (zmx handles this transparently)
@@ -404,7 +404,7 @@ scroll positions, focus). Two strategies:
 - Minimal configuration at compile time
 - Unix philosophy: do one thing well
 
-**What ykwm adds beyond dvtm:**
+**What ykmx adds beyond dvtm:**
 - Floating popup windows (dvtm limitation)
 - Session persistence via zmx (dvtm delegates to abduco)
 - Experimental UX features
@@ -449,7 +449,7 @@ Study dvtm's (~4000 lines of C):
 
 **Status (2026-02-14):**
 - Golden parity harness added in `src/layout_opentui.zig` for vertical-stack cases (single window, many windows, tiny sizes, non-zero gaps, master-count variation); currently `SkipZigTest` until OpenTUI adapter is fully integrated (`error.OpenTUINotIntegratedYet`).
-- Layout churn benchmark added via `ykwm --benchmark-layout [N]` with resize + window-count churn simulation and avg/p95/max reporting.
+- Layout churn benchmark added via `ykmx --benchmark-layout [N]` with resize + window-count churn simulation and avg/p95/max reporting.
 - Sample run (`N=500`): `native avg=0.014ms p95=0.019ms max=0.043ms`; `opentui=unavailable`.
 - Interim decision: keep `native` as active backend; retain `LayoutEngine` boundary and keep OpenTUI behind adapter until integration is complete.
 
@@ -501,7 +501,7 @@ Implemented in repository:
 - `src/multiplexer.zig`: window->PTY routing, poll loop, output buffer per window, layout/tab/popup command handling, popup animation tick + auto-close on command exit, routing + resize propagation tests
 - `src/input.zig`: prefix-key router (`Ctrl+G`) for command-vs-forwarded input decisions, layout/tab/popup command parsing (`MOD+p`, `MOD+Escape`, `MOD+Tab`)
 - `src/input.zig`: prefix router + ESC/CSI sequence parser + SGR mouse metadata extraction
-- `src/config.zig`: startup config loading + parser (`$XDG_CONFIG_HOME/ykwm/config[.zig]`, fallback `$HOME/.config/ykwm/config[.zig]`)
+- `src/config.zig`: startup config loading + parser (`$XDG_CONFIG_HOME/ykmx/config[.zig]`, fallback `$HOME/.config/ykmx/config[.zig]`)
 - `src/status.zig`: tab bar + status line formatters (active-tab marker, layout/window/focus summary)
 - `src/scrollback.zig`: per-window scrollback buffer (line retention, page/half-page navigation, forward/backward search)
 - `src/benchmark.zig`: frame-time benchmark harness (avg/p95/max ms)
@@ -517,7 +517,7 @@ Implemented in repository:
 - Scrollback actions wired: `MOD+u` page-up and `MOD+d` page-down on focused window scrollback
 - Multiplexer search API wired: forward/backward query over focused scrollback with jump-to-match behavior
 - CLI utilities wired: `--help`, `--version`, `--benchmark [N]`, `--smoke-zmx [session]`
-- User docs added: `docs/usage.md`, `docs/examples/config`, `docs/completions/ykwm.bash`, `docs/completions/_ykwm`
+- User docs added: `docs/usage.md`, `docs/examples/config`, `docs/completions/ykmx.bash`, `docs/completions/_ykmx`
 - Popup animation hooks implemented (fade-in/fade-out state + animation tick processing in runtime loop)
 - FZF popup integration example implemented (`openFzfPopup` with auto-close semantics and fallback if `fzf` is unavailable)
 - Detach request is surfaced by multiplexer tick and can invoke `zmx detach` when running in a zmx session
@@ -532,7 +532,7 @@ Implemented in repository:
 - Popup overlay rendering now respects z-order and topmost precedence during composition (base panes no longer mask popup cells)
 - Popup focus now raises z-index (`cycle popup` + mouse click on popup), and modal popups capture click focus from underlying panes
 - Popup toggle/close behavior is stable (`MOD+p` toggle, `MOD+Escape` immediate close)
-- Child process exit is isolated: exiting pane/popup process now closes only that pane/popup, not the whole `ykwm` runtime
+- Child process exit is isolated: exiting pane/popup process now closes only that pane/popup, not the whole `ykmx` runtime
 - Focus switch redraw is immediate (cursor/focus updates without waiting for next PTY output)
 - Mouse support is now compositor-driven: click-to-focus + drag-to-resize work, mouse CSI is consumed by compositor and no longer injected into pane PTYs
 - New-tab flow is now interactive by default: `MOD+t` creates/switches tab and spawns a shell immediately, with resize + redraw hooks
@@ -656,7 +656,7 @@ Next implementation focus:
 - Performance optimization
 
 **Deliverables:**
-- [x] Verify `zmx attach <session> ykwm` works correctly
+- [x] Verify `zmx attach <session> ykmx` works correctly
 - [x] Handle zmx detach/reattach (SIGWINCH, re-render)
 - [x] Handle zmx kill (SIGHUP/SIGTERM graceful shutdown)
 - [x] Mouse event handling (click to focus + drag to resize; compositor-consumed mouse CSI)
@@ -666,10 +666,10 @@ Next implementation focus:
 - [x] Shell completions
 
 **Testing:**
-- `zmx attach dev ykwm` — starts ykwm in zmx session
+- `zmx attach dev ykmx` — starts ykmx in zmx session
 - Detach with `ctrl+\`, reattach with `zmx attach dev`
-- ykwm re-renders correctly on reattach
-- Multiple clients can view same ykwm session via zmx
+- ykmx re-renders correctly on reattach
+- Multiple clients can view same ykmx session via zmx
 - Mouse clicks focus correct window
 - Performance is acceptable (<16ms frame time)
 
@@ -715,7 +715,7 @@ Initial focus is core stability (PTY, layout, rendering, tabs, zmx integration).
 
 - Default-deny capability manifest per plugin (`pty`, `fs`, `network`, `ipc`)
 - Explicit user consent for privileged capabilities
-- Per-plugin crash isolation so plugin failures do not crash ykwm
+- Per-plugin crash isolation so plugin failures do not crash ykmx
 
 ### API Shape (proposed)
 
@@ -734,7 +734,7 @@ Initial focus is core stability (PTY, layout, rendering, tabs, zmx integration).
 
 #### Phase P1: Typed Developer Experience (next immediate)
 
-- [ ] Publish `@ykwm/plugin-sdk` package (or in-repo module export) from `docs/examples/plugin/types.ts`.
+- [ ] Publish `@ykmx/plugin-sdk` package (or in-repo module export) from `docs/examples/plugin/types.ts`.
 - [ ] Add event/action type guards and helpers:
   - `isComputeLayoutEvent`
   - `isStateChangedEvent`
@@ -769,9 +769,9 @@ Initial focus is core stability (PTY, layout, rendering, tabs, zmx integration).
 #### Phase P4: Operational Tooling
 
 - [ ] Add CLI commands:
-  - `ykwm --plugins-list`
-  - `ykwm --plugin-doctor`
-  - `ykwm --plugin-disable <name>`
+  - `ykmx --plugins-list`
+  - `ykmx --plugin-doctor`
+  - `ykmx --plugin-disable <name>`
 - [ ] Add development mode hot-reload per plugin.
 - [ ] Add integration tests for:
   - multi-plugin startup
@@ -827,7 +827,7 @@ if (b.lazyDependency("ghostty", .{
 }
 ```
 
-**Key API Surface (used by zmx, needed by ykwm):**
+**Key API Surface (used by zmx, needed by ykmx):**
 
 | API | Purpose |
 |-----|---------|
@@ -838,7 +838,7 @@ if (b.lazyDependency("ghostty", .{
 | `ghostty_vt.formatter.TerminalFormatter.init(term, opts)` | Serialize VT state to escape sequences, plain text, or HTML |
 | `term.deinit(alloc)` | Cleanup |
 
-**ykwm additionally needs (for cell-by-cell rendering):**
+**ykmx additionally needs (for cell-by-cell rendering):**
 
 | API | Purpose |
 |-----|---------|
@@ -846,7 +846,7 @@ if (b.lazyDependency("ghostty", .{
 | Screen row/cell iteration | Read individual cells for compositing |
 | Cell attributes (fg, bg, style flags) | Generate per-cell escape sequences |
 
-**Risk:** The cell-level API for reading individual screen cells needs verification against the Ghostty source. zmx only uses the `TerminalFormatter` bulk serialization path. If direct cell access isn't exposed, ykwm would need to either: (a) use `TerminalFormatter` per-window and clip the output, or (b) contribute cell-access APIs upstream.
+**Risk:** The cell-level API for reading individual screen cells needs verification against the Ghostty source. zmx only uses the `TerminalFormatter` bulk serialization path. If direct cell access isn't exposed, ykmx would need to either: (a) use `TerminalFormatter` per-window and clip the output, or (b) contribute cell-access APIs upstream.
 
 **Validation Step (Phase 0):** Before starting Phase 1, write a minimal proof-of-concept that creates a `ghostty_vt.Terminal`, feeds it sample data, and reads back individual cells from `term.screens.active`. This validates the rendering approach before building window management on top of it.
 
@@ -857,8 +857,8 @@ without crossing language boundaries.
 
 **Proposed usage boundary:**
 - Use OpenTUI for layout computation only (tile rect calculation)
-- Keep terminal rendering/compositing in ykwm (ghostty-vt + custom renderer)
-- Keep popup z-index/focus policy in ykwm even if popup rect math uses OpenTUI
+- Keep terminal rendering/compositing in ykmx (ghostty-vt + custom renderer)
+- Keep popup z-index/focus policy in ykmx even if popup rect math uses OpenTUI
 
 **Non-goals for initial integration:**
 - Replacing the VT layer
@@ -883,9 +883,9 @@ without crossing language boundaries.
 Runtime config file only (no compile-time config). While dwm/dvtm use compile-time
 configuration, this creates friction for iterating on an experimental UX project.
 
-- **Config file:** `$XDG_CONFIG_HOME/ykwm/config.zig` or `$HOME/.config/ykwm/config.zig`
+- **Config file:** `$XDG_CONFIG_HOME/ykmx/config.zig` or `$HOME/.config/ykmx/config.zig`
   parsed at startup (Zig-style config like Ghostty, or a simpler key=value format)
-- **Defaults:** Sensible built-in defaults so ykwm works without a config file
+- **Defaults:** Sensible built-in defaults so ykmx works without a config file
 - **No hot-reload in v1:** Config is read at startup. Restart to apply changes.
   Hot-reload can be added later if needed, but adds complexity for little initial gain.
 
@@ -927,7 +927,7 @@ Tabs:
 
 ## Comparison with Existing Tools
 
-| Feature | ykwm | tmux | dvtm | zmx |
+| Feature | ykmx | tmux | dvtm | zmx |
 |---------|------|------|------|-----|
 | Session Persistence | ✓ (via zmx) | ✓ | ✗ (use abduco) | ✓ |
 | OSC 133 Support | ✓ | ✗ | ✓ | ✓ |
@@ -964,7 +964,7 @@ Tabs:
 - Monitor child processes via `waitpid()` (non-blocking, checked each poll cycle)
 - When a child exits: mark window as "exited", display exit code in the window area
 - User can close the dead window with `MOD+x` or it auto-closes (configurable)
-- If the last window dies, ykwm exits cleanly
+- If the last window dies, ykmx exits cleanly
 
 **Terminal Resize Propagation:**
 - On `SIGWINCH`: recalculate all window layouts for the new terminal size
@@ -981,12 +981,12 @@ Tabs:
   is restored automatically
 - No special handling needed in the compositor
 
-**ykwm Crash Recovery:**
-- Child PTYs survive ykwm crashing (they're separate processes)
+**ykmx Crash Recovery:**
+- Child PTYs survive ykmx crashing (they're separate processes)
 - On crash, child processes receive SIGHUP and typically exit
-- Future: write a state file periodically so a restarted ykwm could reattach
+- Future: write a state file periodically so a restarted ykmx could reattach
   to orphaned PTYs (not in initial scope)
-- zmx keeps its own session alive regardless of ykwm state
+- zmx keeps its own session alive regardless of ykmx state
 
 **Signal Handling:**
 - `SIGWINCH`: terminal resize (see above)
@@ -1015,7 +1015,7 @@ Tabs:
 
 ### Projects
 - **zmx**: https://github.com/neurosnap/zmx - Session persistence
-  - Integration target: spawn ykwm within zmx sessions
+  - Integration target: spawn ykmx within zmx sessions
   - Uses `libghostty-vt` for terminal state restoration
   - Unix socket IPC for client-daemon communication
 - **dvtm**: https://github.com/martanne/dvtm - Tiling window manager
@@ -1049,11 +1049,11 @@ Tabs:
 **Kitty Extension (click_events):**
 - `ESC ] 133 ; A ; click_events=1 ST` - Enable click-to-move
 
-**Why ykwm Solves This:**
+**Why ykmx Solves This:**
 - Runs inside zmx session
 - Ghostty sees single terminal
 - Shell integration works in root session
-- ykwm handles windowing, not terminal protocol
+- ykmx handles windowing, not terminal protocol
 
 ---
 

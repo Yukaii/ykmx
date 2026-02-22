@@ -72,14 +72,14 @@ fn discoverDefaultConfigPath(allocator: std.mem.Allocator) !?[]u8 {
     }
 
     if (xdg_config_home) |xdg| {
-        try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykwm", "config" }));
-        try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykwm", "config.toml" }));
-        try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykwm", "config.zig" }));
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykmx", "config" }));
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykmx", "config.toml" }));
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ xdg, "ykmx", "config.zig" }));
     }
     if (home) |h| {
-        try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykwm", "config" }));
-        try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykwm", "config.toml" }));
-        try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykwm", "config.zig" }));
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykmx", "config" }));
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykmx", "config.toml" }));
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ h, ".config", "ykmx", "config.zig" }));
     }
 
     for (paths.items) |p| {
@@ -274,8 +274,8 @@ test "config parser applies known keys" {
         \\show_status_bar=true
         \\mouse_mode=compositor
         \\plugins_enabled=1
-        \\plugin_dir=/tmp/ykwm-plugins
-        \\plugins_dir=/tmp/ykwm-plugins.d
+        \\plugin_dir=/tmp/ykmx-plugins
+        \\plugins_dir=/tmp/ykmx-plugins.d
         \\plugins_dirs=["/tmp/plugins-a","/tmp/plugins-b"]
     );
 
@@ -288,8 +288,8 @@ test "config parser applies known keys" {
     try testing.expect(cfg.show_status_bar);
     try testing.expectEqual(MouseMode.compositor, cfg.mouse_mode);
     try testing.expect(cfg.plugins_enabled);
-    try testing.expectEqualStrings("/tmp/ykwm-plugins", cfg.plugin_dir.?);
-    try testing.expectEqualStrings("/tmp/ykwm-plugins.d", cfg.plugins_dir.?);
+    try testing.expectEqualStrings("/tmp/ykmx-plugins", cfg.plugin_dir.?);
+    try testing.expectEqualStrings("/tmp/ykmx-plugins.d", cfg.plugins_dir.?);
     try testing.expectEqual(@as(usize, 2), cfg.plugins_dirs.items.len);
     try testing.expectEqualStrings("/tmp/plugins-a", cfg.plugins_dirs.items[0]);
     try testing.expectEqualStrings("/tmp/plugins-b", cfg.plugins_dirs.items[1]);

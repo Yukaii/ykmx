@@ -1365,7 +1365,7 @@ pub const Multiplexer = struct {
     pub fn openFzfPopup(self: *Multiplexer, screen: layout.Rect, modal: bool) !u32 {
         const script =
             \\if command -v fzf >/dev/null 2>&1; then
-            \\  printf 'one\ntwo\nthree\n' | fzf --height=100% --layout=reverse --prompt='ykwm> ' --filter='one' --select-1 --exit-0
+            \\  printf 'one\ntwo\nthree\n' | fzf --height=100% --layout=reverse --prompt='ykmx> ' --filter='one' --select-1 --exit-0
             \\else
             \\  printf 'fzf not found on PATH\n'
             \\fi
@@ -1376,7 +1376,7 @@ pub const Multiplexer = struct {
     pub fn openInteractivePopup(self: *Multiplexer, screen: layout.Rect, modal: bool) !u32 {
         const script =
             \\if command -v fzf >/dev/null 2>&1; then
-            \\  printf 'one\ntwo\nthree\n' | fzf --height=100% --layout=reverse --prompt='ykwm> '
+            \\  printf 'one\ntwo\nthree\n' | fzf --height=100% --layout=reverse --prompt='ykmx> '
             \\else
             \\  printf 'fzf not found on PATH\n'
             \\  printf 'Press Enter to close...'

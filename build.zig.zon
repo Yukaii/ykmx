@@ -1,7 +1,7 @@
 .{
-    .name = .ykwm,
+    .name = .ykmx,
     .version = "0.0.0",
-    .fingerprint = 0x208ce61fc15c0faa,
+    .fingerprint = 0xfd7cf82fd0410f05,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .ghostty = .{

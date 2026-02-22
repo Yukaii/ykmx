@@ -11,9 +11,9 @@ echo "[compat] building binary"
 zig build
 
 echo "[compat] checking CLI probes"
-./zig-out/bin/ykwm --version >/dev/null
-./zig-out/bin/ykwm --benchmark 20 >/dev/null
-./zig-out/bin/ykwm --benchmark-layout 50 >/dev/null
+./zig-out/bin/ykmx --version >/dev/null
+./zig-out/bin/ykmx --benchmark 20 >/dev/null
+./zig-out/bin/ykmx --benchmark-layout 50 >/dev/null
 
 echo "[compat] checking unicode fixture bytes"
 glyphs='  󰣇 󰆍'

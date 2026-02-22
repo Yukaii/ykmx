@@ -48,7 +48,7 @@ pub fn main() !void {
             var buf: [128]u8 = undefined;
             var w = std.fs.File.stdout().writer(&buf);
             const out = &w.interface;
-            try out.writeAll("ykwm 0.1.0-dev\n");
+            try out.writeAll("ykmx 0.1.0-dev\n");
             try out.flush();
             return;
         }
@@ -97,8 +97,8 @@ pub fn main() !void {
             return;
         }
         if (std.mem.eql(u8, args[1], "--smoke-zmx")) {
-            const session = if (args.len > 2) args[2] else "ykwm-smoke";
-            const ok = try zmx.smokeAttachRoundTrip(alloc, session, "ykwm-zmx-smoke");
+            const session = if (args.len > 2) args[2] else "ykmx-smoke";
+            const ok = try zmx.smokeAttachRoundTrip(alloc, session, "ykmx-zmx-smoke");
             var buf: [256]u8 = undefined;
             var w = std.fs.File.stdout().writer(&buf);
             const out = &w.interface;
@@ -160,7 +160,7 @@ pub fn main() !void {
     var out_writer = std.fs.File.stdout().writer(&out_buf);
     const out = &out_writer.interface;
 
-    try out.writeAll("ykwm phase-0: dual VT side-by-side compose\n\n");
+    try out.writeAll("ykmx phase-0: dual VT side-by-side compose\n\n");
 
     // Proves we can inspect each VT screen state (active screen + cursor).
     try out.print("left cursor: x={} y={}\n", .{ left.screens.active.cursor.x, left.screens.active.cursor.y });
@@ -179,17 +179,17 @@ fn printHelp() !void {
     var w = std.fs.File.stdout().writer(&buf);
     const out = &w.interface;
     try out.writeAll(
-        \\ykwm - experimental terminal multiplexer
+        \\ykmx - experimental terminal multiplexer
         \\
         \\Usage:
-        \\  ykwm                 Run interactive runtime loop
-        \\  ykwm --poc           Run verbose development POC output
-        \\  ykwm --benchmark [N] Run frame benchmark (default N=200)
-        \\  ykwm --benchmark-layout [N]
+        \\  ykmx                 Run interactive runtime loop
+        \\  ykmx --poc           Run verbose development POC output
+        \\  ykmx --benchmark [N] Run frame benchmark (default N=200)
+        \\  ykmx --benchmark-layout [N]
         \\                      Run layout churn benchmark (default N=500)
-        \\  ykwm --smoke-zmx [session]
-        \\  ykwm --version
-        \\  ykwm --help
+        \\  ykmx --smoke-zmx [session]
+        \\  ykmx --version
+        \\  ykmx --help
         \\
     );
     try out.flush();
@@ -240,7 +240,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
     var w = std.fs.File.stdout().writer(&buf);
     const out = &w.interface;
     try out.print(
-        "ykwm runtime loop started (session={s})\r\n",
+        "ykmx runtime loop started (session={s})\r\n",
         .{env.session_name orelse "(none)"},
     );
     try out.flush();

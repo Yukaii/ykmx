@@ -1,4 +1,4 @@
-_ykwm() {
+_ykmx() {
   local cur prev
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
@@ -17,5 +17,5 @@ _ykwm() {
   esac
 }
 
-complete -F _ykwm ykwm
+complete -F _ykmx ykmx
 

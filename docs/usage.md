@@ -1,4 +1,4 @@
-# ykwm Usage
+# ykmx Usage
 
 ## Quick Start
 
@@ -17,18 +17,18 @@ scripts/compat/ci-smoke.sh
 
 Config file lookup (first existing path wins):
 
-- `$XDG_CONFIG_HOME/ykwm/config`
-- `$XDG_CONFIG_HOME/ykwm/config.toml`
-- `$HOME/.config/ykwm/config`
-- `$HOME/.config/ykwm/config.toml`
+- `$XDG_CONFIG_HOME/ykmx/config`
+- `$XDG_CONFIG_HOME/ykmx/config.toml`
+- `$HOME/.config/ykmx/config`
+- `$HOME/.config/ykmx/config.toml`
 
 ## CLI
 
 ```bash
-ykwm --help
-ykwm --version
-ykwm --benchmark 300
-ykwm --smoke-zmx my-session
+ykmx --help
+ykmx --version
+ykmx --benchmark 300
+ykmx --smoke-zmx my-session
 ```
 
 - `--benchmark [N]` runs a lightweight frame timing benchmark and prints avg/p95/max.
@@ -47,22 +47,22 @@ Build binary first:
 zig build
 ```
 
-Run from local binary path (works even if `ykwm` is not on your PATH yet):
+Run from local binary path (works even if `ykmx` is not on your PATH yet):
 
 ```bash
-zmx attach dev ./zig-out/bin/ykwm
+zmx attach dev ./zig-out/bin/ykmx
 ```
 
 Or, after adding to PATH / installing:
 
 ```bash
-zmx attach dev ykwm
+zmx attach dev ykmx
 ```
 
-Create or attach to a persistent session running ykwm:
+Create or attach to a persistent session running ykmx:
 
 ```bash
-zmx attach dev ykwm
+zmx attach dev ykmx
 ```
 
 Detach from current zmx client:
@@ -131,7 +131,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
 - `Ctrl+G M` cycles modes:
   - `hybrid`: coordinate-based split behavior
   - `passthrough`: always forward mouse to app
-  - `compositor`: always consume mouse for ykwm interactions
+  - `compositor`: always consume mouse for ykmx interactions
 
 ## Plugins (Bun scaffold)
 
@@ -164,13 +164,13 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"event":"on_command","command":"open_popup|..."}`
   - `{"v":1,"event":"on_shutdown"}`
 - `state` currently includes layout, window/focus info, tab info, master settings, mouse mode, sync-scroll flag, and current screen rect.
-- For plugin layout backend, ykwm also sends:
+- For plugin layout backend, ykmx also sends:
   - `{"v":1,"id":N,"event":"on_compute_layout","params":{...}}`
   - `params.window_ids` carries stable visible window IDs in layout index order.
 - Plugin may write to stdout:
   - `{"v":1,"id":N,"rects":[{"x":0,"y":0,"width":80,"height":24}, ...]}`
   - or `{"v":1,"id":N,"fallback":true}` to use native layout.
-- Plugin may also emit action messages (applied by ykwm runtime):
+- Plugin may also emit action messages (applied by ykmx runtime):
   - `{"v":1,"action":"cycle_layout"}`
   - `{"v":1,"action":"set_layout","layout":"paperwm"}`
   - `{"v":1,"action":"set_master_ratio_permille","value":650}`
@@ -194,7 +194,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"set_panel_style_by_id","panel_id":1,"show_border":true,"show_controls":false,"transparent_background":false}`
   - `{"v":1,"action":"set_ui_bars","toolbar_line":"...","tab_line":"...","status_line":"..."}`
   - `{"v":1,"action":"clear_ui_bars"}`
-- Plugin errors/crashes are isolated; ykwm continues running.
+- Plugin errors/crashes are isolated; ykmx continues running.
 
 Desktop control buttons:
 
