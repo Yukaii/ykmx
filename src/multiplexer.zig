@@ -3000,6 +3000,59 @@ test "multiplexer Ctrl+G p toggles popup shell" {
     try testing.expectEqual(@as(usize, 0), mux.popup_mgr.count());
 }
 
+test "multiplexer popup chrome hit prefers topmost and exposes close control" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    _ = try mux.popup_mgr.create(.{
+        .title = "under",
+        .rect = .{ .x = 10, .y = 5, .width = 30, .height = 10 },
+        .show_border = true,
+        .show_controls = false,
+    });
+    const top_id = try mux.popup_mgr.create(.{
+        .title = "top",
+        .rect = .{ .x = 12, .y = 6, .width = 30, .height = 10 },
+        .show_border = true,
+        .show_controls = true,
+    });
+
+    // Hit top panel close button cell (right-border anchored [x] location).
+    const hx: u16 = 12 + 30 - 3;
+    const hy: u16 = 6;
+    const hit = mux.popupChromeHitAt(hx, hy) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(top_id, hit.popup_id);
+    try testing.expect(hit.on_close_button);
+    try testing.expect(hit.on_title_bar);
+}
+
+test "multiplexer popup chrome hit reports resize edges" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());
+    defer mux.deinit();
+
+    const pid = try mux.popup_mgr.create(.{
+        .title = "panel",
+        .rect = .{ .x = 20, .y = 8, .width = 16, .height = 8 },
+        .show_border = true,
+        .show_controls = true,
+    });
+    _ = pid;
+
+    const left = mux.popupChromeHitAt(20, 11) orelse return error.TestUnexpectedResult;
+    try testing.expect(left.on_resize_left);
+
+    const right = mux.popupChromeHitAt(35, 11) orelse return error.TestUnexpectedResult;
+    try testing.expect(right.on_resize_right);
+
+    const top = mux.popupChromeHitAt(24, 8) orelse return error.TestUnexpectedResult;
+    try testing.expect(top.on_resize_top);
+
+    const bottom = mux.popupChromeHitAt(24, 15) orelse return error.TestUnexpectedResult;
+    try testing.expect(bottom.on_resize_bottom);
+}
+
 test "multiplexer plugin override captures popup command instead of executing it" {
     const testing = std.testing;
     var mux = Multiplexer.init(testing.allocator, layout.nativeEngine());

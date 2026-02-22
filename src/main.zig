@@ -1017,6 +1017,9 @@ fn renderRuntimeFrame(
     const popup_overlay = try allocator.alloc(bool, canvas_len);
     defer allocator.free(popup_overlay);
     @memset(popup_overlay, false);
+    const popup_cover = try allocator.alloc(bool, canvas_len);
+    defer allocator.free(popup_cover);
+    @memset(popup_cover, false);
     const top_window_owner = try allocator.alloc(i32, canvas_len);
     defer allocator.free(top_window_owner);
     @memset(top_window_owner, -1);
@@ -1122,6 +1125,12 @@ fn renderRuntimeFrame(
         if (window_id == 0) continue;
         if (p.rect.width < 2 or p.rect.height < 2) continue;
 
+        // Hard clear any previously composed base chrome/text under this panel.
+        // This prevents underlying pane controls from leaking onto panel borders.
+        clearCanvasRect(canvas, total_cols, content_rows, p.rect);
+        // Also clear preexisting border connectivity in the panel rect so edge
+        // intersections don't synthesize mixed glyphs like '┬' from underneath.
+        clearBorderConnRect(border_conn, total_cols, content_rows, p.rect);
         const popup_border: BorderMask = .{ .left = true, .right = true, .top = true, .bottom = true };
         drawBorder(canvas, border_conn, total_cols, content_rows, p.rect, popup_border, if (mux.popup_mgr.focused_popup_id == p.id) '*' else ' ', null, null);
 
@@ -1133,6 +1142,7 @@ fn renderRuntimeFrame(
 
         drawText(canvas, total_cols, content_rows, inner_x, p.rect.y, p.title, inner_w);
         markPopupOverlay(popup_overlay, total_cols, content_rows, p.rect);
+        markRectOverlay(popup_cover, total_cols, content_rows, p.rect);
         // Popup interiors are opaque: suppress any precomputed base-pane border
         // connectors under the popup content area so they never bleed through.
         clearBorderConnInsideRect(border_conn, total_cols, content_rows, p.rect);
@@ -1177,10 +1187,10 @@ fn renderRuntimeFrame(
         const controls = "[_][+][x]";
         const controls_w: u16 = @intCast(controls.len);
         const title_max = if (r.width >= 10 and inner_w > controls_w) inner_w - controls_w else inner_w;
-        drawTextOwned(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner);
+        drawTextOwnedMasked(canvas, total_cols, content_rows, inner_x, r.y, title, title_max, i, top_window_owner, popup_cover);
         if (r.width >= 10) {
             const controls_x: u16 = r.x + r.width - controls_w - 1;
-            drawTextOwned(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner);
+            drawTextOwnedMasked(canvas, total_cols, content_rows, controls_x, r.y, controls, controls_w, i, top_window_owner, popup_cover);
         }
     }
     for (popup_order) |popup_idx| {
@@ -1574,6 +1584,28 @@ fn markPopupOverlay(
     }
 }
 
+fn markRectOverlay(
+    overlay: []bool,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+) void {
+    if (r.width == 0 or r.height == 0) return;
+    const x0: usize = r.x;
+    const y0: usize = r.y;
+    const x1: usize = @min(@as(usize, r.x + r.width), cols);
+    const y1: usize = @min(@as(usize, r.y + r.height), rows);
+    if (x0 >= x1 or y0 >= y1) return;
+
+    var y = y0;
+    while (y < y1) : (y += 1) {
+        var x = x0;
+        while (x < x1) : (x += 1) {
+            overlay[y * cols + x] = true;
+        }
+    }
+}
+
 fn clearBorderConnInsideRect(
     conn: []u8,
     cols: usize,
@@ -1587,6 +1619,50 @@ fn clearBorderConnInsideRect(
     const y1: usize = r.y + r.height - 1;
     if (x0 >= cols or y0 >= rows) return;
     if (x1 > cols or y1 > rows) return;
+
+    var y = y0;
+    while (y < y1) : (y += 1) {
+        var x = x0;
+        while (x < x1) : (x += 1) {
+            conn[y * cols + x] = 0;
+        }
+    }
+}
+
+fn clearCanvasRect(
+    canvas: []u21,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+) void {
+    if (r.width == 0 or r.height == 0) return;
+    const x0: usize = r.x;
+    const y0: usize = r.y;
+    const x1: usize = @min(@as(usize, r.x + r.width), cols);
+    const y1: usize = @min(@as(usize, r.y + r.height), rows);
+    if (x0 >= x1 or y0 >= y1) return;
+
+    var y = y0;
+    while (y < y1) : (y += 1) {
+        var x = x0;
+        while (x < x1) : (x += 1) {
+            canvas[y * cols + x] = ' ';
+        }
+    }
+}
+
+fn clearBorderConnRect(
+    conn: []u8,
+    cols: usize,
+    rows: usize,
+    r: layout.Rect,
+) void {
+    if (r.width == 0 or r.height == 0) return;
+    const x0: usize = r.x;
+    const y0: usize = r.y;
+    const x1: usize = @min(@as(usize, r.x + r.width), cols);
+    const y1: usize = @min(@as(usize, r.y + r.height), rows);
+    if (x0 >= x1 or y0 >= y1) return;
 
     var y = y0;
     while (y < y1) : (y += 1) {
@@ -2265,4 +2341,29 @@ test "workspace layout POC returns panes" {
     try testing.expectEqual(@as(usize, 2), rects.len);
     try testing.expectEqual(@as(u16, 43), rects[0].width);
     try testing.expectEqual(@as(u16, 29), rects[1].width);
+}
+
+test "composition helpers mark and clear panel coverage correctly" {
+    const testing = std.testing;
+    const cols: usize = 12;
+    const rows: usize = 6;
+    const len = cols * rows;
+
+    const overlay = try testing.allocator.alloc(bool, len);
+    defer testing.allocator.free(overlay);
+    @memset(overlay, false);
+
+    const r: layout.Rect = .{ .x = 2, .y = 1, .width = 4, .height = 3 };
+    markRectOverlay(overlay, cols, rows, r);
+    try testing.expect(overlay[1 * cols + 2]);
+    try testing.expect(overlay[3 * cols + 5]);
+    try testing.expect(!overlay[0]);
+
+    const conn = try testing.allocator.alloc(u8, len);
+    defer testing.allocator.free(conn);
+    @memset(conn, 0x0f);
+    clearBorderConnRect(conn, cols, rows, r);
+    try testing.expectEqual(@as(u8, 0), conn[1 * cols + 2]);
+    try testing.expectEqual(@as(u8, 0), conn[3 * cols + 5]);
+    try testing.expectEqual(@as(u8, 0x0f), conn[0]);
 }
