@@ -224,6 +224,10 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
         .passthrough => .passthrough,
         .compositor => .compositor,
     });
+    mux.setPrefixPanelToggleKeys(cfg.key_toggle_sidebar_panel, cfg.key_toggle_bottom_panel);
+    for (cfg.plugin_keybindings.items) |kb| {
+        mux.setPluginPrefixedKeybinding(kb.key, kb.command_name) catch {};
+    }
 
     _ = try mux.createTab("main");
     try mux.workspace_mgr.setActiveLayoutDefaults(cfg.default_layout, cfg.master_count, cfg.master_ratio_permille, cfg.gap);
@@ -362,11 +366,18 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
             while (mux.consumeOldestPendingPluginCommand()) |cmd| {
                 plugins.emitCommand(cmd);
             }
+            while (mux.consumeOldestPendingPluginCommandName()) |owned_name| {
+                defer allocator.free(owned_name);
+                plugins.emitCommandName(owned_name);
+            }
         }
         if (plugins.hasAny()) {
             const actions = plugins.drainActions(allocator) catch null;
             if (actions) |owned| {
-                defer allocator.free(owned);
+                defer {
+                    for (owned) |*action| plugin_host.PluginHost.deinitActionPayload(allocator, action);
+                    allocator.free(owned);
+                }
                 var changed = false;
                 for (owned) |action| {
                     changed = (try applyPluginAction(&mux, content, action)) or changed;
@@ -551,6 +562,10 @@ fn applyPluginAction(
         },
         .register_command => |payload| {
             try mux.setPluginCommandOverride(payload.command, payload.enabled);
+            return false;
+        },
+        .register_command_name => |payload| {
+            try mux.setPluginNamedCommandOverride(payload.command_name, payload.enabled);
             return false;
         },
         .open_shell_panel => {

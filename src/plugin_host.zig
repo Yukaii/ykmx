@@ -58,6 +58,7 @@ pub const PluginHost = struct {
         close_focused_window,
         restore_window_by_id: u32,
         register_command: struct { command: input_mod.Command, enabled: bool },
+        register_command_name: struct { command_name: []u8, enabled: bool },
         open_shell_panel,
         close_focused_panel,
         cycle_panel_focus,
@@ -200,6 +201,7 @@ pub const PluginHost = struct {
 
     pub fn deinit(self: *PluginHost) void {
         self.read_buf.deinit(self.allocator);
+        for (self.pending_actions.items) |*action| deinitActionPayload(self.allocator, action);
         self.pending_actions.deinit(self.allocator);
         for (self.config_items.items) |item| {
             self.allocator.free(item.key);
@@ -348,11 +350,15 @@ pub const PluginHost = struct {
     }
 
     pub fn emitCommand(self: *PluginHost, cmd: input_mod.Command) !void {
+        return self.emitCommandName(input_mod.commandName(cmd));
+    }
+
+    pub fn emitCommandName(self: *PluginHost, command_name: []const u8) !void {
         var buf: [160]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
             "{{\"v\":1,\"event\":\"on_command\",\"command\":\"{s}\"}}\n",
-            .{input_mod.commandName(cmd)},
+            .{command_name},
         );
         try self.emitLine(line);
     }
@@ -556,9 +562,15 @@ pub const PluginHost = struct {
         }
         if (std.mem.eql(u8, action_name, "register_command")) {
             const command_name = envelope.command orelse return null;
-            const command = input_mod.parseCommandName(command_name) orelse return null;
-            return .{ .register_command = .{
-                .command = command,
+            if (!input_mod.isValidCommandName(command_name)) return null;
+            if (input_mod.parseCommandName(command_name)) |command| {
+                return .{ .register_command = .{
+                    .command = command,
+                    .enabled = envelope.enabled orelse true,
+                } };
+            }
+            return .{ .register_command_name = .{
+                .command_name = allocator.dupe(u8, command_name) catch return null,
                 .enabled = envelope.enabled orelse true,
             } };
         }
@@ -624,6 +636,13 @@ pub const PluginHost = struct {
             return null;
         }
         return null;
+    }
+
+    pub fn deinitActionPayload(allocator: std.mem.Allocator, action: *Action) void {
+        switch (action.*) {
+            .register_command_name => |payload| allocator.free(payload.command_name),
+            else => {},
+        }
     }
 
     fn setUiBars(self: *PluginHost, toolbar: []const u8, tab: []const u8, status: []const u8) !void {

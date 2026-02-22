@@ -1,5 +1,6 @@
 const std = @import("std");
 const layout = @import("layout.zig");
+const input_mod = @import("input.zig");
 
 pub const LayoutBackend = enum {
     native,
@@ -14,6 +15,11 @@ pub const MouseMode = enum {
 };
 
 pub const Config = struct {
+    pub const PluginKeybinding = struct {
+        key: u8,
+        command_name: []u8,
+    };
+
     pub const PluginSetting = struct {
         plugin_name: []u8,
         key: []u8,
@@ -29,10 +35,13 @@ pub const Config = struct {
     show_tab_bar: bool = true,
     show_status_bar: bool = true,
     mouse_mode: MouseMode = .hybrid,
+    key_toggle_sidebar_panel: u8 = 0x13, // Ctrl+S
+    key_toggle_bottom_panel: u8 = 0x02, // Ctrl+B
     plugins_enabled: bool = false,
     plugin_dir: ?[]u8 = null,
     plugins_dir: ?[]u8 = null,
     plugins_dirs: std.ArrayListUnmanaged([]u8) = .{},
+    plugin_keybindings: std.ArrayListUnmanaged(PluginKeybinding) = .{},
     plugin_settings: std.ArrayListUnmanaged(PluginSetting) = .{},
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
@@ -41,6 +50,8 @@ pub const Config = struct {
         if (self.plugins_dir) |p| allocator.free(p);
         for (self.plugins_dirs.items) |p| allocator.free(p);
         self.plugins_dirs.deinit(allocator);
+        for (self.plugin_keybindings.items) |kb| allocator.free(kb.command_name);
+        self.plugin_keybindings.deinit(allocator);
         for (self.plugin_settings.items) |s| {
             allocator.free(s.plugin_name);
             allocator.free(s.key);
@@ -230,6 +241,14 @@ fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, va
         cfg.mouse_mode = try parseMouseMode(value);
         return;
     }
+    if (std.mem.eql(u8, key, "key_toggle_sidebar_panel")) {
+        cfg.key_toggle_sidebar_panel = try parsePrefixedKey(value);
+        return;
+    }
+    if (std.mem.eql(u8, key, "key_toggle_bottom_panel")) {
+        cfg.key_toggle_bottom_panel = try parsePrefixedKey(value);
+        return;
+    }
     // Backward compatibility: legacy boolean knob.
     if (std.mem.eql(u8, key, "mouse_passthrough")) {
         cfg.mouse_mode = if (try parseBool(value)) .passthrough else .compositor;
@@ -251,6 +270,10 @@ fn applyKeyValue(allocator: std.mem.Allocator, cfg: *Config, key: []const u8, va
     }
     if (std.mem.eql(u8, key, "plugins_dirs")) {
         try setPluginsDirs(allocator, cfg, value);
+        return;
+    }
+    if (std.mem.eql(u8, key, "plugin_keybindings")) {
+        try setPluginKeybindings(allocator, cfg, value);
         return;
     }
     // Unknown keys are ignored for forward compatibility.
@@ -295,6 +318,47 @@ fn setPluginsDirs(allocator: std.mem.Allocator, cfg: *Config, value: []const u8)
     parsed = .{};
 }
 
+fn setPluginKeybindings(allocator: std.mem.Allocator, cfg: *Config, value: []const u8) !void {
+    var parsed = std.ArrayListUnmanaged(Config.PluginKeybinding){};
+    errdefer {
+        for (parsed.items) |kb| allocator.free(kb.command_name);
+        parsed.deinit(allocator);
+    }
+
+    const trimmed = std.mem.trim(u8, value, " \t");
+    if (trimmed.len == 0) {
+        for (cfg.plugin_keybindings.items) |kb| allocator.free(kb.command_name);
+        cfg.plugin_keybindings.clearRetainingCapacity();
+        return;
+    }
+
+    const inner = if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']')
+        std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t")
+    else
+        trimmed;
+
+    if (inner.len > 0) {
+        var it = std.mem.splitScalar(u8, inner, ',');
+        while (it.next()) |part_raw| {
+            const part = trimQuotes(std.mem.trim(u8, part_raw, " \t"));
+            if (part.len == 0) continue;
+            const sep = std.mem.indexOfScalar(u8, part, ':') orelse return error.InvalidKeyBinding;
+            const key_str = std.mem.trim(u8, part[0..sep], " \t");
+            const cmd_name = std.mem.trim(u8, part[sep + 1 ..], " \t");
+            if (!input_mod.isValidCommandName(cmd_name)) return error.InvalidCommandName;
+            try parsed.append(allocator, .{
+                .key = try parsePrefixedKey(key_str),
+                .command_name = try allocator.dupe(u8, cmd_name),
+            });
+        }
+    }
+
+    for (cfg.plugin_keybindings.items) |kb| allocator.free(kb.command_name);
+    cfg.plugin_keybindings.deinit(allocator);
+    cfg.plugin_keybindings = parsed;
+    parsed = .{};
+}
+
 fn parseLayoutType(value: []const u8) !layout.LayoutType {
     if (std.mem.eql(u8, value, "vertical_stack")) return .vertical_stack;
     if (std.mem.eql(u8, value, "horizontal_stack")) return .horizontal_stack;
@@ -315,6 +379,26 @@ fn parseMouseMode(value: []const u8) !MouseMode {
     if (std.mem.eql(u8, value, "passthrough")) return .passthrough;
     if (std.mem.eql(u8, value, "compositor")) return .compositor;
     return error.InvalidMouseMode;
+}
+
+fn parsePrefixedKey(value: []const u8) !u8 {
+    if (value.len == 1) return value[0];
+
+    if (std.ascii.eqlIgnoreCase(value, "tab")) return '\t';
+    if (std.ascii.eqlIgnoreCase(value, "space")) return ' ';
+    if (std.ascii.eqlIgnoreCase(value, "enter")) return '\r';
+    if (std.ascii.eqlIgnoreCase(value, "esc")) return 0x1b;
+    if (std.ascii.eqlIgnoreCase(value, "backslash")) return '\\';
+
+    if (value.len >= 6 and std.ascii.eqlIgnoreCase(value[0..5], "ctrl+")) {
+        const suffix = value[5..];
+        if (suffix.len != 1) return error.InvalidKeyBinding;
+        const ch = suffix[0];
+        if (ch >= 'a' and ch <= 'z') return ch - 'a' + 1;
+        if (ch >= 'A' and ch <= 'Z') return ch - 'A' + 1;
+        return error.InvalidKeyBinding;
+    }
+    return error.InvalidKeyBinding;
 }
 
 fn trimQuotes(value: []const u8) []const u8 {
@@ -338,10 +422,13 @@ test "config parser applies known keys" {
         \\show_tab_bar=false
         \\show_status_bar=true
         \\mouse_mode=compositor
+        \\key_toggle_sidebar_panel=ctrl+s
+        \\key_toggle_bottom_panel=ctrl+b
         \\plugins_enabled=1
         \\plugin_dir=/tmp/ykmx-plugins
         \\plugins_dir=/tmp/ykmx-plugins.d
         \\plugins_dirs=["/tmp/plugins-a","/tmp/plugins-b"]
+        \\plugin_keybindings=["ctrl+s:panel.sidebar.toggle","ctrl+b:panel.bottom.toggle"]
     );
 
     try testing.expectEqual(LayoutBackend.opentui, cfg.layout_backend);
@@ -352,12 +439,19 @@ test "config parser applies known keys" {
     try testing.expect(!cfg.show_tab_bar);
     try testing.expect(cfg.show_status_bar);
     try testing.expectEqual(MouseMode.compositor, cfg.mouse_mode);
+    try testing.expectEqual(@as(u8, 0x13), cfg.key_toggle_sidebar_panel);
+    try testing.expectEqual(@as(u8, 0x02), cfg.key_toggle_bottom_panel);
     try testing.expect(cfg.plugins_enabled);
     try testing.expectEqualStrings("/tmp/ykmx-plugins", cfg.plugin_dir.?);
     try testing.expectEqualStrings("/tmp/ykmx-plugins.d", cfg.plugins_dir.?);
     try testing.expectEqual(@as(usize, 2), cfg.plugins_dirs.items.len);
     try testing.expectEqualStrings("/tmp/plugins-a", cfg.plugins_dirs.items[0]);
     try testing.expectEqualStrings("/tmp/plugins-b", cfg.plugins_dirs.items[1]);
+    try testing.expectEqual(@as(usize, 2), cfg.plugin_keybindings.items.len);
+    try testing.expectEqual(@as(u8, 0x13), cfg.plugin_keybindings.items[0].key);
+    try testing.expectEqualStrings("panel.sidebar.toggle", cfg.plugin_keybindings.items[0].command_name);
+    try testing.expectEqual(@as(u8, 0x02), cfg.plugin_keybindings.items[1].key);
+    try testing.expectEqualStrings("panel.bottom.toggle", cfg.plugin_keybindings.items[1].command_name);
 }
 
 test "config parser accepts plugins_dirs csv" {

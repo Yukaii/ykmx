@@ -89,6 +89,12 @@ pub const PluginManager = struct {
         }
     }
 
+    pub fn emitCommandName(self: *PluginManager, command_name: []const u8) void {
+        for (self.hosts.items) |*host| {
+            _ = host.emitCommandName(command_name) catch {};
+        }
+    }
+
     pub fn uiBars(self: *PluginManager) ?plugin_host.PluginHost.UiBarsView {
         var selected: ?plugin_host.PluginHost.UiBarsView = null;
         for (self.hosts.items) |*host| {

@@ -3,6 +3,7 @@ import type { RuntimeState } from "./types";
 
 const DEFAULT_HEIGHT = 10;
 let panelHeight = DEFAULT_HEIGHT;
+const TOGGLE_COMMAND = "panel.bottom.toggle";
 
 let panelId: number | null = null;
 let opening = false;
@@ -56,8 +57,7 @@ async function main() {
     }
 
     if (ev.event === "on_start") {
-      await writeAction({ v: 1, action: "register_command", command: "open_popup" });
-      await writeAction({ v: 1, action: "register_command", command: "close_popup" });
+      await writeAction({ v: 1, action: "register_command", command: TOGGLE_COMMAND });
       continue;
     }
 
@@ -86,7 +86,7 @@ async function main() {
 
     if (!isCommandEvent(ev)) continue;
 
-    if (ev.command === "open_popup") {
+    if (ev.command === TOGGLE_COMMAND) {
       if (panelId) {
         await writeAction({ v: 1, action: "close_panel_by_id", panel_id: panelId });
         panelId = null;
@@ -95,12 +95,6 @@ async function main() {
         await openPanel(lastState);
       }
       continue;
-    }
-
-    if (ev.command === "close_popup" && panelId) {
-      await writeAction({ v: 1, action: "close_panel_by_id", panel_id: panelId });
-      panelId = null;
-      opening = false;
     }
   }
 }

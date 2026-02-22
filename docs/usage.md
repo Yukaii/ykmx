@@ -152,6 +152,13 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
     - `width=42`
     - `[plugin.bottom-panel]`
     - `height=8`
+- Prefixed panel toggle keys are configurable:
+  - `key_toggle_sidebar_panel=ctrl+s`
+  - `key_toggle_bottom_panel=ctrl+b`
+- Arbitrary plugin command keybindings are configurable:
+  - `plugin_keybindings=["ctrl+s:panel.sidebar.toggle","ctrl+b:panel.bottom.toggle"]`
+  - Plugin registers command names at runtime with:
+    - `{"v":1,"action":"register_command","command":"panel.sidebar.toggle"}`
 - Each `plugins_dirs` entry can be either:
   - a plugin root directory containing subfolders (`<dir>/<plugin-name>/index.ts`)
   - or a direct plugin directory containing `index.ts`
@@ -166,6 +173,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `docs/examples/plugins.d/sidebar-panel/index.ts`
 - Bottom panel example lives at:
   - `docs/examples/plugins.d/bottom-panel/index.ts`
+  - these examples use arbitrary command names (`panel.sidebar.toggle`, `panel.bottom.toggle`)
 - Runtime spawns `bun run <plugin_dir>/index.ts` as an out-of-process plugin host.
 - Set `layout_backend=plugin` to allow plugin-driven layout rect computation.
 - For interactive layout plugins (drag/resize/floating state), also set `plugins_enabled=true` so the same plugin host handles both layout compute and pointer/actions.
@@ -178,7 +186,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"event":"on_state_changed","reason":"...","state":{...}}`
   - `{"v":1,"event":"on_tick","stats":{...},"state":{...}}`
   - `{"v":1,"event":"on_pointer","pointer":{...},"hit":{...}}`
-  - `{"v":1,"event":"on_command","command":"open_popup|..."}`
+  - `{"v":1,"event":"on_command","command":"<string-command-name>"}`
   - `{"v":1,"event":"on_shutdown"}`
 - `state` currently includes layout, window/focus info, tab info, master settings, mouse mode, sync-scroll flag, and current screen rect.
 - For plugin layout backend, ykmx also sends:
@@ -198,7 +206,7 @@ When sync scroll is enabled, navigation controls are accepted immediately (even 
   - `{"v":1,"action":"move_window_by_id_to_index","window_id":123,"index":1}`
   - `{"v":1,"action":"close_focused_window"}`
   - `{"v":1,"action":"restore_window_by_id","window_id":123}`
-  - `{"v":1,"action":"register_command","command":"open_popup","enabled":true}`
+  - `{"v":1,"action":"register_command","command":"<string-command-name>","enabled":true}`
   - `{"v":1,"action":"open_shell_panel"}`
   - `{"v":1,"action":"close_focused_panel"}`
   - `{"v":1,"action":"cycle_panel_focus"}`

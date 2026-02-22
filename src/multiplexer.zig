@@ -92,7 +92,10 @@ pub const Multiplexer = struct {
     scrollback_last_direction: scrollback_mod.SearchDirection = .backward,
     pending_mouse_events: std.ArrayListUnmanaged(input_mod.MouseEvent) = .{},
     pending_plugin_commands: std.ArrayListUnmanaged(input_mod.Command) = .{},
+    pending_plugin_command_names: std.ArrayListUnmanaged([]u8) = .{},
     plugin_command_overrides: std.AutoHashMapUnmanaged(input_mod.Command, void) = .{},
+    plugin_named_command_overrides: std.StringHashMapUnmanaged(void) = .{},
+    plugin_prefixed_keybindings: std.AutoHashMapUnmanaged(u8, []u8) = .{},
     drag_state: DragState = .{},
     hybrid_forward_click_active: bool = false,
     hybrid_chrome_capture_active: bool = false,
@@ -150,7 +153,15 @@ pub const Multiplexer = struct {
         self.mouse_tracking_enabled.deinit(self.allocator);
         self.pending_mouse_events.deinit(self.allocator);
         self.pending_plugin_commands.deinit(self.allocator);
+        for (self.pending_plugin_command_names.items) |name| self.allocator.free(name);
+        self.pending_plugin_command_names.deinit(self.allocator);
         self.plugin_command_overrides.deinit(self.allocator);
+        var named_it = self.plugin_named_command_overrides.iterator();
+        while (named_it.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.plugin_named_command_overrides.deinit(self.allocator);
+        var keybind_it = self.plugin_prefixed_keybindings.iterator();
+        while (keybind_it.next()) |entry| self.allocator.free(entry.value_ptr.*);
+        self.plugin_prefixed_keybindings.deinit(self.allocator);
 
         self.popup_mgr.deinit();
         self.workspace_mgr.deinit();
@@ -167,6 +178,11 @@ pub const Multiplexer = struct {
 
     pub fn setMouseMode(self: *Multiplexer, mode: MouseMode) void {
         self.mouse_mode = mode;
+    }
+
+    pub fn setPrefixPanelToggleKeys(self: *Multiplexer, sidebar_key: u8, bottom_key: u8) void {
+        self.input_router.sidebar_toggle_key = sidebar_key;
+        self.input_router.bottom_toggle_key = bottom_key;
     }
 
     pub fn mouseMode(self: *const Multiplexer) MouseMode {
@@ -334,6 +350,8 @@ pub const Multiplexer = struct {
                             self.popup_mgr.cycleFocus();
                             self.requestRedraw();
                         },
+                        .toggle_sidebar_panel => {},
+                        .toggle_bottom_panel => {},
                         .new_tab => {
                             const n = self.workspace_mgr.tabCount();
                             var name_buf: [32]u8 = undefined;
@@ -502,6 +520,31 @@ pub const Multiplexer = struct {
                         .detach => {
                             self.detach_requested = true;
                         },
+                    }
+                },
+                .prefixed_key => |key| {
+                    if (self.plugin_prefixed_keybindings.get(key)) |command_name| {
+                        if (self.plugin_named_command_overrides.contains(command_name)) {
+                            try self.pending_plugin_command_names.append(
+                                self.allocator,
+                                try self.allocator.dupe(u8, command_name),
+                            );
+                            continue;
+                        }
+                    }
+                    if (self.handleScrollbackQueryByte(key, screen)) continue;
+                    if (self.handleScrollbackNavForwardByte(key, screen)) continue;
+                    var tmp = [_]u8{key};
+                    if (self.popup_mgr.hasModalOpen()) {
+                        self.sendInputToFocusedPopup(&tmp) catch |err| switch (err) {
+                            error.NoFocusedPopup, error.UnknownWindow => {},
+                            else => return err,
+                        };
+                    } else {
+                        self.sendInputToFocused(&tmp) catch |err| switch (err) {
+                            error.NoFocusedWindow, error.UnknownWindow => {},
+                            else => return err,
+                        };
                     }
                 },
                 .noop => {},
@@ -1136,12 +1179,39 @@ pub const Multiplexer = struct {
         return self.pending_plugin_commands.orderedRemove(0);
     }
 
+    pub fn consumeOldestPendingPluginCommandName(self: *Multiplexer) ?[]u8 {
+        if (self.pending_plugin_command_names.items.len == 0) return null;
+        return self.pending_plugin_command_names.orderedRemove(0);
+    }
+
     pub fn setPluginCommandOverride(self: *Multiplexer, cmd: input_mod.Command, enabled: bool) !void {
         if (enabled) {
             try self.plugin_command_overrides.put(self.allocator, cmd, {});
         } else {
             _ = self.plugin_command_overrides.fetchRemove(cmd);
         }
+    }
+
+    pub fn setPluginNamedCommandOverride(self: *Multiplexer, command_name: []const u8, enabled: bool) !void {
+        if (!input_mod.isValidCommandName(command_name)) return error.InvalidCommandName;
+        if (enabled) {
+            if (self.plugin_named_command_overrides.contains(command_name)) return;
+            const owned = try self.allocator.dupe(u8, command_name);
+            errdefer self.allocator.free(owned);
+            try self.plugin_named_command_overrides.put(self.allocator, owned, {});
+        } else {
+            if (self.plugin_named_command_overrides.fetchRemove(command_name)) |kv| {
+                self.allocator.free(kv.key);
+            }
+        }
+    }
+
+    pub fn setPluginPrefixedKeybinding(self: *Multiplexer, key: u8, command_name: []const u8) !void {
+        if (!input_mod.isValidCommandName(command_name)) return error.InvalidCommandName;
+        if (self.plugin_prefixed_keybindings.fetchRemove(key)) |kv| self.allocator.free(kv.value);
+        const owned = try self.allocator.dupe(u8, command_name);
+        errdefer self.allocator.free(owned);
+        try self.plugin_prefixed_keybindings.put(self.allocator, key, owned);
     }
 
     pub fn tick(

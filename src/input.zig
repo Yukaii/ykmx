@@ -6,6 +6,8 @@ pub const Command = enum {
     open_popup,
     close_popup,
     cycle_popup,
+    toggle_sidebar_panel,
+    toggle_bottom_panel,
     new_tab,
     close_tab,
     next_tab,
@@ -43,10 +45,26 @@ pub fn parseCommandName(name: []const u8) ?Command {
     return null;
 }
 
+pub fn isValidCommandName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| {
+        if ((c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '_' or c == '-' or c == '.')
+        {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 pub const Event = union(enum) {
     forward: u8,
     forward_sequence: ForwardSequence,
     command: Command,
+    prefixed_key: u8,
     noop,
 };
 
@@ -75,6 +93,8 @@ const EscapeState = enum {
 
 pub const Router = struct {
     prefix_key: u8 = 0x07, // Ctrl+G
+    sidebar_toggle_key: u8 = 0x13, // Ctrl+S
+    bottom_toggle_key: u8 = 0x02, // Ctrl+B
     waiting_for_command: bool = false,
     escape_state: EscapeState = .none,
     esc_buf: [64]u8 = undefined,
@@ -87,6 +107,8 @@ pub const Router = struct {
 
         if (self.waiting_for_command) {
             self.waiting_for_command = false;
+            if (b == self.sidebar_toggle_key) return .{ .command = .toggle_sidebar_panel };
+            if (b == self.bottom_toggle_key) return .{ .command = .toggle_bottom_panel };
             return switch (b) {
                 'c' => .{ .command = .create_window },
                 'x' => .{ .command = .close_window },
@@ -116,7 +138,7 @@ pub const Router = struct {
                 'M' => .{ .command = .toggle_mouse_passthrough },
                 '\\' => .{ .command = .detach },
                 0x1c => .{ .command = .detach }, // Ctrl+\
-                else => .{ .forward = b },
+                else => .{ .prefixed_key = b },
             };
         }
 
@@ -312,11 +334,31 @@ test "input router parses popup commands" {
     try testing.expectEqual(Event{ .command = .cycle_popup }, r.feedByte('\t'));
 }
 
-test "input router forwards unknown prefixed keys" {
+test "input router parses dedicated panel toggle commands" {
+    const testing = std.testing;
+    var r = Router{};
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07)); // prefix
+    try testing.expectEqual(Event{ .command = .toggle_sidebar_panel }, r.feedByte(0x13)); // Ctrl+S
+
+    try testing.expectEqual(Event.noop, r.feedByte(0x07)); // prefix
+    try testing.expectEqual(Event{ .command = .toggle_bottom_panel }, r.feedByte(0x02)); // Ctrl+B
+}
+
+test "input router emits unknown prefixed key" {
     const testing = std.testing;
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
-    try testing.expectEqual(Event{ .forward = 'q' }, r.feedByte('q'));
+    try testing.expectEqual(Event{ .prefixed_key = 'q' }, r.feedByte('q'));
+}
+
+test "input validates command names" {
+    const testing = std.testing;
+    try testing.expect(isValidCommandName("toggle_sidebar"));
+    try testing.expect(isValidCommandName("plugin.foo-1"));
+    try testing.expect(!isValidCommandName(""));
+    try testing.expect(!isValidCommandName("bad name"));
+    try testing.expect(!isValidCommandName("bad:colon"));
 }
 
 test "input router parses scroll commands" {

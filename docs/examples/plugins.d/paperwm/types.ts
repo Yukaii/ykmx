@@ -6,6 +6,8 @@ export type CommandName =
   | "open_popup"
   | "close_popup"
   | "cycle_popup"
+  | "toggle_sidebar_panel"
+  | "toggle_bottom_panel"
   | "new_tab"
   | "close_tab"
   | "next_tab"
@@ -119,7 +121,7 @@ export type OnPointerEvent = {
   };
 };
 
-export type OnCommandEvent = { v: 1; event: "on_command"; command: CommandName };
+export type OnCommandEvent = { v: 1; event: "on_command"; command: string };
 
 export type PluginEvent =
   | OnStartEvent
@@ -143,7 +145,7 @@ export type ActionMessage =
   | { v: 1; action: "move_window_by_id_to_index"; window_id: number; index: number }
   | { v: 1; action: "close_focused_window" }
   | { v: 1; action: "restore_window_by_id"; window_id: number }
-  | { v: 1; action: "register_command"; command: CommandName; enabled?: boolean }
+  | { v: 1; action: "register_command"; command: string; enabled?: boolean }
   | { v: 1; action: "open_shell_panel" }
   | { v: 1; action: "close_focused_panel" }
   | { v: 1; action: "cycle_panel_focus" }
