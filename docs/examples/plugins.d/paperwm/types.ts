@@ -70,6 +70,7 @@ export type OnComputeLayoutEvent = {
     layout: LayoutType;
     screen: Rect;
     window_count: number;
+    window_ids: number[];
     focused_index: number;
     master_count: number;
     master_ratio_permille: number;
@@ -112,6 +113,7 @@ export type ActionMessage =
   | { v: 1; action: "cycle_layout" }
   | { v: 1; action: "set_layout"; layout: LayoutType }
   | { v: 1; action: "set_master_ratio_permille"; value: number }
+  | { v: 1; action: "request_redraw" }
   | { v: 1; action: "minimize_focused_window" }
   | { v: 1; action: "restore_all_minimized_windows" }
   | { v: 1; action: "move_focused_window_to_index"; index: number }

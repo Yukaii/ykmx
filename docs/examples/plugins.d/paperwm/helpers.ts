@@ -36,6 +36,10 @@ export async function writeAction(msg: ActionMessage): Promise<void> {
   await writeOutput(msg);
 }
 
+export async function requestRedraw(): Promise<void> {
+  await writeAction({ v: 1, action: "request_redraw" });
+}
+
 export async function writeUiBars(
   toolbar_line: string,
   tab_line: string,

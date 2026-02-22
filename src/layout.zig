@@ -19,6 +19,7 @@ pub const LayoutParams = struct {
     layout: LayoutType,
     screen: Rect,
     window_count: u16,
+    window_ids: []const u32 = &.{},
     focused_index: u16 = 0,
     master_count: u16 = 1,
     // 0..=1000 where 600 means 60% of the width for master area.

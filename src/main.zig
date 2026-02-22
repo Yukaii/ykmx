@@ -460,6 +460,9 @@ fn applyPluginAction(
             _ = try mux.resizeActiveWindowsToLayout(screen);
             return true;
         },
+        .request_redraw => {
+            return true;
+        },
         .minimize_focused_window => {
             return try mux.minimizeFocusedWindow(screen);
         },

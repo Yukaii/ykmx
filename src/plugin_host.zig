@@ -41,6 +41,7 @@ pub const PluginHost = struct {
         cycle_layout,
         set_layout: layout.LayoutType,
         set_master_ratio_permille: u16,
+        request_redraw,
         minimize_focused_window,
         restore_all_minimized_windows,
         move_focused_window_to_index: usize,
@@ -280,10 +281,11 @@ pub const PluginHost = struct {
         const req_id = self.next_request_id;
         self.next_request_id += 1;
 
-        var req_buf: [512]u8 = undefined;
-        const req_line = try std.fmt.bufPrint(
-            &req_buf,
-            "{{\"v\":1,\"id\":{},\"event\":\"on_compute_layout\",\"params\":{{\"layout\":\"{s}\",\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}},\"window_count\":{},\"focused_index\":{},\"master_count\":{},\"master_ratio_permille\":{},\"gap\":{}}}}}\n",
+        var req_line = std.ArrayListUnmanaged(u8){};
+        defer req_line.deinit(allocator);
+        const writer = req_line.writer(allocator);
+        try writer.print(
+            "{{\"v\":1,\"id\":{},\"event\":\"on_compute_layout\",\"params\":{{\"layout\":\"{s}\",\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}},\"window_count\":{},\"window_ids\":[",
             .{
                 req_id,
                 @tagName(params.layout),
@@ -292,13 +294,22 @@ pub const PluginHost = struct {
                 params.screen.width,
                 params.screen.height,
                 params.window_count,
+            },
+        );
+        for (params.window_ids, 0..) |window_id, i| {
+            if (i > 0) try writer.writeByte(',');
+            try writer.print("{}", .{window_id});
+        }
+        try writer.print(
+            "],\"focused_index\":{},\"master_count\":{},\"master_ratio_permille\":{},\"gap\":{}}}}}\n",
+            .{
                 params.focused_index,
                 params.master_count,
                 params.master_ratio_permille,
                 params.gap,
             },
         );
-        try self.emitLine(req_line);
+        try self.emitLine(req_line.items);
 
         const start_ms = std.time.milliTimestamp();
         while (std.time.milliTimestamp() - start_ms < timeout_ms) {
@@ -424,6 +435,7 @@ pub const PluginHost = struct {
             const value = envelope.value orelse return null;
             return .{ .set_master_ratio_permille = value };
         }
+        if (std.mem.eql(u8, action_name, "request_redraw")) return .request_redraw;
         if (std.mem.eql(u8, action_name, "minimize_focused_window")) return .minimize_focused_window;
         if (std.mem.eql(u8, action_name, "restore_all_minimized_windows")) return .restore_all_minimized_windows;
         if (std.mem.eql(u8, action_name, "move_focused_window_to_index")) {

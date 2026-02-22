@@ -101,6 +101,12 @@ pub const WorkspaceManager = struct {
         }
         if (visible_indices.items.len == 0) return rects;
 
+        var visible_window_ids = try self.allocator.alloc(u32, visible_indices.items.len);
+        defer self.allocator.free(visible_window_ids);
+        for (visible_indices.items, 0..) |idx, vis_i| {
+            visible_window_ids[vis_i] = tab.windows.items[idx].id;
+        }
+
         const focused_index_visible: u16 = blk: {
             const focus = tab.focused_index orelse break :blk 0;
             if (focus >= tab.windows.items.len or tab.windows.items[focus].minimized) break :blk 0;
@@ -117,6 +123,7 @@ pub const WorkspaceManager = struct {
             .layout = tab.layout_type,
             .screen = screen,
             .window_count = visible_count_u16,
+            .window_ids = visible_window_ids,
             .focused_index = focused_index_visible,
             .master_count = tab.master_count,
             .master_ratio_permille = tab.master_ratio_permille,
