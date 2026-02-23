@@ -148,9 +148,15 @@ Example plugins are in `docs/examples/plugins.d/`:
 
 ## Project Docs
 
+- Docs index / TOC: `docs/README.md`
 - Usage guide: `docs/usage.md`
+- Architecture overview: `docs/architecture.md`
+- Runtime flow: `docs/runtime-flow.md`
+- Module ownership map: `docs/module-map.md`
+- Refactor history: `docs/refactor-log.md`
 - Compatibility matrix and checklist: `docs/compatibility.md`
 - Implementation plan/context: `docs/plan.md`
+- Contributor/agent operating guide: `AGENTS.md`
 
 ## Development Notes
 
