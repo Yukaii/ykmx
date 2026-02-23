@@ -2,7 +2,7 @@
 
 ## Quick Start
 
-Run the current POC flow:
+Run the interactive runtime loop:
 
 ```bash
 zig build run

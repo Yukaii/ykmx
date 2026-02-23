@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     if (b.args) |args| run_cmd.addArgs(args);
 
-    const run_step = b.step("run", "Run ykmx phase-0 POC");
+    const run_step = b.step("run", "Run ykmx runtime loop");
     run_step.dependOn(&run_cmd.step);
 
     const tests = b.addTest(.{

@@ -15,7 +15,6 @@ const plugin_manager = @import("plugin_manager.zig");
 const input_mod = @import("input.zig");
 const render_compositor = @import("render_compositor.zig");
 const runtime_layout = @import("runtime_layout.zig");
-const poc_output = @import("poc_output.zig");
 const runtime_vt = @import("runtime_vt.zig");
 const runtime_terminal = @import("runtime_terminal.zig");
 const runtime_footer = @import("runtime_footer.zig");
@@ -32,9 +31,6 @@ const runtime_pane_rendering = @import("runtime_pane_rendering.zig");
 const runtime_compose_debug = @import("runtime_compose_debug.zig");
 const runtime_frame_output = @import("runtime_frame_output.zig");
 
-const Terminal = ghostty_vt.Terminal;
-const POC_ROWS: u16 = 12;
-const POC_COLS: u16 = 36;
 const writeClippedLine = runtime_output.writeClippedLine;
 const writeAllBlocking = runtime_output.writeAllBlocking;
 const writeByteBlocking = runtime_output.writeByteBlocking;
@@ -176,7 +172,6 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
-    var run_poc = false;
     if (args.len == 1) {
         try runRuntimeLoop(alloc);
         return;
@@ -252,72 +247,11 @@ pub fn main() !void {
             try runtime_cli.runControlCli(alloc, if (args.len > 2) args[2..] else &.{});
             return;
         }
-        if (std.mem.eql(u8, args[1], "--poc")) {
-            run_poc = true;
-        } else {
-            try printHelp();
-            return;
-        }
-    }
-
-    if (!run_poc) {
-        try runRuntimeLoop(alloc);
+        try printHelp();
         return;
     }
 
-    var cfg = try config.load(alloc);
-    defer cfg.deinit(alloc);
-
-    signal_mod.installHandlers();
-    var zmx_env = try zmx.detect(alloc);
-    defer zmx_env.deinit(alloc);
-
-    var left = try Terminal.init(alloc, .{
-        .rows = POC_ROWS,
-        .cols = POC_COLS,
-        .max_scrollback = 1000,
-    });
-    defer left.deinit(alloc);
-
-    var right = try Terminal.init(alloc, .{
-        .rows = POC_ROWS,
-        .cols = POC_COLS,
-        .max_scrollback = 1000,
-    });
-    defer right.deinit(alloc);
-
-    var left_stream = left.vtStream();
-    var right_stream = right.vtStream();
-
-    try left_stream.nextSlice(
-        "\x1b[1;34mLEFT\x1b[0m window\r\n" ++
-            "line 1: hello from left\r\n" ++
-            "line 2: \x1b[31mred\x1b[0m + \x1b[32mgreen\x1b[0m\r\n" ++
-            "line 3: unicode -> lambda\r\n",
-    );
-    try right_stream.nextSlice(
-        "\x1b[1;35mRIGHT\x1b[0m window\r\n" ++
-            "line 1: hello from right\r\n" ++
-            "line 2: \x1b[33myellow\x1b[0m text\r\n" ++
-            "line 3: box -> [--]\r\n",
-    );
-
-    var out_buf: [4096]u8 = undefined;
-    var out_writer = std.fs.File.stdout().writer(&out_buf);
-    const out = &out_writer.interface;
-
-    try out.writeAll("ykmx phase-0: dual VT side-by-side compose\n\n");
-
-    // Proves we can inspect each VT screen state (active screen + cursor).
-    try out.print("left cursor: x={} y={}\n", .{ left.screens.active.cursor.x, left.screens.active.cursor.y });
-    try out.print("right cursor: x={} y={}\n\n", .{ right.screens.active.cursor.x, right.screens.active.cursor.y });
-
-    try poc_output.printZmxAndSignalPOC(out, zmx_env);
-    try poc_output.printConfigPOC(out, cfg);
-    try poc_output.printWorkspacePOC(out, alloc, cfg);
-    try poc_output.printMultiplexerPOC(out, alloc, cfg, &zmx_env);
-    try poc_output.renderSideBySide(out, &left, &right);
-    try out.flush();
+    try runRuntimeLoop(alloc);
 }
 
 fn printHelp() !void {
@@ -329,7 +263,6 @@ fn printHelp() !void {
         \\
         \\Usage:
         \\  ykmx                 Run interactive runtime loop
-        \\  ykmx --poc           Run verbose development POC output
         \\  ykmx --benchmark [N] Run frame benchmark (default N=200)
         \\  ykmx --benchmark-layout [N]
         \\                      Run layout churn benchmark (default N=500)
@@ -905,7 +838,7 @@ fn assignTopWindowOwners(
     }
 }
 
-test "workspace layout POC returns panes" {
+test "workspace layout returns panes" {
     const testing = std.testing;
     var wm = workspace.WorkspaceManager.init(testing.allocator, layout_native.NativeLayoutEngine.init());
     defer wm.deinit();

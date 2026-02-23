@@ -94,5 +94,5 @@ This file maps module ownership and responsibilities for fast navigation.
 - `src/runtime_footer.zig`
   - Footer/status/tab/minimized toolbar text and hit-testing helpers.
 
-- `src/poc_output.zig`, `src/status.zig`, `src/benchmark.zig`
-  - POC/status/benchmark output paths.
+- `src/status.zig`, `src/benchmark.zig`
+  - Status/footer and benchmark output paths.

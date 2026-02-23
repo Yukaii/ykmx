@@ -489,7 +489,7 @@ Study dvtm's (~4000 lines of C):
 ### Current Progress (2026-02-13)
 
 Implemented in repository:
-- `src/main.zig`: ghostty-vt POC render + workspace/layout POC output
+- `src/main.zig`: runtime orchestration loop and top-level CLI dispatch
 - `src/main.zig`: interactive runtime loop (alternate screen, raw input, live pane rendering, tab/status lines)
 - `src/layout.zig`: layout interface/types (`LayoutEngine`, `LayoutParams`, `Rect`)
 - `src/layout_native.zig`: native layout implementations (vertical/horizontal/grid/fullscreen) + unit tests
