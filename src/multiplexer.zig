@@ -2492,6 +2492,7 @@ pub const Multiplexer = struct {
 
         var best_idx: ?usize = null;
         var best_score: i32 = std.math.maxInt(i32);
+        var overlap_center_count: usize = 0;
         var i: usize = 0;
         while (i < n) : (i += 1) {
             if (i == current) continue;
@@ -2502,6 +2503,10 @@ pub const Multiplexer = struct {
             const cy = @as(i32, cand.y) + @divTrunc(@as(i32, cand.height), 2);
             const dx = cx - cur_cx;
             const dy = cy - cur_cy;
+
+            if (dx == 0 and dy == 0) {
+                overlap_center_count += 1;
+            }
 
             const primary: i32 = switch (dir) {
                 .left => -dx,
@@ -2524,6 +2529,16 @@ pub const Multiplexer = struct {
 
         if (best_idx) |idx| {
             try self.workspace_mgr.setFocusedWindowIndexActive(idx);
+            _ = try self.markActiveWindowsDirty();
+            self.requestRedraw();
+            return;
+        }
+
+        if (overlap_center_count > 0 and n > 1) {
+            switch (dir) {
+                .left, .up => try self.workspace_mgr.focusPrevWindowActive(),
+                .right, .down => try self.workspace_mgr.focusNextWindowActive(),
+            }
             _ = try self.markActiveWindowsDirty();
             self.requestRedraw();
         }
@@ -3380,6 +3395,35 @@ test "multiplexer chrome hit prefers topmost on overlap" {
     const hit = try mux.windowChromeHitAt(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, 2, 2);
     try testing.expect(hit != null);
     try testing.expectEqual(@as(usize, 1), hit.?.window_index);
+}
+
+test "multiplexer directional focus falls back to cycling for overlapping rects" {
+    const testing = std.testing;
+
+    const OverlapEngine = struct {
+        fn compute(_: ?*anyopaque, allocator: std.mem.Allocator, params: layout.LayoutParams) anyerror![]layout.Rect {
+            const rects = try allocator.alloc(layout.Rect, params.window_count);
+            if (rects.len == 0) return rects;
+            for (rects) |*r| r.* = .{ .x = params.screen.x, .y = params.screen.y, .width = 60, .height = 16 };
+            return rects;
+        }
+    };
+
+    const engine: layout.LayoutEngine = .{ .ctx = null, .compute_fn = OverlapEngine.compute };
+    var mux = Multiplexer.init(testing.allocator, engine);
+    defer mux.deinit();
+
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("a", &.{ "/bin/sh", "-c", "sleep 0.1" });
+    _ = try mux.createCommandWindow("b", &.{ "/bin/sh", "-c", "sleep 0.1" });
+
+    try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, 'h' });
+    try testing.expectEqual(@as(usize, 0), try mux.workspace_mgr.focusedWindowIndexActive());
+
+    try mux.handleInputBytesWithScreen(.{ .x = 0, .y = 0, .width = 80, .height = 24 }, &.{ 0x07, 'l' });
+    try testing.expectEqual(@as(usize, 1), try mux.workspace_mgr.focusedWindowIndexActive());
 }
 
 test "multiplexer tick does not block on poll after tab switch redraw request" {

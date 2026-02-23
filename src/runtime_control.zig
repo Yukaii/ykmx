@@ -1,6 +1,8 @@
 const std = @import("std");
 const layout = @import("layout.zig");
+const layout_native = @import("layout_native.zig");
 const multiplexer = @import("multiplexer.zig");
+const input_mod = @import("input.zig");
 
 const ControlCommand = struct {
     v: ?u8 = null,
@@ -97,7 +99,36 @@ pub fn applyControlCommandLine(mux: *multiplexer.Multiplexer, screen: layout.Rec
     }
     if (std.mem.eql(u8, cmd, "dispatch_plugin_command")) {
         const command_name = parsed.value.command_name orelse return false;
-        return try mux.dispatchPluginNamedCommand(command_name);
+        if (try mux.dispatchPluginNamedCommand(command_name)) return true;
+
+        if (input_mod.parseCommandName(command_name)) |core_cmd| {
+            const key = input_mod.defaultPrefixedKey(core_cmd) orelse return false;
+            var seq = [_]u8{ mux.input_router.prefix_key, key };
+            try mux.handleInputBytesWithScreen(screen, &seq);
+            return true;
+        }
+        return false;
     }
     return false;
+}
+
+test "runtime_control dispatch_plugin_command executes core command names" {
+    const testing = std.testing;
+    var mux = multiplexer.Multiplexer.init(testing.allocator, layout_native.NativeLayoutEngine.init());
+    defer mux.deinit();
+
+    const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 24 };
+    _ = try mux.createTab("dev");
+    _ = try mux.createCommandWindow("shell", &.{ "/bin/sh", "-c", "sleep 0.1" });
+
+    const before = try mux.workspace_mgr.activeLayoutType();
+    try testing.expectEqual(layout.LayoutType.vertical_stack, before);
+
+    const changed = try applyControlCommandLine(
+        &mux,
+        screen,
+        "{\"v\":1,\"command\":\"dispatch_plugin_command\",\"command_name\":\"cycle_layout\"}",
+    );
+    try testing.expect(changed);
+    try testing.expectEqual(layout.LayoutType.horizontal_stack, try mux.workspace_mgr.activeLayoutType());
 }

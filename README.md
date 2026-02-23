@@ -115,7 +115,7 @@ Prefix key is `Ctrl+G`.
 - Tabs: `t` new, `w` close active, `]`/`[` next/prev, `m` move focused window to next tab
 - Layout: `Space` cycle layout, `H/L` shrink/grow master ratio, `I/O` master count up/down
 - Popup/panels: `p` toggle popup shell, `Esc` close focused popup, `Tab` cycle popup focus
-- Scrollback: `u/d` page up/down, `s` toggle synchronized scroll
+- Scrollback: `u/d` page up/down, `s` toggle local scrollback navigation mode
 - Mouse mode: `M` cycle `hybrid -> passthrough -> compositor`
 - Quit ykmx: `q` (graceful shutdown of ykmx process)
 - Detach request: `\`

@@ -137,7 +137,7 @@ Prefix is `Ctrl+G`.
 - `Ctrl+G Escape` close focused popup immediately (plugin-overridable)
 - `Ctrl+G Tab` cycle popup focus (plugin-overridable)
 - `Ctrl+G u` / `Ctrl+G d` page up/down scrollback
-- `Ctrl+G s` toggle synchronized scroll across visible panes in active tab
+- `Ctrl+G s` toggle local scrollback navigation mode (sync-scroll is disabled)
 - `Ctrl+G M` cycle mouse mode (`hybrid` -> `passthrough` -> `compositor`)
 - `Ctrl+G q` graceful shutdown (quit ykmx process)
 - `Ctrl+G \` detach request
@@ -161,7 +161,7 @@ Scrollback navigation mode (while scrolled up):
 - `q` or `Esc` exit scrollback view (jump to bottom)
 - non-prefixed input is consumed (not sent to app PTY) until you return to bottom
 
-When sync scroll is enabled, navigation controls are accepted immediately (even at `scroll=+0`).
+Sync-scroll fan-out is currently disabled. `Ctrl+G s` controls local scrollback navigation mode so navigation keys are accepted even at `scroll=+0`.
 
 ## Mouse
 
