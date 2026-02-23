@@ -25,6 +25,8 @@ const runtime_control = @import("runtime_control.zig");
 const runtime_plugin_actions = @import("runtime_plugin_actions.zig");
 const runtime_renderer = @import("runtime_renderer.zig");
 const runtime_cli = @import("runtime_cli.zig");
+const runtime_render_types = @import("runtime_render_types.zig");
+const runtime_cells = @import("runtime_cells.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const POC_ROWS: u16 = 12;
@@ -41,6 +43,13 @@ const putCell = render_compositor.putCell;
 const drawBorder = runtime_renderer.drawBorder;
 const applyBorderGlyphs = runtime_renderer.applyBorderGlyphs;
 const drawPopupBorderDirect = runtime_renderer.drawPopupBorderDirect;
+const plainCellFromCodepoint = runtime_cells.plainCellFromCodepoint;
+const renderCellEqual = runtime_cells.renderCellEqual;
+const runtimeCellHasExplicitBg = runtime_cells.runtimeCellHasExplicitBg;
+const runtimeCellBgTag = runtime_cells.runtimeCellBgTag;
+const enforceOpaquePanelChromeBg = runtime_cells.enforceOpaquePanelChromeBg;
+const enforceOpaqueRuntimeCellBg = runtime_cells.enforceOpaqueRuntimeCellBg;
+const isSafeRunCell = runtime_cells.isSafeRunCell;
 const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("sys/ioctl.h");
@@ -824,56 +833,10 @@ fn sanitizeSessionId(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
 }
 
 const RuntimeSize = runtime_terminal.RuntimeSize;
-
-const RuntimeRenderCell = struct {
-    text: [32]u8 = [_]u8{' '} ++ ([_]u8{0} ** 31),
-    text_len: u8 = 1,
-    style: ghostty_vt.Style = .{},
-    styled: bool = false,
-};
-
-const RuntimeFrameCache = struct {
-    allocator: std.mem.Allocator,
-    cols: usize = 0,
-    rows: usize = 0,
-    cells: []RuntimeRenderCell = &.{},
-
-    fn init(allocator: std.mem.Allocator) RuntimeFrameCache {
-        return .{ .allocator = allocator };
-    }
-
-    fn deinit(self: *RuntimeFrameCache) void {
-        if (self.cells.len > 0) self.allocator.free(self.cells);
-        self.* = undefined;
-    }
-
-    fn ensureSize(self: *RuntimeFrameCache, cols: usize, rows: usize) !bool {
-        if (self.cols == cols and self.rows == rows and self.cells.len == cols * rows) return false;
-        if (self.cells.len > 0) self.allocator.free(self.cells);
-        self.cols = cols;
-        self.rows = rows;
-        self.cells = try self.allocator.alloc(RuntimeRenderCell, cols * rows);
-        for (self.cells) |*cell| cell.* = .{};
-        return true;
-    }
-};
-
-const PaneRenderRef = struct {
-    content_x: u16,
-    content_y: u16,
-    content_w: u16,
-    content_h: u16,
-    scroll_offset: usize = 0,
-    scrollback: ?*const scrollback_mod.ScrollbackBuffer = null,
-    term: *Terminal,
-};
-
-const PaneRenderCell = struct {
-    text: [32]u8 = [_]u8{0} ** 32,
-    text_len: u8 = 0,
-    style: ghostty_vt.Style,
-    skip_draw: bool = false,
-};
+const RuntimeRenderCell = runtime_render_types.RuntimeRenderCell;
+const RuntimeFrameCache = runtime_render_types.RuntimeFrameCache;
+const PaneRenderRef = runtime_render_types.PaneRenderRef;
+const PaneRenderCell = runtime_render_types.PaneRenderCell;
 const RuntimeVtState = runtime_vt.RuntimeVtState;
 
 fn renderRuntimeFrame(
@@ -1690,35 +1653,6 @@ fn composeContentCells(
     }
 }
 
-fn enforceOpaquePanelChromeBg(style: ghostty_vt.Style, panel_id: u32) ghostty_vt.Style {
-    if (panel_id == 0) return style;
-    var out = style;
-    switch (out.bg_color) {
-        .none => out.bg_color = .{ .palette = 0 },
-        else => {},
-    }
-    return out;
-}
-
-fn enforceOpaqueRuntimeCellBg(cell: *RuntimeRenderCell) void {
-    if (!cell.styled) {
-        var s: ghostty_vt.Style = .{};
-        s.bg_color = .{ .palette = 0 };
-        cell.style = s;
-        cell.styled = true;
-        return;
-    }
-    var s = cell.style;
-    switch (s.bg_color) {
-        .none => {
-            s.bg_color = .{ .palette = 0 };
-            cell.style = s;
-            cell.styled = true;
-        },
-        else => {},
-    }
-}
-
 fn markLayerCell(
     layer: []u8,
     panel_ids: []u32,
@@ -1931,43 +1865,6 @@ fn fillPlainLine(dst: []RuntimeRenderCell, line: []const u8) void {
     }
 }
 
-fn plainCellFromCodepoint(cp: u21) RuntimeRenderCell {
-    var cell: RuntimeRenderCell = .{
-        .style = .{},
-        .styled = false,
-    };
-    cell.text_len = @intCast(encodeCodepoint(cell.text[0..], cp));
-    if (cell.text_len == 0) {
-        cell.text[0] = '?';
-        cell.text_len = 1;
-    }
-    return cell;
-}
-
-fn renderCellEqual(a: RuntimeRenderCell, b: RuntimeRenderCell) bool {
-    if (a.text_len != b.text_len) return false;
-    if (a.styled != b.styled) return false;
-    if (a.styled and !a.style.eql(b.style)) return false;
-    return std.mem.eql(u8, a.text[0..a.text_len], b.text[0..b.text_len]);
-}
-
-fn runtimeCellHasExplicitBg(cell: RuntimeRenderCell) bool {
-    if (!cell.styled) return false;
-    return switch (cell.style.bg_color) {
-        .none => false,
-        else => true,
-    };
-}
-
-fn runtimeCellBgTag(cell: RuntimeRenderCell) u8 {
-    if (!cell.styled) return 0;
-    return switch (cell.style.bg_color) {
-        .none => 0,
-        .palette => 1,
-        .rgb => 2,
-    };
-}
-
 fn logComposePopupSummary(
     popups: anytype,
     popup_order: []const usize,
@@ -2093,23 +1990,6 @@ fn logComposeBgDebug(
         ) catch continue;
         _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
     }
-}
-
-fn isSafeRunCell(cell: RuntimeRenderCell) bool {
-    if (cell.text_len == 1) {
-        const ch = cell.text[0];
-        return ch >= 0x20 and ch <= 0x7e;
-    }
-    if (cell.text_len == 3) {
-        const bytes = cell.text[0..3];
-        return std.mem.eql(u8, bytes, "│") or
-            std.mem.eql(u8, bytes, "─") or
-            std.mem.eql(u8, bytes, "┌") or
-            std.mem.eql(u8, bytes, "┐") or
-            std.mem.eql(u8, bytes, "└") or
-            std.mem.eql(u8, bytes, "┘");
-    }
-    return false;
 }
 
 fn writeStyle(out: *std.Io.Writer, style: ghostty_vt.Style) !void {
