@@ -23,7 +23,8 @@ const runtime_command_state = @import("runtime_command_state.zig");
 const runtime_plugin_state = @import("runtime_plugin_state.zig");
 const runtime_output = @import("runtime_output.zig");
 const runtime_control = @import("runtime_control.zig");
-const runtime_sgr = @import("runtime_sgr.zig");
+const runtime_plugin_actions = @import("runtime_plugin_actions.zig");
+const runtime_renderer = @import("runtime_renderer.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const POC_ROWS: u16 = 12;
@@ -37,7 +38,6 @@ const writeFmtBlocking = runtime_output.writeFmtBlocking;
 const drawText = render_compositor.drawText;
 const drawTextOwnedMasked = render_compositor.drawTextOwnedMasked;
 const putCell = render_compositor.putCell;
-const parseSgrStyleSpec = runtime_sgr.parseSgrStyleSpec;
 const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("sys/ioctl.h");
@@ -118,6 +118,10 @@ var g_compose_debug_tick: u64 = 0;
 
 fn traceEvent(tag: DebugTag, a: i32, b: i32, c_val: i32, d: i32) void {
     g_debug_trace.push(tag, a, b, c_val, d);
+}
+
+fn tracePluginRequestRedraw(screen: layout.Rect) void {
+    traceEvent(.plugin_request_redraw, @intCast(screen.width), @intCast(screen.height), 0, 0);
 }
 
 fn debugTagName(tag: DebugTag) []const u8 {
@@ -519,7 +523,7 @@ fn runRuntimeLoop(allocator: std.mem.Allocator) !void {
                 }
                 var changed = false;
                 for (owned) |sourced| {
-                    changed = (try applyPluginAction(&mux, content, sourced.plugin_name, sourced.action)) or changed;
+                    changed = (try runtime_plugin_actions.applyPluginAction(&mux, content, sourced.plugin_name, sourced.action, &tracePluginRequestRedraw)) or changed;
                 }
                 if (changed) force_redraw = true;
             }
@@ -1106,178 +1110,6 @@ fn resolveStatePathForCli(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}.state", .{pipe_path});
 }
 
-fn applyPluginAction(
-    mux: *multiplexer.Multiplexer,
-    screen: layout.Rect,
-    plugin_name: []const u8,
-    action: plugin_host.PluginHost.Action,
-) !bool {
-    switch (action) {
-        .cycle_layout => {
-            _ = try mux.workspace_mgr.cycleActiveLayout();
-            _ = try mux.resizeActiveWindowsToLayout(screen);
-            return true;
-        },
-        .set_layout => |layout_type| {
-            try mux.workspace_mgr.setActiveLayout(layout_type);
-            _ = try mux.resizeActiveWindowsToLayout(screen);
-            return true;
-        },
-        .set_master_ratio_permille => |value| {
-            const clamped: u16 = @intCast(@max(@as(u32, 100), @min(@as(u32, 900), value)));
-            try mux.workspace_mgr.setActiveMasterRatioPermille(clamped);
-            _ = try mux.resizeActiveWindowsToLayout(screen);
-            return true;
-        },
-        .request_redraw => {
-            traceEvent(.plugin_request_redraw, @intCast(screen.width), @intCast(screen.height), 0, 0);
-            _ = try mux.resizeActiveWindowsToLayout(screen);
-            return true;
-        },
-        .minimize_focused_window => {
-            return try mux.minimizeFocusedWindow(screen);
-        },
-        .restore_all_minimized_windows => {
-            return (try mux.restoreAllMinimizedWindows(screen)) > 0;
-        },
-        .move_focused_window_to_index => |index| {
-            return try mux.moveFocusedWindowToIndex(index, screen);
-        },
-        .move_window_by_id_to_index => |payload| {
-            return try mux.moveWindowByIdToIndex(payload.window_id, payload.index, screen);
-        },
-        .close_focused_window => {
-            _ = mux.closeFocusedWindow() catch |err| switch (err) {
-                error.NoFocusedWindow => return false,
-                else => return err,
-            };
-            _ = try mux.resizeActiveWindowsToLayout(screen);
-            return true;
-        },
-        .restore_window_by_id => |window_id| {
-            return try mux.restoreWindowById(window_id, screen);
-        },
-        .register_command => |payload| {
-            try mux.setPluginCommandOverride(payload.command, payload.enabled);
-            return false;
-        },
-        .register_command_name => |payload| {
-            try mux.setPluginNamedCommandOverride(payload.command_name, payload.enabled);
-            return false;
-        },
-        .open_shell_panel => {
-            _ = try mux.openShellPopupOwned("popup-shell", screen, true, plugin_name);
-            return true;
-        },
-        .close_focused_panel => {
-            return try mux.closeFocusedPopupOwned(plugin_name);
-        },
-        .cycle_panel_focus => {
-            return mux.cyclePopupFocusOwned(plugin_name);
-        },
-        .toggle_shell_panel => {
-            if (try mux.closeFocusedPopupOwned(plugin_name)) {
-                return true;
-            } else {
-                _ = try mux.openShellPopupOwned("popup-shell", screen, true, plugin_name);
-            }
-            return true;
-        },
-        .open_shell_panel_rect => |payload| {
-            _ = try mux.openShellPopupRectStyled(
-                "popup-shell",
-                screen,
-                .{
-                    .x = payload.x,
-                    .y = payload.y,
-                    .width = payload.width,
-                    .height = payload.height,
-                },
-                payload.modal,
-                .{
-                    .transparent_background = payload.transparent_background,
-                    .show_border = payload.show_border,
-                    .show_controls = payload.show_controls,
-                },
-                plugin_name,
-            );
-            return true;
-        },
-        .close_panel_by_id => |panel_id| {
-            return try mux.closePopupByIdOwned(panel_id, plugin_name);
-        },
-        .focus_panel_by_id => |panel_id| {
-            return try mux.focusPopupByIdOwned(panel_id, plugin_name);
-        },
-        .move_panel_by_id => |payload| {
-            return try mux.movePopupByIdOwned(payload.panel_id, payload.x, payload.y, screen, plugin_name);
-        },
-        .resize_panel_by_id => |payload| {
-            return try mux.resizePopupByIdOwned(payload.panel_id, payload.width, payload.height, screen, plugin_name);
-        },
-        .set_panel_visibility_by_id => |payload| {
-            return try mux.setPopupVisibilityByIdOwned(payload.panel_id, payload.visible, plugin_name);
-        },
-        .set_panel_style_by_id => |payload| {
-            return try mux.setPopupStyleByIdOwned(payload.panel_id, .{
-                .transparent_background = payload.transparent_background,
-                .show_border = payload.show_border,
-                .show_controls = payload.show_controls,
-            }, screen, plugin_name);
-        },
-        .set_chrome_theme => |payload| {
-            mux.applyChromeTheme(.{
-                .window_minimize_char = payload.window_minimize_char,
-                .window_maximize_char = payload.window_maximize_char,
-                .window_close_char = payload.window_close_char,
-                .focus_marker = payload.focus_marker,
-                .border_horizontal = payload.border_horizontal,
-                .border_vertical = payload.border_vertical,
-                .border_corner_tl = payload.border_corner_tl,
-                .border_corner_tr = payload.border_corner_tr,
-                .border_corner_bl = payload.border_corner_bl,
-                .border_corner_br = payload.border_corner_br,
-                .border_tee_top = payload.border_tee_top,
-                .border_tee_bottom = payload.border_tee_bottom,
-                .border_tee_left = payload.border_tee_left,
-                .border_tee_right = payload.border_tee_right,
-                .border_cross = payload.border_cross,
-            });
-            return true;
-        },
-        .reset_chrome_theme => {
-            mux.resetChromeTheme();
-            return true;
-        },
-        .set_chrome_style => |payload| {
-            mux.applyChromeStyle(.{
-                .active_title = if (payload.active_title_sgr) |s| try parseSgrStyleSpec(s) else null,
-                .inactive_title = if (payload.inactive_title_sgr) |s| try parseSgrStyleSpec(s) else null,
-                .active_border = if (payload.active_border_sgr) |s| try parseSgrStyleSpec(s) else null,
-                .inactive_border = if (payload.inactive_border_sgr) |s| try parseSgrStyleSpec(s) else null,
-                .active_buttons = if (payload.active_buttons_sgr) |s| try parseSgrStyleSpec(s) else null,
-                .inactive_buttons = if (payload.inactive_buttons_sgr) |s| try parseSgrStyleSpec(s) else null,
-            });
-            return true;
-        },
-        .set_panel_chrome_style_by_id => |payload| {
-            return try mux.setPanelChromeStyleByIdOwned(
-                payload.panel_id,
-                payload.reset,
-                .{
-                    .active_title = if (payload.active_title_sgr) |s| try parseSgrStyleSpec(s) else null,
-                    .inactive_title = if (payload.inactive_title_sgr) |s| try parseSgrStyleSpec(s) else null,
-                    .active_border = if (payload.active_border_sgr) |s| try parseSgrStyleSpec(s) else null,
-                    .inactive_border = if (payload.inactive_border_sgr) |s| try parseSgrStyleSpec(s) else null,
-                    .active_buttons = if (payload.active_buttons_sgr) |s| try parseSgrStyleSpec(s) else null,
-                    .inactive_buttons = if (payload.inactive_buttons_sgr) |s| try parseSgrStyleSpec(s) else null,
-                },
-                plugin_name,
-            );
-        },
-    }
-}
-
 const RuntimeSize = runtime_terminal.RuntimeSize;
 
 const RuntimeRenderCell = struct {
@@ -1675,19 +1507,10 @@ fn paintFooterBars(
     }
 }
 
-const BorderMask = struct {
-    left: bool,
-    right: bool,
-    top: bool,
-    bottom: bool,
-};
-
-const ContentInsets = struct {
-    left: u16,
-    right: u16,
-    top: u16,
-    bottom: u16,
-};
+const BorderMask = runtime_renderer.BorderMask;
+const ContentInsets = runtime_renderer.ContentInsets;
+const computeBorderMask = runtime_renderer.computeBorderMask;
+const computeContentInsets = runtime_renderer.computeContentInsets;
 
 const BorderConn = struct {
     const U: u8 = 1 << 0;
@@ -2344,58 +2167,6 @@ fn markTextOwnedMaskedLayer(
         }
         x += 1;
     }
-}
-
-fn hasNeighborOnRight(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
-    for (rects, 0..) |other, j| {
-        if (j == idx) continue;
-        if (r.x + r.width != other.x) continue;
-        const overlap_top = @max(r.y, other.y);
-        const overlap_bottom = @min(r.y + r.height, other.y + other.height);
-        if (overlap_bottom > overlap_top) return true;
-    }
-    return false;
-}
-
-fn hasNeighborOnBottom(rects: []const layout.Rect, idx: usize, r: layout.Rect) bool {
-    for (rects, 0..) |other, j| {
-        if (j == idx) continue;
-        if (r.y + r.height != other.y) continue;
-        const overlap_left = @max(r.x, other.x);
-        const overlap_right = @min(r.x + r.width, other.x + other.width);
-        if (overlap_right > overlap_left) return true;
-    }
-    return false;
-}
-
-fn computeContentInsets(
-    rects: []const layout.Rect,
-    idx: usize,
-    r: layout.Rect,
-    border: BorderMask,
-) ContentInsets {
-    _ = rects;
-    _ = idx;
-    _ = r;
-    return .{
-        .left = if (border.left) 1 else 0,
-        .top = if (border.top) 1 else 0,
-        .right = if (border.right) 1 else 0,
-        .bottom = if (border.bottom) 1 else 0,
-    };
-}
-
-fn computeBorderMask(rects: []const layout.Rect, idx: usize, r: layout.Rect, content: layout.Rect) BorderMask {
-    _ = content;
-    return .{
-        // Draw left/top for all panes; right/bottom only on container edge.
-        // This keeps exactly one separator at shared boundaries.
-        .left = true,
-        .top = true,
-        // Close pane borders for ragged layouts when there is no adjacent pane.
-        .right = !hasNeighborOnRight(rects, idx, r),
-        .bottom = !hasNeighborOnBottom(rects, idx, r),
-    };
 }
 
 fn drawBorder(
