@@ -27,7 +27,7 @@ export type CommandName =
   | "master_count_decrease"
   | "scroll_page_up"
   | "scroll_page_down"
-  | "toggle_sync_scroll"
+  | "toggle_scrollback_mode"
   | "toggle_mouse_passthrough"
   | "detach";
 
@@ -50,7 +50,7 @@ export type RuntimeState = {
   master_count: number;
   master_ratio_permille: number;
   mouse_mode: MouseMode;
-  sync_scroll_enabled: boolean;
+  scrollback_mode_enabled: boolean;
   screen: Rect;
 };
 
@@ -73,7 +73,7 @@ export type OnShutdownEvent = { v: 1; event: "on_shutdown" };
 export type OnStateChangedEvent = {
   v: 1;
   event: "on_state_changed";
-  reason: "layout" | "window_count" | "focus" | "tab" | "master" | "mouse_mode" | "sync_scroll" | "screen" | "state" | "start";
+  reason: "layout" | "window_count" | "focus" | "tab" | "master" | "mouse_mode" | "scrollback_mode" | "screen" | "state" | "start";
   state: RuntimeState;
 };
 

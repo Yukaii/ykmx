@@ -31,7 +31,7 @@ pub const PluginHost = struct {
         master_count: u16,
         master_ratio_permille: u16,
         mouse_mode: []const u8,
-        sync_scroll_enabled: bool,
+        scrollback_mode_enabled: bool,
         screen: layout.Rect,
     };
 
@@ -367,7 +367,7 @@ pub const PluginHost = struct {
         var buf: [640]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
-            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"panel_count\":{},\"focused_panel_id\":{},\"has_focused_panel\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            "{{\"v\":1,\"event\":\"on_state_changed\",\"reason\":\"{s}\",\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"panel_count\":{},\"focused_panel_id\":{},\"has_focused_panel\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"scrollback_mode_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
             .{
                 reason,
                 state.layout,
@@ -386,7 +386,7 @@ pub const PluginHost = struct {
                 state.master_count,
                 state.master_ratio_permille,
                 state.mouse_mode,
-                state.sync_scroll_enabled,
+                state.scrollback_mode_enabled,
                 state.screen.x,
                 state.screen.y,
                 state.screen.width,
@@ -400,7 +400,7 @@ pub const PluginHost = struct {
         var buf: [768]u8 = undefined;
         const line = try std.fmt.bufPrint(
             &buf,
-            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"panel_count\":{},\"focused_panel_id\":{},\"has_focused_panel\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"sync_scroll_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
+            "{{\"v\":1,\"event\":\"on_tick\",\"stats\":{{\"reads\":{},\"resized\":{},\"popup_updates\":{},\"redraw\":{},\"detach_requested\":{},\"sigwinch\":{},\"sighup\":{},\"sigterm\":{}}},\"state\":{{\"layout\":\"{s}\",\"window_count\":{},\"minimized_window_count\":{},\"visible_window_count\":{},\"panel_count\":{},\"focused_panel_id\":{},\"has_focused_panel\":{},\"focused_index\":{},\"focused_window_id\":{},\"has_focused_window\":{},\"tab_count\":{},\"active_tab_index\":{},\"has_active_tab\":{},\"master_count\":{},\"master_ratio_permille\":{},\"mouse_mode\":\"{s}\",\"scrollback_mode_enabled\":{},\"screen\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}}}}}\n",
             .{
                 stats.reads,
                 stats.resized,
@@ -426,7 +426,7 @@ pub const PluginHost = struct {
                 state.master_count,
                 state.master_ratio_permille,
                 state.mouse_mode,
-                state.sync_scroll_enabled,
+                state.scrollback_mode_enabled,
                 state.screen.x,
                 state.screen.y,
                 state.screen.width,

@@ -121,7 +121,7 @@ pub fn printMultiplexerPOC(
         alloc,
         &mux.workspace_mgr,
         focused_scroll,
-        mux.syncScrollEnabled(),
+        mux.scrollbackModeEnabled(),
     );
     defer alloc.free(status_line);
 

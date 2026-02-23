@@ -83,10 +83,10 @@ function renderBars(state: RuntimeState): { toolbar: string; tab: string; status
   const toolbar = "";
 
   const tabLeft = `tab ${state.active_tab_index + 1}/${state.tab_count} | focus:${state.has_focused_window ? state.focused_index + 1 : 0}${focusedId ? `(#${focusedId})` : ""} | layout:${LAYOUT_LABEL}`;
-  const tabRight = `[click title=raise] [drag=move] [edge=resize]`;
+  const tabRight = "[click title=raise] [drag=move] [edge=resize]";
   const tab = fitLeftRight(tabLeft, tabRight, width);
 
-  const statusLeft = `mouse:${state.mouse_mode} sync:${state.sync_scroll_enabled ? "on" : "off"} screen:${state.screen.width}x${state.screen.height}`;
+  const statusLeft = `mouse:${state.mouse_mode} scroll-mode:${state.scrollback_mode_enabled ? "on" : "off"} screen:${state.screen.width}x${state.screen.height}`;
   const statusRight = "keys: Ctrl+G h/j/k/l focus, Space cycle";
   const status = fitLeftRight(statusLeft, statusRight, width);
   return { toolbar, tab, status };

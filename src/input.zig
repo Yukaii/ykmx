@@ -28,7 +28,7 @@ pub const Command = enum {
     master_count_decrease,
     scroll_page_up,
     scroll_page_down,
-    toggle_sync_scroll,
+    toggle_scrollback_mode,
     toggle_mouse_passthrough,
     detach,
 };
@@ -75,7 +75,7 @@ pub fn defaultPrefixedKey(cmd: Command) ?u8 {
         .master_count_decrease => 'O',
         .scroll_page_up => 'u',
         .scroll_page_down => 'd',
-        .toggle_sync_scroll => 's',
+        .toggle_scrollback_mode => 's',
         .toggle_mouse_passthrough => 'M',
         .detach => '\\',
     };
@@ -173,7 +173,7 @@ pub const Router = struct {
                 'O' => .{ .command = .master_count_decrease },
                 'u' => .{ .command = .scroll_page_up },
                 'd' => .{ .command = .scroll_page_down },
-                's' => .{ .command = .toggle_sync_scroll },
+                's' => .{ .command = .toggle_scrollback_mode },
                 'M' => .{ .command = .toggle_mouse_passthrough },
                 '\\' => .{ .command = .detach },
                 0x1c => .{ .command = .detach }, // Ctrl+\
@@ -389,7 +389,7 @@ test "input router parses sync-scroll toggle command" {
     const testing = std.testing;
     var r = Router{};
     try testing.expectEqual(Event.noop, r.feedByte(0x07));
-    try testing.expectEqual(Event{ .command = .toggle_sync_scroll }, r.feedByte('s'));
+    try testing.expectEqual(Event{ .command = .toggle_scrollback_mode }, r.feedByte('s'));
 }
 
 test "input router parses directional focus commands" {

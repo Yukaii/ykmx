@@ -38,7 +38,7 @@ pub fn collectPluginRuntimeState(
         .master_count = master_count,
         .master_ratio_permille = master_ratio,
         .mouse_mode = @tagName(mux.mouseMode()),
-        .sync_scroll_enabled = mux.syncScrollEnabled(),
+        .scrollback_mode_enabled = mux.scrollbackModeEnabled(),
         .screen = screen,
     };
 }
@@ -63,7 +63,7 @@ pub fn pluginRuntimeStateEql(
         a.master_count == b.master_count and
         a.master_ratio_permille == b.master_ratio_permille and
         std.mem.eql(u8, a.mouse_mode, b.mouse_mode) and
-        a.sync_scroll_enabled == b.sync_scroll_enabled and
+        a.scrollback_mode_enabled == b.scrollback_mode_enabled and
         std.meta.eql(a.screen, b.screen);
 }
 
@@ -79,7 +79,7 @@ pub fn detectStateChangeReason(
     if (prev.tab_count != next.tab_count or prev.active_tab_index != next.active_tab_index or prev.has_active_tab != next.has_active_tab) return "tab";
     if (prev.master_count != next.master_count or prev.master_ratio_permille != next.master_ratio_permille) return "master";
     if (!std.mem.eql(u8, prev.mouse_mode, next.mouse_mode)) return "mouse_mode";
-    if (prev.sync_scroll_enabled != next.sync_scroll_enabled) return "sync_scroll";
+    if (prev.scrollback_mode_enabled != next.scrollback_mode_enabled) return "scrollback_mode";
     if (!std.meta.eql(prev.screen, next.screen)) return "screen";
     return "state";
 }

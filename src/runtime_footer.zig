@@ -53,7 +53,7 @@ pub fn resolveFooterLines(
                 allocator,
                 &mux.workspace_mgr,
                 mux.focusedScrollOffset(),
-                mux.syncScrollEnabled(),
+                mux.scrollbackModeEnabled(),
             );
             lines.status_line = lines.owned_status_line.?;
         }
@@ -68,7 +68,7 @@ pub fn resolveFooterLines(
         allocator,
         &mux.workspace_mgr,
         mux.focusedScrollOffset(),
-        mux.syncScrollEnabled(),
+        mux.scrollbackModeEnabled(),
     );
     lines.status_line = lines.owned_status_line.?;
     return lines;

@@ -597,7 +597,7 @@ pub const Multiplexer = struct {
                             const lines: usize = if (screen) |s| s.height else 24;
                             self.scrollPageDownFocused(lines);
                         },
-                        .toggle_sync_scroll => {
+                        .toggle_scrollback_mode => {
                             // Sync behavior is disabled; this key toggles local
                             // scrollback navigation mode instead.
                             self.scroll_nav_enabled = !self.scroll_nav_enabled;
@@ -907,9 +907,8 @@ pub const Multiplexer = struct {
         return self.popup_mgr.focusedWindowId();
     }
 
-    pub fn syncScrollEnabled(self: *const Multiplexer) bool {
-        _ = self;
-        return false;
+    pub fn scrollbackModeEnabled(self: *const Multiplexer) bool {
+        return self.scroll_nav_enabled;
     }
 
     pub fn minimizeFocusedWindow(self: *Multiplexer, screen: ?layout.Rect) !bool {
@@ -4057,7 +4056,7 @@ test "multiplexer sync-scroll toggle is disabled and panes stay independent" {
 
     const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 12 };
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
-    try testing.expect(!mux.syncScrollEnabled());
+    try testing.expect(!mux.scrollbackModeEnabled());
 
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 'u' });
 
@@ -4067,7 +4066,7 @@ test "multiplexer sync-scroll toggle is disabled and panes stay independent" {
     try testing.expectEqual(@as(usize, 0), right_off);
 
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
-    try testing.expect(!mux.syncScrollEnabled());
+    try testing.expect(!mux.scrollbackModeEnabled());
     try testing.expect(mux.windowScrollOffset(left_id).? > 0);
     try testing.expectEqual(@as(usize, 0), mux.windowScrollOffset(right_id).?);
 
@@ -4198,10 +4197,10 @@ test "multiplexer sync toggle key enables local nav mode only" {
     try mux.scrollbacks.getPtr(a).?.append("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
 
     const screen: layout.Rect = .{ .x = 0, .y = 0, .width = 80, .height = 12 };
-    try testing.expect(!mux.syncScrollEnabled());
+    try testing.expect(!mux.scrollbackModeEnabled());
     try testing.expect(!mux.scroll_nav_enabled);
     try mux.handleInputBytesWithScreen(screen, &.{ 0x07, 's' });
-    try testing.expect(!mux.syncScrollEnabled());
+    try testing.expect(!mux.scrollbackModeEnabled());
     try testing.expect(mux.scroll_nav_enabled);
 
     // With nav mode armed at offset zero, vim-style nav should scroll locally.
