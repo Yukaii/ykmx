@@ -153,3 +153,55 @@ pub fn clearChromeLayerRect(layer: []u8, panel_ids: []u32, cols: usize, rows: us
         }
     }
 }
+
+pub fn drawText(
+    canvas: []u21,
+    cols: usize,
+    rows: usize,
+    x_start: u16,
+    y: u16,
+    text: []const u8,
+    max_w: u16,
+) void {
+    if (y >= rows) return;
+    var x: usize = x_start;
+    const y_usize: usize = y;
+    var i: usize = 0;
+    while (i < text.len and i < max_w and x < cols) : (i += 1) {
+        putCell(canvas, cols, x, y_usize, text[i]);
+        x += 1;
+    }
+}
+
+pub fn drawTextOwnedMasked(
+    canvas: []u21,
+    cols: usize,
+    rows: usize,
+    x_start: u16,
+    y: u16,
+    text: []const u8,
+    max_w: u16,
+    owner_idx: usize,
+    top_window_owner: []const i32,
+    mask: []const bool,
+) void {
+    if (y >= rows) return;
+    var x: usize = x_start;
+    const y_usize: usize = y;
+    var i: usize = 0;
+    while (i < text.len and i < max_w and x < cols) : (i += 1) {
+        const idx = y_usize * cols + x;
+        if (mask[idx]) {
+            x += 1;
+            continue;
+        }
+        if (top_window_owner[idx] == @as(i32, @intCast(owner_idx))) {
+            putCell(canvas, cols, x, y_usize, text[i]);
+        }
+        x += 1;
+    }
+}
+
+pub fn putCell(canvas: []u21, cols: usize, x: usize, y: usize, ch: u21) void {
+    canvas[y * cols + x] = ch;
+}

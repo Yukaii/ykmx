@@ -32,6 +32,9 @@ const writeByteBlocking = runtime_output.writeByteBlocking;
 const writeCodepointBlocking = runtime_output.writeCodepointBlocking;
 const encodeCodepoint = runtime_output.encodeCodepoint;
 const writeFmtBlocking = runtime_output.writeFmtBlocking;
+const drawText = render_compositor.drawText;
+const drawTextOwnedMasked = render_compositor.drawTextOwnedMasked;
+const putCell = render_compositor.putCell;
 const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("sys/ioctl.h");
@@ -3083,82 +3086,6 @@ fn paneCellAt(
         return rendered;
     }
     return null;
-}
-
-fn drawText(
-    canvas: []u21,
-    cols: usize,
-    rows: usize,
-    x_start: u16,
-    y: u16,
-    text: []const u8,
-    max_w: u16,
-) void {
-    if (y >= rows) return;
-    var x: usize = x_start;
-    const y_usize: usize = y;
-    var i: usize = 0;
-    while (i < text.len and i < max_w and x < cols) : (i += 1) {
-        putCell(canvas, cols, x, y_usize, text[i]);
-        x += 1;
-    }
-}
-
-fn drawTextOwned(
-    canvas: []u21,
-    cols: usize,
-    rows: usize,
-    x_start: u16,
-    y: u16,
-    text: []const u8,
-    max_w: u16,
-    owner_idx: usize,
-    top_window_owner: []const i32,
-) void {
-    if (y >= rows) return;
-    var x: usize = x_start;
-    const y_usize: usize = y;
-    var i: usize = 0;
-    while (i < text.len and i < max_w and x < cols) : (i += 1) {
-        const idx = y_usize * cols + x;
-        if (top_window_owner[idx] == @as(i32, @intCast(owner_idx))) {
-            putCell(canvas, cols, x, y_usize, text[i]);
-        }
-        x += 1;
-    }
-}
-
-fn drawTextOwnedMasked(
-    canvas: []u21,
-    cols: usize,
-    rows: usize,
-    x_start: u16,
-    y: u16,
-    text: []const u8,
-    max_w: u16,
-    owner_idx: usize,
-    top_window_owner: []const i32,
-    mask: []const bool,
-) void {
-    if (y >= rows) return;
-    var x: usize = x_start;
-    const y_usize: usize = y;
-    var i: usize = 0;
-    while (i < text.len and i < max_w and x < cols) : (i += 1) {
-        const idx = y_usize * cols + x;
-        if (mask[idx]) {
-            x += 1;
-            continue;
-        }
-        if (top_window_owner[idx] == @as(i32, @intCast(owner_idx))) {
-            putCell(canvas, cols, x, y_usize, text[i]);
-        }
-        x += 1;
-    }
-}
-
-fn putCell(canvas: []u21, cols: usize, x: usize, y: usize, ch: u21) void {
-    canvas[y * cols + x] = ch;
 }
 
 test "workspace layout POC returns panes" {
