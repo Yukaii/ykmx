@@ -27,6 +27,9 @@ const runtime_renderer = @import("runtime_renderer.zig");
 const runtime_cli = @import("runtime_cli.zig");
 const runtime_render_types = @import("runtime_render_types.zig");
 const runtime_cells = @import("runtime_cells.zig");
+const runtime_control_pipe = @import("runtime_control_pipe.zig");
+const runtime_pane_rendering = @import("runtime_pane_rendering.zig");
+const runtime_compose_debug = @import("runtime_compose_debug.zig");
 
 const Terminal = ghostty_vt.Terminal;
 const POC_ROWS: u16 = 12;
@@ -58,8 +61,6 @@ const chrome_layer_active_buttons = runtime_renderer.chrome_layer_active_buttons
 const chrome_layer_inactive_buttons = runtime_renderer.chrome_layer_inactive_buttons;
 const plainCellFromCodepoint = runtime_cells.plainCellFromCodepoint;
 const renderCellEqual = runtime_cells.renderCellEqual;
-const runtimeCellHasExplicitBg = runtime_cells.runtimeCellHasExplicitBg;
-const runtimeCellBgTag = runtime_cells.runtimeCellBgTag;
 const enforceOpaquePanelChromeBg = runtime_cells.enforceOpaquePanelChromeBg;
 const enforceOpaqueRuntimeCellBg = runtime_cells.enforceOpaqueRuntimeCellBg;
 const isSafeRunCell = runtime_cells.isSafeRunCell;
@@ -637,220 +638,16 @@ fn logComposeTickSummary(mux: *multiplexer.Multiplexer, content: layout.Rect) vo
     _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
 }
 
-const ControlPipe = struct {
-    allocator: std.mem.Allocator,
-    session_id: []u8,
-    path: []u8,
-    state_path: []u8,
-    read_fd: c_int,
-    write_fd: c_int,
-    buf: std.ArrayListUnmanaged(u8) = .{},
-
-    fn init(allocator: std.mem.Allocator, maybe_session_name: ?[]const u8) !ControlPipe {
-        const raw_id = maybe_session_name orelse "standalone";
-        const session_id = try sanitizeSessionId(allocator, raw_id);
-        errdefer allocator.free(session_id);
-
-        const path = try std.fmt.allocPrint(allocator, "/tmp/ykmx-{s}.ctl", .{session_id});
-        errdefer allocator.free(path);
-        const state_path = try std.fmt.allocPrint(allocator, "/tmp/ykmx-{s}.state", .{session_id});
-        errdefer allocator.free(state_path);
-
-        const c_path = try allocator.dupeZ(u8, path);
-        defer allocator.free(c_path);
-        _ = c.unlink(c_path.ptr);
-        if (c.mkfifo(c_path.ptr, 0o600) != 0) return error.ControlPipeCreateFailed;
-
-        const read_fd = c.open(c_path.ptr, c.O_RDONLY | c.O_NONBLOCK);
-        if (read_fd < 0) return error.ControlPipeOpenFailed;
-        errdefer _ = c.close(read_fd);
-
-        const write_fd = c.open(c_path.ptr, c.O_WRONLY | c.O_NONBLOCK);
-        if (write_fd < 0) return error.ControlPipeOpenFailed;
-        errdefer _ = c.close(write_fd);
-
-        return .{
-            .allocator = allocator,
-            .session_id = session_id,
-            .path = path,
-            .state_path = state_path,
-            .read_fd = read_fd,
-            .write_fd = write_fd,
-        };
-    }
-
-    fn deinit(self: *ControlPipe) void {
-        _ = c.close(self.read_fd);
-        _ = c.close(self.write_fd);
-        self.buf.deinit(self.allocator);
-        if (self.path.len > 0) {
-            if (self.allocator.dupeZ(u8, self.path)) |c_path| {
-                _ = c.unlink(c_path.ptr);
-                self.allocator.free(c_path);
-            } else |_| {}
-        }
-        self.allocator.free(self.path);
-        self.allocator.free(self.state_path);
-        self.allocator.free(self.session_id);
-        self.* = undefined;
-    }
-
-    fn exportEnv(self: *const ControlPipe) !void {
-        const session_z = try self.allocator.dupeZ(u8, self.session_id);
-        defer self.allocator.free(session_z);
-        const path_z = try self.allocator.dupeZ(u8, self.path);
-        defer self.allocator.free(path_z);
-        const state_path_z = try self.allocator.dupeZ(u8, self.state_path);
-        defer self.allocator.free(state_path_z);
-        if (c.setenv("YKMX_SESSION_ID", session_z.ptr, 1) != 0) return error.SetEnvFailed;
-        if (c.setenv("YKMX_CONTROL_PIPE", path_z.ptr, 1) != 0) return error.SetEnvFailed;
-        if (c.setenv("YKMX_STATE_FILE", state_path_z.ptr, 1) != 0) return error.SetEnvFailed;
-    }
-
-    fn poll(self: *ControlPipe, mux: *multiplexer.Multiplexer, screen: layout.Rect) !bool {
-        var changed = false;
-        var scratch: [1024]u8 = undefined;
-        while (true) {
-            const n = c.read(self.read_fd, &scratch, scratch.len);
-            if (n < 0) break;
-            if (n == 0) break;
-            try self.buf.appendSlice(self.allocator, scratch[0..@intCast(n)]);
-        }
-
-        while (std.mem.indexOfScalar(u8, self.buf.items, '\n')) |nl| {
-            const line = std.mem.trim(u8, self.buf.items[0..nl], " \t\r");
-            if (line.len > 0) {
-                changed = (try runtime_control.applyControlCommandLine(mux, screen, line)) or changed;
-            }
-            consumePrefix(&self.buf, nl + 1);
-        }
-        return changed;
-    }
-
-    fn writeState(self: *ControlPipe, mux: *multiplexer.Multiplexer, plugins: *plugin_manager.PluginManager, screen: layout.Rect) !void {
-        var text = std.ArrayListUnmanaged(u8){};
-        defer text.deinit(self.allocator);
-        const w = text.writer(self.allocator);
-
-        const layout_type = try mux.workspace_mgr.activeLayoutType();
-        const tab_count = mux.workspace_mgr.tabCount();
-        const active_tab_idx = mux.workspace_mgr.activeTabIndex() orelse 0;
-        const focused_window_idx = mux.workspace_mgr.focusedWindowIndexActive() catch null;
-        const focused_panel_id = mux.popup_mgr.focused_popup_id orelse 0;
-
-        try w.print("session_id={s}\n", .{self.session_id});
-        try w.print("layout={s}\n", .{@tagName(layout_type)});
-        try w.print("active_tab_index={}\n", .{active_tab_idx});
-        try w.print("tab_count={}\n", .{tab_count});
-        try w.print("screen={}x{}\n", .{ screen.width, screen.height });
-        try w.print("panel_count_visible={}\n", .{mux.popup_mgr.visibleCount()});
-        try w.print("focused_panel_id={}\n", .{focused_panel_id});
-        try w.print("plugin_hosts={}\n", .{plugins.hostCount()});
-
-        const tab = try mux.workspace_mgr.activeTab();
-        for (tab.windows.items, 0..) |win, i| {
-            try w.print("window id={} focused={} minimized={} title=", .{
-                win.id,
-                @as(u8, @intFromBool(focused_window_idx != null and focused_window_idx.? == i)),
-                @as(u8, @intFromBool(win.minimized)),
-            });
-            try writeQuotedString(w, win.title);
-            try w.writeByte('\n');
-        }
-
-        for (mux.popup_mgr.popups.items) |p| {
-            try w.print(
-                "panel id={} visible={} focused={} modal={} owner=",
-                .{
-                    p.id,
-                    @as(u8, @intFromBool(p.visible)),
-                    @as(u8, @intFromBool(mux.popup_mgr.focused_popup_id != null and mux.popup_mgr.focused_popup_id.? == p.id)),
-                    @as(u8, @intFromBool(p.modal)),
-                },
-            );
-            try writeQuotedString(w, p.owner_plugin_name orelse "");
-            try w.print(" rect={},{} {}x{} title=", .{ p.rect.x, p.rect.y, p.rect.width, p.rect.height });
-            try writeQuotedString(w, p.title);
-            try w.writeByte('\n');
-        }
-
-        for (plugins.loadReports()) |report| {
-            try w.writeAll("plugin name=");
-            try writeQuotedString(w, report.plugin_name);
-            try w.writeAll(" status=");
-            try w.writeAll(@tagName(report.status));
-            try w.writeAll(" reason=");
-            try writeQuotedString(w, report.reason);
-            try w.writeAll(" path=");
-            try writeQuotedString(w, report.path);
-            try w.writeByte('\n');
-        }
-
-        const runtime_hosts = plugins.runtimeHosts(self.allocator) catch &[_]plugin_manager.PluginManager.RuntimeHost{};
-        defer if (runtime_hosts.len > 0) self.allocator.free(runtime_hosts);
-        for (runtime_hosts) |host| {
-            try w.writeAll("plugin_runtime name=");
-            try writeQuotedString(w, host.plugin_name);
-            try w.print(" alive={} pending_actions={} reason=", .{
-                @as(u8, @intFromBool(host.alive)),
-                host.pending_actions,
-            });
-            try writeQuotedString(w, host.death_reason orelse "");
-            try w.writeAll(" stderr_tail=");
-            try writeQuotedString(w, host.stderr_tail);
-            try w.writeByte('\n');
-        }
-
-        try mux.appendCommandStateLines(&text, self.allocator);
-
-        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{self.state_path});
-        defer self.allocator.free(tmp_path);
-        var f = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer f.close();
-        try f.writeAll(text.items);
-        try std.fs.cwd().rename(tmp_path, self.state_path);
-    }
-};
-
-fn consumePrefix(buf: *std.ArrayListUnmanaged(u8), n: usize) void {
-    const remaining = buf.items.len - n;
-    if (remaining > 0) @memmove(buf.items[0..remaining], buf.items[n..]);
-    buf.items.len = remaining;
-}
-
-fn writeQuotedString(writer: anytype, s: []const u8) !void {
-    try writer.writeByte('"');
-    for (s) |ch| {
-        switch (ch) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            0...8, 11...12, 14...31 => try writer.print("\\u00{x:0>2}", .{ch}),
-            else => try writer.writeByte(ch),
-        }
-    }
-    try writer.writeByte('"');
-}
-
-fn sanitizeSessionId(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8){};
-    errdefer out.deinit(allocator);
-    for (raw) |ch| {
-        const ok = (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9') or ch == '_' or ch == '-' or ch == '.';
-        try out.append(allocator, if (ok) ch else '_');
-    }
-    if (out.items.len == 0) try out.append(allocator, 's');
-    return out.toOwnedSlice(allocator);
-}
-
 const RuntimeSize = runtime_terminal.RuntimeSize;
 const RuntimeRenderCell = runtime_render_types.RuntimeRenderCell;
 const RuntimeFrameCache = runtime_render_types.RuntimeFrameCache;
 const PaneRenderRef = runtime_render_types.PaneRenderRef;
 const PaneRenderCell = runtime_render_types.PaneRenderCell;
 const RuntimeVtState = runtime_vt.RuntimeVtState;
+const ControlPipe = runtime_control_pipe.ControlPipe;
+const fillPlainLine = runtime_pane_rendering.fillPlainLine;
+const writeStyle = runtime_pane_rendering.writeStyle;
+const paneCellAt = runtime_pane_rendering.paneCellAt;
 
 fn renderRuntimeFrame(
     out: *std.Io.Writer,
@@ -994,7 +791,8 @@ fn renderRuntimeFrame(
         curr,
     );
     if (compose_debug_enabled and popup_count > 0) {
-        logComposePopupSummary(
+        runtime_compose_debug.logComposePopupSummary(
+            g_compose_debug_frame,
             mux.popup_mgr.popups.items,
             popup_order[0..popup_count],
             popup_count,
@@ -1002,7 +800,7 @@ fn renderRuntimeFrame(
             total_cols,
             content_rows,
         );
-        logComposeBgDebug(
+        const bg = runtime_compose_debug.logComposeBgDebug(
             curr,
             canvas,
             total_cols,
@@ -1013,6 +811,14 @@ fn renderRuntimeFrame(
             border_conn,
             chrome_layer,
             chrome_panel_id,
+            &g_compose_debug_frame,
+        );
+        traceEvent(
+            .compose_bg_leak,
+            @intCast(popup_count),
+            @intCast(bg.leak_cells),
+            @intCast(bg.opaque_cells),
+            @intCast(@min(bg.frame_no, @as(u64, std.math.maxInt(i32)))),
         );
     }
 
@@ -1239,320 +1045,6 @@ fn assignTopWindowOwners(
             }
         }
     }
-}
-
-fn writeStyledRow(
-    out: *std.Io.Writer,
-    canvas_row: []const u8,
-    total_cols: usize,
-    row: usize,
-    panes: []const PaneRenderRef,
-) !void {
-    var active_style: ?ghostty_vt.Style = null;
-    var x: usize = 0;
-    while (x < total_cols) : (x += 1) {
-        // Column-lock each cell write to avoid cursor drift/autowrap artifacts
-        // from ambiguous glyph widths in host terminal font rendering.
-        try writeFmtBlocking(out, "\x1b[{};{}H", .{ row + 1, x + 1 });
-        const pane_cell = paneCellAt(panes, x, row);
-        if (pane_cell) |pc| {
-            if (pc.skip_draw) continue;
-            if (pc.style.default()) {
-                if (active_style != null) {
-                    try writeAllBlocking(out, "\x1b[0m");
-                    active_style = null;
-                }
-            } else if (active_style) |current| {
-                if (!current.eql(pc.style)) {
-                    try writeStyle(out, pc.style);
-                    active_style = pc.style;
-                }
-            } else {
-                try writeStyle(out, pc.style);
-                active_style = pc.style;
-            }
-            try writeAllBlocking(out, pc.text[0..pc.text_len]);
-            continue;
-        }
-
-        if (active_style != null) {
-            try writeAllBlocking(out, "\x1b[0m");
-            active_style = null;
-        }
-        try writeByteBlocking(out, canvas_row[x]);
-    }
-    if (active_style != null) try writeAllBlocking(out, "\x1b[0m");
-}
-
-fn fillPlainLine(dst: []RuntimeRenderCell, line: []const u8) void {
-    var i: usize = 0;
-    while (i < dst.len) : (i += 1) {
-        const ch: u8 = if (i < line.len) line[i] else ' ';
-        dst[i] = .{
-            .text = [_]u8{ch} ++ ([_]u8{0} ** 31),
-            .text_len = 1,
-            .style = .{},
-            .styled = false,
-        };
-    }
-}
-
-fn logComposePopupSummary(
-    popups: anytype,
-    popup_order: []const usize,
-    popup_count: usize,
-    focused_popup_id: ?u32,
-    cols: usize,
-    rows: usize,
-) void {
-    var hdr_buf: [256]u8 = undefined;
-    const hdr = std.fmt.bufPrint(
-        &hdr_buf,
-        "ykmx compose-debug frame={} popups={} focused_popup={} canvas={}x{}\n",
-        .{ g_compose_debug_frame, popup_count, focused_popup_id orelse 0, cols, rows },
-    ) catch return;
-    _ = c.write(c.STDERR_FILENO, hdr.ptr, hdr.len);
-
-    var i: usize = 0;
-    while (i < popup_count) : (i += 1) {
-        const idx = popup_order[i];
-        if (idx >= popups.len) continue;
-        const p = popups[idx];
-        var line_buf: [320]u8 = undefined;
-        const line = std.fmt.bufPrint(
-            &line_buf,
-            "  popup#{}/{} id={} vis={} z={} rect=({},{} {}x{}) border={} controls={} transparent={}\n",
-            .{
-                i + 1,
-                popup_count,
-                p.id,
-                @as(u8, @intFromBool(p.visible)),
-                p.z_index,
-                p.rect.x,
-                p.rect.y,
-                p.rect.width,
-                p.rect.height,
-                @as(u8, @intFromBool(p.show_border)),
-                @as(u8, @intFromBool(p.show_controls)),
-                @as(u8, @intFromBool(p.transparent_background)),
-            },
-        ) catch continue;
-        _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
-    }
-}
-
-fn logComposeBgDebug(
-    curr: []const RuntimeRenderCell,
-    canvas: []const u21,
-    cols: usize,
-    rows: usize,
-    popup_count: usize,
-    popup_overlay: []const bool,
-    popup_opaque_cover: []const bool,
-    border_conn: []const u8,
-    chrome_layer: []const u8,
-    chrome_panel_id: []const u32,
-) void {
-    if (curr.len == 0 or popup_count == 0) return;
-    var opaque_cells: usize = 0;
-    var leak_cells: usize = 0;
-    var sample_ids: [12]usize = undefined;
-    var sample_count: usize = 0;
-
-    var i: usize = 0;
-    while (i < curr.len and i < popup_opaque_cover.len) : (i += 1) {
-        if (!popup_opaque_cover[i]) continue;
-        opaque_cells += 1;
-        if (!runtimeCellHasExplicitBg(curr[i])) {
-            leak_cells += 1;
-            if (sample_count < sample_ids.len) {
-                sample_ids[sample_count] = i;
-                sample_count += 1;
-            }
-        }
-    }
-
-    const frame_no = g_compose_debug_frame;
-    g_compose_debug_frame += 1;
-    traceEvent(
-        .compose_bg_leak,
-        @intCast(popup_count),
-        @intCast(leak_cells),
-        @intCast(opaque_cells),
-        @intCast(@min(frame_no, @as(u64, std.math.maxInt(i32)))),
-    );
-
-    // Log every leaking frame; also heartbeat every ~120 frames to confirm state.
-    if (leak_cells == 0 and (frame_no % 120) != 0) return;
-
-    var stderr_buf: [2048]u8 = undefined;
-    const prefix = std.fmt.bufPrint(
-        &stderr_buf,
-        "ykmx compose-debug frame={} popups={} rows={} cols={} opaque_cells={} leak_cells={}\n",
-        .{ frame_no, popup_count, rows, cols, opaque_cells, leak_cells },
-    ) catch return;
-    _ = c.write(c.STDERR_FILENO, prefix.ptr, prefix.len);
-
-    var s: usize = 0;
-    while (s < sample_count) : (s += 1) {
-        const idx = sample_ids[s];
-        const x = idx % cols;
-        const y = idx / cols;
-        const cell = curr[idx];
-        const cp = if (idx < canvas.len) canvas[idx] else @as(u21, ' ');
-        var sample_buf: [320]u8 = undefined;
-        const line = std.fmt.bufPrint(
-            &sample_buf,
-            "  leak#{}/{} x={} y={} cp=U+{X:0>4} text_len={} styled={} bg_tag={} overlay={} opaque={} border_bits={} chrome_role={} panel_id={}\n",
-            .{
-                s + 1,
-                sample_count,
-                x,
-                y,
-                cp,
-                cell.text_len,
-                @as(u8, @intFromBool(cell.styled)),
-                runtimeCellBgTag(cell),
-                @as(u8, @intFromBool(idx < popup_overlay.len and popup_overlay[idx])),
-                @as(u8, @intFromBool(idx < popup_opaque_cover.len and popup_opaque_cover[idx])),
-                if (idx < border_conn.len) border_conn[idx] else 0,
-                if (idx < chrome_layer.len) chrome_layer[idx] else 0,
-                if (idx < chrome_panel_id.len) chrome_panel_id[idx] else 0,
-            },
-        ) catch continue;
-        _ = c.write(c.STDERR_FILENO, line.ptr, line.len);
-    }
-}
-
-fn writeStyle(out: *std.Io.Writer, style: ghostty_vt.Style) !void {
-    var buf: [160]u8 = undefined;
-    const sgr = try std.fmt.bufPrint(&buf, "{f}", .{style.formatterVt()});
-    try writeAllBlocking(out, sgr);
-}
-
-fn paneCellAt(
-    panes: []const PaneRenderRef,
-    x: usize,
-    y: usize,
-) ?PaneRenderCell {
-    var i: usize = panes.len;
-    while (i > 0) {
-        i -= 1;
-        const pane = panes[i];
-        const inner_x0: usize = pane.content_x;
-        const inner_y0: usize = pane.content_y;
-        const inner_x1: usize = pane.content_x + pane.content_w;
-        const inner_y1: usize = pane.content_y + pane.content_h;
-        if (x < inner_x0 or x >= inner_x1 or y < inner_y0 or y >= inner_y1) continue;
-
-        const local_x: usize = x - inner_x0;
-        const local_y: usize = y - inner_y0;
-
-        const pages = pane.term.screens.active.pages;
-        const total_rows: usize = pages.total_rows;
-        const active_rows: usize = pages.rows;
-        const vt_max_off: usize = if (total_rows > active_rows) total_rows - active_rows else 0;
-        // If requested offset is deeper than VT can address, fall back to
-        // line-based scrollback (plain text, no VT styling) for stable deep history.
-        if (pane.scroll_offset > vt_max_off) {
-            if (pane.scrollback) |sb| {
-                const lines = sb.lines.items;
-                if (lines.len > 0) {
-                    const view_rows: usize = pane.content_h;
-                    const off = @min(pane.scroll_offset, lines.len);
-                    const start = if (lines.len > view_rows + off)
-                        lines.len - view_rows - off
-                    else
-                        0;
-                    const idx = start + local_y;
-                    if (idx < lines.len) {
-                        const line = lines[idx];
-                        const ch: u8 = if (local_x < line.len) line[local_x] else ' ';
-                        return .{
-                            .text = [_]u8{ch} ++ ([_]u8{0} ** 31),
-                            .text_len = 1,
-                            .style = .{},
-                        };
-                    }
-                }
-            }
-            return .{
-                .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
-                .text_len = 1,
-                .style = .{},
-            };
-        }
-
-        const off = @min(pane.scroll_offset, total_rows);
-        const start_screen_row: usize = if (total_rows > active_rows + off)
-            total_rows - active_rows - off
-        else
-            0;
-        const source_y = start_screen_row + local_y;
-        if (source_y > std.math.maxInt(u32)) return .{
-            .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
-            .text_len = 1,
-            .style = .{},
-        };
-        const maybe_cell = pane.term.screens.active.pages.getCell(.{
-            .screen = .{
-                .x = @intCast(local_x),
-                .y = @intCast(source_y),
-            },
-        }) orelse return .{
-            .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
-            .text_len = 1,
-            .style = .{},
-        };
-
-        if (maybe_cell.cell.wide == .spacer_tail) {
-            return .{
-                .style = .{},
-                .skip_draw = true,
-            };
-        }
-
-        const cp_raw = maybe_cell.cell.codepoint();
-        const cp: u21 = if (cp_raw >= 32) cp_raw else ' ';
-        var rendered: PaneRenderCell = .{
-            .style = .{},
-        };
-        rendered.text_len = @intCast(encodeCodepoint(rendered.text[0..], cp));
-        if (rendered.text_len == 0) {
-            rendered.text[0] = '?';
-            rendered.text_len = 1;
-        }
-        if (maybe_cell.cell.content_tag == .codepoint_grapheme) {
-            if (maybe_cell.node.data.lookupGrapheme(maybe_cell.cell)) |extra_cps| {
-                for (extra_cps) |extra_cp_raw| {
-                    const extra_cp: u21 = if (extra_cp_raw >= 32) extra_cp_raw else ' ';
-                    const used = rendered.text_len;
-                    const wrote = encodeCodepoint(rendered.text[used..], extra_cp);
-                    if (wrote == 0) break;
-                    const total = @as(usize, used) + wrote;
-                    rendered.text_len = @intCast(@min(total, rendered.text.len));
-                    if (total >= rendered.text.len) break;
-                }
-            }
-        }
-        var style: ghostty_vt.Style = if (maybe_cell.cell.style_id == 0)
-            .{}
-        else
-            maybe_cell.node.data.styles.get(maybe_cell.node.data.memory, maybe_cell.cell.style_id).*;
-
-        switch (maybe_cell.cell.content_tag) {
-            .bg_color_palette => style.bg_color = .{ .palette = maybe_cell.cell.content.color_palette },
-            .bg_color_rgb => style.bg_color = .{ .rgb = .{
-                .r = maybe_cell.cell.content.color_rgb.r,
-                .g = maybe_cell.cell.content.color_rgb.g,
-                .b = maybe_cell.cell.content.color_rgb.b,
-            } },
-            else => {},
-        }
-        rendered.style = style;
-        return rendered;
-    }
-    return null;
 }
 
 test "workspace layout POC returns panes" {
