@@ -43,6 +43,19 @@ const putCell = render_compositor.putCell;
 const drawBorder = runtime_renderer.drawBorder;
 const applyBorderGlyphs = runtime_renderer.applyBorderGlyphs;
 const drawPopupBorderDirect = runtime_renderer.drawPopupBorderDirect;
+const resolveChromeStyleAt = runtime_renderer.resolveChromeStyleAt;
+const markLayerCell = runtime_renderer.markLayerCell;
+const markBorderLayer = runtime_renderer.markBorderLayer;
+const markBorderLayerOwned = runtime_renderer.markBorderLayerOwned;
+const markTextLayer = runtime_renderer.markTextLayer;
+const markTextOwnedMaskedLayer = runtime_renderer.markTextOwnedMaskedLayer;
+const chrome_layer_none = runtime_renderer.chrome_layer_none;
+const chrome_layer_active_border = runtime_renderer.chrome_layer_active_border;
+const chrome_layer_inactive_border = runtime_renderer.chrome_layer_inactive_border;
+const chrome_layer_active_title = runtime_renderer.chrome_layer_active_title;
+const chrome_layer_inactive_title = runtime_renderer.chrome_layer_inactive_title;
+const chrome_layer_active_buttons = runtime_renderer.chrome_layer_active_buttons;
+const chrome_layer_inactive_buttons = runtime_renderer.chrome_layer_inactive_buttons;
 const plainCellFromCodepoint = runtime_cells.plainCellFromCodepoint;
 const renderCellEqual = runtime_cells.renderCellEqual;
 const runtimeCellHasExplicitBg = runtime_cells.runtimeCellHasExplicitBg;
@@ -966,7 +979,8 @@ fn renderRuntimeFrame(
     const curr = try allocator.alloc(RuntimeRenderCell, total_cols * total_rows);
     defer allocator.free(curr);
     for (curr) |*cell| cell.* = .{};
-    composeContentCells(
+    runtime_renderer.composeContentCells(
+        paneCellAt,
         mux,
         panes[0..pane_count],
         total_cols,
@@ -1187,39 +1201,6 @@ const BorderMask = runtime_renderer.BorderMask;
 const ContentInsets = runtime_renderer.ContentInsets;
 const computeBorderMask = runtime_renderer.computeBorderMask;
 const computeContentInsets = runtime_renderer.computeContentInsets;
-
-const chrome_layer_none: u8 = 0;
-const chrome_layer_active_border: u8 = 1;
-const chrome_layer_inactive_border: u8 = 2;
-const chrome_layer_active_title: u8 = 3;
-const chrome_layer_inactive_title: u8 = 4;
-const chrome_layer_active_buttons: u8 = 5;
-const chrome_layer_inactive_buttons: u8 = 6;
-
-fn resolveChromeStyleAt(
-    mux: *const multiplexer.Multiplexer,
-    role: u8,
-    panel_id: u32,
-) ?ghostty_vt.Style {
-    if (role == chrome_layer_none) return null;
-    const styles = if (panel_id != 0) (mux.panelChromeStylesById(panel_id) orelse mux.chromeStyles()) else mux.chromeStyles();
-    const base = switch (role) {
-        chrome_layer_active_border => styles.active_border,
-        chrome_layer_inactive_border => styles.inactive_border,
-        chrome_layer_active_title => styles.active_title,
-        chrome_layer_inactive_title => styles.inactive_title,
-        chrome_layer_active_buttons => styles.active_buttons,
-        chrome_layer_inactive_buttons => styles.inactive_buttons,
-        else => null,
-    };
-    if (base) |style| return enforceOpaquePanelChromeBg(style, panel_id);
-    if (panel_id != 0) {
-        var fallback: ghostty_vt.Style = .{};
-        fallback.bg_color = .{ .palette = 0 };
-        return fallback;
-    }
-    return null;
-}
 
 fn markPopupMasks(
     mux: *const multiplexer.Multiplexer,
@@ -1585,228 +1566,6 @@ fn renderPopupChrome(
     }
 
     return p.rect.height - 2;
-}
-
-fn composeContentCells(
-    mux: *multiplexer.Multiplexer,
-    panes: []const PaneRenderRef,
-    total_cols: usize,
-    content_rows: usize,
-    canvas: []const u21,
-    border_conn: []const u8,
-    chrome_layer: []const u8,
-    chrome_panel_id: []const u32,
-    popup_overlay: []const bool,
-    popup_opaque_cover: []const bool,
-    curr: []RuntimeRenderCell,
-) void {
-    var row: usize = 0;
-    while (row < content_rows) : (row += 1) {
-        const row_off = row * total_cols;
-        const start = row * total_cols;
-        var x: usize = 0;
-        while (x < total_cols) : (x += 1) {
-            if (popup_overlay[row_off + x]) {
-                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
-                if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
-                    curr[row_off + x].style = s;
-                    curr[row_off + x].styled = !s.default();
-                }
-                continue;
-            }
-            if (border_conn[row_off + x] != 0) {
-                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
-                if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
-                    curr[row_off + x].style = s;
-                    curr[row_off + x].styled = !s.default();
-                }
-                continue;
-            }
-            const pane_cell = paneCellAt(panes, x, row);
-            if (pane_cell) |pc| {
-                if (pc.skip_draw) {
-                    curr[row_off + x] = .{
-                        .text = [_]u8{' '} ++ ([_]u8{0} ** 31),
-                        .text_len = 1,
-                        .style = .{},
-                        .styled = false,
-                    };
-                } else {
-                    curr[row_off + x] = .{
-                        .text = pc.text,
-                        .text_len = pc.text_len,
-                        .style = pc.style,
-                        .styled = !pc.style.default(),
-                    };
-                }
-            } else {
-                curr[row_off + x] = plainCellFromCodepoint(canvas[start + x]);
-            }
-            if (resolveChromeStyleAt(mux, chrome_layer[row_off + x], chrome_panel_id[row_off + x])) |s| {
-                curr[row_off + x].style = s;
-                curr[row_off + x].styled = !s.default();
-            }
-            if (popup_opaque_cover[row_off + x]) {
-                enforceOpaqueRuntimeCellBg(&curr[row_off + x]);
-            }
-        }
-    }
-}
-
-fn markLayerCell(
-    layer: []u8,
-    panel_ids: []u32,
-    cols: usize,
-    rows: usize,
-    x: usize,
-    y: usize,
-    role: u8,
-    panel_id: u32,
-) void {
-    if (x >= cols or y >= rows or role == chrome_layer_none) return;
-    const idx = y * cols + x;
-    layer[idx] = role;
-    panel_ids[idx] = panel_id;
-}
-
-fn markBorderLayer(
-    layer: []u8,
-    panel_ids: []u32,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-    border: BorderMask,
-    role: u8,
-    panel_id: u32,
-) void {
-    const x0: usize = r.x;
-    const y0: usize = r.y;
-    const x1: usize = x0 + r.width - 1;
-    const y1: usize = y0 + r.height - 1;
-    if (x1 >= cols or y1 >= rows) return;
-
-    if (border.top) {
-        var x = x0;
-        while (x <= x1) : (x += 1) markLayerCell(layer, panel_ids, cols, rows, x, y0, role, panel_id);
-    }
-    if (border.bottom) {
-        var x = x0;
-        while (x <= x1) : (x += 1) markLayerCell(layer, panel_ids, cols, rows, x, y1, role, panel_id);
-    }
-    if (border.left) {
-        var y = y0;
-        while (y <= y1) : (y += 1) markLayerCell(layer, panel_ids, cols, rows, x0, y, role, panel_id);
-    }
-    if (border.right) {
-        var y = y0;
-        while (y <= y1) : (y += 1) markLayerCell(layer, panel_ids, cols, rows, x1, y, role, panel_id);
-    }
-}
-
-fn markBorderLayerOwned(
-    layer: []u8,
-    panel_ids: []u32,
-    cols: usize,
-    rows: usize,
-    r: layout.Rect,
-    border: BorderMask,
-    role: u8,
-    owner_idx: usize,
-    top_window_owner: []const i32,
-    popup_opaque_cover: []const bool,
-) void {
-    const x0: usize = r.x;
-    const y0: usize = r.y;
-    const x1: usize = x0 + r.width - 1;
-    const y1: usize = y0 + r.height - 1;
-    if (x1 >= cols or y1 >= rows) return;
-    const owner: i32 = @intCast(owner_idx);
-
-    if (border.top) {
-        var x = x0;
-        while (x <= x1) : (x += 1) {
-            const idx = y0 * cols + x;
-            if (popup_opaque_cover[idx]) continue;
-            if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x, y0, role, 0);
-        }
-    }
-    if (border.bottom) {
-        var x = x0;
-        while (x <= x1) : (x += 1) {
-            const idx = y1 * cols + x;
-            if (popup_opaque_cover[idx]) continue;
-            if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x, y1, role, 0);
-        }
-    }
-    if (border.left) {
-        var y = y0;
-        while (y <= y1) : (y += 1) {
-            const idx = y * cols + x0;
-            if (popup_opaque_cover[idx]) continue;
-            if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x0, y, role, 0);
-        }
-    }
-    if (border.right) {
-        var y = y0;
-        while (y <= y1) : (y += 1) {
-            const idx = y * cols + x1;
-            if (popup_opaque_cover[idx]) continue;
-            if (top_window_owner[idx] == owner) markLayerCell(layer, panel_ids, cols, rows, x1, y, role, 0);
-        }
-    }
-}
-
-fn markTextLayer(
-    layer: []u8,
-    panel_ids: []u32,
-    cols: usize,
-    rows: usize,
-    x_start: u16,
-    y: u16,
-    text: []const u8,
-    max_w: u16,
-    role: u8,
-    panel_id: u32,
-) void {
-    if (y >= rows) return;
-    var x: usize = x_start;
-    const y_usize: usize = y;
-    var i: usize = 0;
-    while (i < text.len and i < max_w and x < cols) : (i += 1) {
-        markLayerCell(layer, panel_ids, cols, rows, x, y_usize, role, panel_id);
-        x += 1;
-    }
-}
-
-fn markTextOwnedMaskedLayer(
-    layer: []u8,
-    panel_ids: []u32,
-    cols: usize,
-    rows: usize,
-    x_start: u16,
-    y: u16,
-    text: []const u8,
-    max_w: u16,
-    owner_idx: usize,
-    top_window_owner: []const i32,
-    mask: []const bool,
-    role: u8,
-) void {
-    if (y >= rows) return;
-    var x: usize = x_start;
-    const y_usize: usize = y;
-    var i: usize = 0;
-    while (i < text.len and i < max_w and x < cols) : (i += 1) {
-        const idx = y_usize * cols + x;
-        if (mask[idx]) {
-            x += 1;
-            continue;
-        }
-        if (top_window_owner[idx] == @as(i32, @intCast(owner_idx))) {
-            markLayerCell(layer, panel_ids, cols, rows, x, y_usize, role, 0);
-        }
-        x += 1;
-    }
 }
 
 fn writeStyledRow(
