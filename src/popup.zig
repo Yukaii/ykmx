@@ -1,6 +1,30 @@
 const std = @import("std");
 const layout = @import("layout.zig");
 
+/// Dimension that can be either absolute (pixels/rows) or percentage of screen.
+pub const Dim = struct {
+    pub const Kind = enum { absolute, percent };
+    kind: Kind,
+    value: u16,
+
+    pub fn absolute(v: u16) Dim {
+        return .{ .kind = .absolute, .value = v };
+    }
+
+    pub fn percent(v: u16) Dim {
+        return .{ .kind = .percent, .value = @min(v, 100) };
+    }
+
+    /// Resolve this dimension against a reference size.
+    /// Returns the actual size in the same units as the reference.
+    pub fn resolve(self: Dim, reference: u16) u16 {
+        return switch (self.kind) {
+            .absolute => self.value,
+            .percent => @max(1, @as(u16, @intCast((@as(u32, self.value) * @as(u32, reference)) / 100))),
+        };
+    }
+};
+
 pub const PopupKind = enum {
     command,
     notification,

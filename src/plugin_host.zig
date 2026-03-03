@@ -1,6 +1,7 @@
 const std = @import("std");
 const layout = @import("layout.zig");
 const input_mod = @import("input.zig");
+const popup_mod = @import("popup.zig");
 const posix = std.posix;
 
 pub const PluginHost = struct {
@@ -66,8 +67,8 @@ pub const PluginHost = struct {
         open_shell_panel_rect: struct {
             x: u16,
             y: u16,
-            width: u16,
-            height: u16,
+            width: popup_mod.Dim,
+            height: popup_mod.Dim,
             modal: bool,
             transparent_background: bool,
             show_border: bool,
@@ -76,7 +77,7 @@ pub const PluginHost = struct {
         close_panel_by_id: u32,
         focus_panel_by_id: u32,
         move_panel_by_id: struct { panel_id: u32, x: u16, y: u16 },
-        resize_panel_by_id: struct { panel_id: u32, width: u16, height: u16 },
+        resize_panel_by_id: struct { panel_id: u32, width: popup_mod.Dim, height: popup_mod.Dim },
         set_panel_visibility_by_id: struct { panel_id: u32, visible: bool },
         set_panel_style_by_id: struct {
             panel_id: u32,
@@ -192,6 +193,8 @@ pub const PluginHost = struct {
         y: ?u16 = null,
         width: ?u16 = null,
         height: ?u16 = null,
+        width_pct: ?u16 = null,
+        height_pct: ?u16 = null,
         modal: ?bool = null,
         transparent_background: ?bool = null,
         show_border: ?bool = null,
@@ -686,13 +689,24 @@ pub const PluginHost = struct {
         if (std.mem.eql(u8, action_name, "open_shell_panel_rect")) {
             const x = envelope.x orelse return null;
             const y = envelope.y orelse return null;
-            const width = envelope.width orelse return null;
-            const height = envelope.height orelse return null;
+            // Support both absolute (width/height) and percentage (width_pct/height_pct) dimensions.
+            const width_dim: popup_mod.Dim = if (envelope.width_pct) |pct|
+                popup_mod.Dim.percent(pct)
+            else if (envelope.width) |w|
+                popup_mod.Dim.absolute(w)
+            else
+                return null;
+            const height_dim: popup_mod.Dim = if (envelope.height_pct) |pct|
+                popup_mod.Dim.percent(pct)
+            else if (envelope.height) |h|
+                popup_mod.Dim.absolute(h)
+            else
+                return null;
             return .{ .open_shell_panel_rect = .{
                 .x = x,
                 .y = y,
-                .width = width,
-                .height = height,
+                .width = width_dim,
+                .height = height_dim,
                 .modal = envelope.modal orelse true,
                 .transparent_background = envelope.transparent_background orelse false,
                 .show_border = envelope.show_border orelse true,
@@ -715,9 +729,20 @@ pub const PluginHost = struct {
         }
         if (std.mem.eql(u8, action_name, "resize_panel_by_id")) {
             const panel_id = envelope.panel_id orelse return null;
-            const width = envelope.width orelse return null;
-            const height = envelope.height orelse return null;
-            return .{ .resize_panel_by_id = .{ .panel_id = panel_id, .width = width, .height = height } };
+            // Support both absolute (width/height) and percentage (width_pct/height_pct) dimensions.
+            const width_dim: popup_mod.Dim = if (envelope.width_pct) |pct|
+                popup_mod.Dim.percent(pct)
+            else if (envelope.width) |w|
+                popup_mod.Dim.absolute(w)
+            else
+                return null;
+            const height_dim: popup_mod.Dim = if (envelope.height_pct) |pct|
+                popup_mod.Dim.percent(pct)
+            else if (envelope.height) |h|
+                popup_mod.Dim.absolute(h)
+            else
+                return null;
+            return .{ .resize_panel_by_id = .{ .panel_id = panel_id, .width = width_dim, .height = height_dim } };
         }
         if (std.mem.eql(u8, action_name, "set_panel_visibility_by_id")) {
             const panel_id = envelope.panel_id orelse return null;

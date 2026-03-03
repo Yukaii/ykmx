@@ -221,19 +221,28 @@ Sync-scroll fan-out is currently disabled. `Ctrl+G s` controls local scrollback 
     - `persistent_process=true` (hide/show popup while keeping PTY alive)
     - `popup_x=24`
     - `popup_y=6`
-    - `popup_width=110`
-    - `popup_height=26`
+    - `popup_width=110` (absolute width)
+    - `popup_height=26` (absolute height)
+    - `popup_width_pct=80` (percentage of screen width, 1-100)
+    - `popup_height_pct=60` (percentage of screen height, 1-100)
+    - Note: When both absolute and percentage are set, percentage takes precedence
 - Sidebar panel example lives at:
   - `docs/examples/plugins.d/sidebar-panel/index.ts`
   - optional plugin config:
     - `[plugin.sidebar-panel]`
     - `persistent_process=true` (hide/show while keeping PTY alive)
+    - `width=36` (absolute width in columns)
+    - `width_pct=30` (percentage of screen width, 1-100)
+    - Note: percentage takes precedence when both are set
 - Bottom panel example lives at:
   - `docs/examples/plugins.d/bottom-panel/index.ts`
   - these examples use arbitrary command names (`panel.sidebar.toggle`, `panel.bottom.toggle`)
   - optional plugin config:
     - `[plugin.bottom-panel]`
     - `persistent_process=true` (hide/show while keeping PTY alive)
+    - `height=10` (absolute height in rows)
+    - `height_pct=25` (percentage of screen height, 1-100)
+    - Note: percentage takes precedence when both are set
 - Command palette example plugin (separate from popup-controls) lives at:
   - `docs/examples/plugins.d/command-palette/index.ts`
   - registers `palette.open` by default, opens an `fzf` command picker in a popup, then dispatches selected command via `ykmx ctl command <name>`
@@ -317,10 +326,12 @@ Sync-scroll fan-out is currently disabled. `Ctrl+G s` controls local scrollback 
   - `{"v":1,"action":"cycle_panel_focus"}`
   - `{"v":1,"action":"toggle_shell_panel"}`
   - `{"v":1,"action":"open_shell_panel_rect","x":8,"y":4,"width":100,"height":24,"modal":true,"show_border":true,"show_controls":false,"transparent_background":false}`
+  - `{"v":1,"action":"open_shell_panel_rect","x":8,"y":4,"width_pct":50,"height_pct":60,"modal":true,"show_border":true,"show_controls":false,"transparent_background":false}` (percentage-based dimensions)
   - `{"v":1,"action":"close_panel_by_id","panel_id":1}`
   - `{"v":1,"action":"focus_panel_by_id","panel_id":1}`
   - `{"v":1,"action":"move_panel_by_id","panel_id":1,"x":12,"y":6}`
   - `{"v":1,"action":"resize_panel_by_id","panel_id":1,"width":110,"height":26}`
+  - `{"v":1,"action":"resize_panel_by_id","panel_id":1,"width_pct":80,"height_pct":50}` (percentage-based resize)
   - `{"v":1,"action":"set_panel_visibility_by_id","panel_id":1,"visible":false}`
   - `{"v":1,"action":"set_panel_style_by_id","panel_id":1,"show_border":true,"show_controls":false,"transparent_background":false}`
   - `{"v":1,"action":"set_ui_bars","toolbar_line":"...","tab_line":"...","status_line":"..."}`
@@ -329,7 +340,13 @@ Sync-scroll fan-out is currently disabled. `Ctrl+G s` controls local scrollback 
   - `{"v":1,"action":"reset_chrome_theme"}`
   - `{"v":1,"action":"set_chrome_style","active_title_sgr":"1;37;44","inactive_title_sgr":"37;44","active_border_sgr":"37;44","inactive_border_sgr":"37;44","active_buttons_sgr":"1;33;44","inactive_buttons_sgr":"33;44"}`
   - `{"v":1,"action":"set_panel_chrome_style_by_id","panel_id":1,"reset":false,"active_title_sgr":"1;37;45","inactive_title_sgr":"37;45","active_border_sgr":"37;45","inactive_border_sgr":"37;45","active_buttons_sgr":"1;33;45","inactive_buttons_sgr":"33;45"}`
-  - `window_*_char` and `focus_marker` are single ASCII characters.
+- Panel dimensions support both absolute (columns/rows) and percentage values:
+  - `width` / `height`: absolute dimensions in terminal columns/rows
+  - `width_pct` / `height_pct`: percentage of screen dimensions (1-100)
+  - Percentage values are resolved at runtime against the current screen size
+  - When both are provided, percentage takes precedence
+  - Minimum sizes are enforced: width >= 12 columns, height >= 4 rows
+- `window_*_char` and `focus_marker` are single ASCII characters.
   - `border_*` fields accept any single Unicode glyph.
   - `*_sgr` fields accept SGR parameter forms like `"1;37;44"` (or full CSI form like `"\u001b[1;37;44m"`).
   - per-panel chrome style overrides are ownership-scoped (same ownership rule as other panel actions).

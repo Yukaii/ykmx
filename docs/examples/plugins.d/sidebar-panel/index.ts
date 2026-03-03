@@ -3,9 +3,13 @@ import type { RuntimeState } from "./types";
 
 const DEFAULT_SIDE: "left" | "right" = "left";
 const DEFAULT_WIDTH = 36;
+const DEFAULT_WIDTH_PCT = 30; // 30% of screen width
 
 let side: "left" | "right" = DEFAULT_SIDE;
-let panelWidth = DEFAULT_WIDTH;
+// Support both absolute (width) and percentage (width_pct) dimensions.
+// If width_pct is non-null, it takes precedence over width.
+let panelWidth: number | null = DEFAULT_WIDTH;
+let panelWidthPct: number | null = null;
 const TOGGLE_COMMAND = "panel.sidebar.toggle";
 let persistentProcess = true;
 
@@ -19,39 +23,54 @@ function parseBoolLike(value: string): boolean {
   return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
-function panelRect(state: RuntimeState): { x: number; y: number; width: number; height: number } {
-  const width = Math.max(12, Math.min(panelWidth, state.screen.width));
-  const x = side === "left" ? state.screen.x : state.screen.x + Math.max(0, state.screen.width - width);
+function panelRect(state: RuntimeState): { x: number; y: number; width: number; height: number; width_pct: number | null } {
+  // Use percentage if set, otherwise fall back to absolute width
+  const effectiveWidth = panelWidthPct !== null
+    ? Math.max(12, Math.floor((panelWidthPct / 100) * state.screen.width))
+    : Math.max(12, Math.min(panelWidth ?? DEFAULT_WIDTH, state.screen.width));
+  const x = side === "left" ? state.screen.x : state.screen.x + Math.max(0, state.screen.width - effectiveWidth);
   return {
     x,
     y: state.screen.y,
-    width,
+    width: effectiveWidth,
     height: state.screen.height,
+    width_pct: panelWidthPct,
   };
 }
 
 async function openPanel(state: RuntimeState): Promise<void> {
   const rect = panelRect(state);
   opening = true;
-  await writeAction({
+  // Build action with either absolute or percentage width
+  const action: Record<string, unknown> = {
     v: 1,
     action: "open_shell_panel_rect",
     x: rect.x,
     y: rect.y,
-    width: rect.width,
     height: rect.height,
     modal: false,
     show_border: true,
     show_controls: false,
     transparent_background: false,
-  });
+  };
+  if (rect.width_pct !== null) {
+    action.width_pct = rect.width_pct;
+  } else {
+    action.width = rect.width;
+  }
+  await writeAction(action);
 }
 
 async function ensurePanelPosition(state: RuntimeState): Promise<void> {
   if (!panelId) return;
   const rect = panelRect(state);
   await writeAction({ v: 1, action: "move_panel_by_id", panel_id: panelId, x: rect.x, y: rect.y });
-  await writeAction({ v: 1, action: "resize_panel_by_id", panel_id: panelId, width: rect.width, height: rect.height });
+  // Use percentage-based resize when configured
+  if (rect.width_pct !== null) {
+    await writeAction({ v: 1, action: "resize_panel_by_id", panel_id: panelId, width_pct: rect.width_pct, height: rect.height });
+  } else {
+    await writeAction({ v: 1, action: "resize_panel_by_id", panel_id: panelId, width: rect.width, height: rect.height });
+  }
 }
 
 async function main() {
@@ -61,7 +80,16 @@ async function main() {
         side = ev.value === "right" ? "right" : "left";
       } else if (ev.key === "width") {
         const n = Number.parseInt(ev.value, 10);
-        if (Number.isFinite(n)) panelWidth = Math.max(12, n);
+        if (Number.isFinite(n)) {
+          panelWidth = Math.max(12, n);
+          panelWidthPct = null; // Clear percentage when absolute is set
+        }
+      } else if (ev.key === "width_pct") {
+        const n = Number.parseInt(ev.value, 10);
+        if (Number.isFinite(n)) {
+          panelWidthPct = Math.max(1, Math.min(100, n));
+          panelWidth = null; // Clear absolute when percentage is set
+        }
       } else if (ev.key === "persistent_process") {
         persistentProcess = parseBoolLike(ev.value);
       }

@@ -70,10 +70,13 @@ pub fn applyPluginAction(
             return true;
         },
         .open_shell_panel_rect => |payload| {
+            // Resolve percentage dimensions against screen size.
+            const resolved_width = payload.width.resolve(screen.width);
+            const resolved_height = payload.height.resolve(screen.height);
             _ = try mux.openShellPopupRectStyled(
                 "popup-shell",
                 screen,
-                .{ .x = payload.x, .y = payload.y, .width = payload.width, .height = payload.height },
+                .{ .x = payload.x, .y = payload.y, .width = resolved_width, .height = resolved_height },
                 payload.modal,
                 .{
                     .transparent_background = payload.transparent_background,
@@ -87,7 +90,12 @@ pub fn applyPluginAction(
         .close_panel_by_id => |panel_id| return try mux.closePopupByIdOwned(panel_id, plugin_name),
         .focus_panel_by_id => |panel_id| return try mux.focusPopupByIdOwned(panel_id, plugin_name),
         .move_panel_by_id => |payload| return try mux.movePopupByIdOwned(payload.panel_id, payload.x, payload.y, screen, plugin_name),
-        .resize_panel_by_id => |payload| return try mux.resizePopupByIdOwned(payload.panel_id, payload.width, payload.height, screen, plugin_name),
+        .resize_panel_by_id => |payload| {
+            // Resolve percentage dimensions against screen size.
+            const resolved_width = payload.width.resolve(screen.width);
+            const resolved_height = payload.height.resolve(screen.height);
+            return try mux.resizePopupByIdOwned(payload.panel_id, resolved_width, resolved_height, screen, plugin_name);
+        },
         .set_panel_visibility_by_id => |payload| return try mux.setPopupVisibilityByIdOwned(payload.panel_id, payload.visible, plugin_name),
         .set_panel_style_by_id => |payload| {
             return try mux.setPopupStyleByIdOwned(payload.panel_id, .{

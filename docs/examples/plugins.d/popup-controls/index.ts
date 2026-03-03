@@ -11,8 +11,12 @@ let visible = false;
 let persistentProcess = true;
 let popupX = 24;
 let popupY = 6;
-let popupWidth = 110;
-let popupHeight = 26;
+// Support both absolute (width/height) and percentage (width_pct/height_pct) values.
+// Percentages are resolved against the screen dimensions at runtime.
+let popupWidth: number | null = 110; // null means use percentage
+let popupHeight: number | null = 26; // null means use percentage
+let popupWidthPct: number | null = null; // e.g., 80 for 80% of screen width
+let popupHeightPct: number | null = null; // e.g., 60 for 60% of screen height
 
 function parseBoolLike(value: string): boolean {
   const s = value.trim().toLowerCase();
@@ -37,10 +41,28 @@ async function main() {
         if (n !== null) popupY = n;
       } else if (ev.key === "popup_width") {
         const n = parseIntLike(ev.value);
-        if (n !== null) popupWidth = n;
+        if (n !== null) {
+          popupWidth = n;
+          popupWidthPct = null; // Clear percentage when absolute is set
+        }
       } else if (ev.key === "popup_height") {
         const n = parseIntLike(ev.value);
-        if (n !== null) popupHeight = n;
+        if (n !== null) {
+          popupHeight = n;
+          popupHeightPct = null; // Clear percentage when absolute is set
+        }
+      } else if (ev.key === "popup_width_pct") {
+        const n = parseIntLike(ev.value);
+        if (n !== null) {
+          popupWidthPct = Math.max(1, Math.min(100, n));
+          popupWidth = null; // Clear absolute when percentage is set
+        }
+      } else if (ev.key === "popup_height_pct") {
+        const n = parseIntLike(ev.value);
+        if (n !== null) {
+          popupHeightPct = Math.max(1, Math.min(100, n));
+          popupHeight = null; // Clear absolute when percentage is set
+        }
       }
       continue;
     }
@@ -81,18 +103,29 @@ async function main() {
       } else {
         opening = true;
         visible = true;
-        await writeAction({
+        // Build action with either absolute or percentage dimensions
+        const action: Record<string, unknown> = {
           v: 1,
           action: "open_shell_panel_rect",
           x: popupX,
           y: popupY,
-          width: popupWidth,
-          height: popupHeight,
           modal: true,
           show_border: true,
           show_controls: ENABLE_PANEL_CONTROLS,
           transparent_background: ENABLE_PANEL_TRANSPARENT_BG,
-        });
+        };
+        // Use percentage values if set, otherwise fall back to absolute
+        if (popupWidthPct !== null) {
+          action.width_pct = popupWidthPct;
+        } else if (popupWidth !== null) {
+          action.width = popupWidth;
+        }
+        if (popupHeightPct !== null) {
+          action.height_pct = popupHeightPct;
+        } else if (popupHeight !== null) {
+          action.height = popupHeight;
+        }
+        await writeAction(action);
       }
       continue;
     }
